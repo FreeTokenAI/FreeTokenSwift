@@ -56,12 +56,15 @@ Download the AI model for on-device processing:
 ```swift
 client.downloadAIModel { isModelDownloaded in
     if isModelDownloaded {
-        print("Model ready for use")
+        // Device has the capability to support AI
+    } else {
+        // Device can't support AI, but will run in Compatibility Mode.
     }
 } error: { error in
     print("Download failed: \(error)")
 } progressPercent: { progress in
     print("Download progress: \(progress)%")
+    // Show this in your UI for users to see
 }
 ```
 
