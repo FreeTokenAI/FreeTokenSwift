@@ -2,6 +2,10 @@
 
 The FreeToken Swift client provides a seamless way to integrate AI capabilities into your iOS applications with both cloud and on-device support.
 
+## Requirements
+- iOS 16+
+- macOS 15+
+
 ## Features
 
 - On-device AI processing
