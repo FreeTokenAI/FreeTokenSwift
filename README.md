@@ -218,5 +218,3 @@ client.loadModel(
 client.unloadModel()
 ```
 
-## License
-
