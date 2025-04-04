@@ -126,7 +126,7 @@ Add searchable documents for AI context:
 ```swift
 client.createDocument(
     content: "Document content",
-    metadata: "{\"title\": \"Example Doc\"}",
+    metadata: "TITLE: Example Document\nAUTHOR: John Doe",
     searchScope: "knowledge-base"
 ) { document in
     print("Document created: \(document.id)")
