@@ -123,9 +123,10 @@ public class FreeToken: @unchecked Sendable {
     ///     - appToken: A `String` representing the API key used for authentication of your client.
     ///     - baseURL: Optional base URL for the API (e.g., `https://api.example.com/`). Defaults to `nil`.
     ///     - overrideModelPath: An optional `URL` for the override model path. Defaults to `nil`.
+    ///     - logLevel: Optional log level for the client. Default is `.info` 
     ///
     /// - Returns: A configured `FreeToken` instance.
-    public func configure(appToken: String, baseURL: Optional<URL> = nil, overrideModelPath: Optional<URL> = nil) -> FreeToken {
+    public func configure(appToken: String, baseURL: Optional<URL> = nil, overrideModelPath: Optional<URL> = nil, logLevel: FreeTokenLogger.LogLevel = .info) -> FreeToken {
         self.appToken = appToken
         
         if let baseURL = baseURL {
@@ -135,6 +136,8 @@ public class FreeToken: @unchecked Sendable {
         if let overrideModelPath = overrideModelPath {
             self.overrideModelPath = overrideModelPath
         }
+
+        FreeTokenLogger.shared.configure(logLevel: logLevel)
         
         return self
     }
@@ -224,12 +227,12 @@ public class FreeToken: @unchecked Sendable {
                 
                 self.documentManager = DocumentManager(chunkSize: response.documentsConfig.documentChunkSize, overlapSize: response.documentsConfig.documentChunkOverlapSize, encrypt: self.encrypt, decrypt: self.decrypt)
                 
-                print("[FreeToken] Device registered successfully")
+                self.logger("Device registered successfully", .info)
                 
                 profiler.end(eventType: Profiler.EventType.createDevice, isSuccess: true)
                 success()
             case .failure(let errorResponse):
-                print("[FreeToken] Failed to register device: \(errorResponse.message ?? errorResponse.localizedDescription)")
+                self.logger("Failed to register device: \(errorResponse.message ?? errorResponse.localizedDescription)", .error)
                 profiler.end(eventType: .createDevice, isSuccess: false, errorMessage: errorResponse.message ?? errorResponse.localizedDescription)
                 error(FreeTokenError.convertErrorResponse(errorResponse: errorResponse))
             }
