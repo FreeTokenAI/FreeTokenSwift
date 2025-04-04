@@ -62,7 +62,6 @@ client.downloadAIModel { isModelDownloaded in
         // Device has the capability to support AI
     } else {
         // Device can't support AI, but will run in Compatibility Mode.
-        print("Model ready for use")
     }
 } error: { error in
     print("Download failed: \(error)")
@@ -221,3 +220,4 @@ client.loadModel(
 // Unload model
 client.unloadModel()
 ```
+
