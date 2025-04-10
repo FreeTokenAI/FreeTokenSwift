@@ -36,8 +36,7 @@ Initialize and configure the FreeToken client:
 import FreeToken
 
 let client = FreeToken.shared.configure(
-    appToken: "your-api-key",
-    baseURL: URL(string: "https://api.example.com/")
+    appToken: "your-api-key"
 )
 ```
 
