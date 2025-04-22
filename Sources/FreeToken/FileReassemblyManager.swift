@@ -56,7 +56,7 @@ extension FreeToken {
                     do {
                         try fileManager.removeItem(at: outputFileURL)
                     } catch {
-                        print("[FreeToken] Error removing existing output file: \(error)")
+                        FreeToken.shared.logger("Error removing existing output file: \(error)", .error)
                         throw Self.couldNotRemoveExistingFileError
                     }
                 }
@@ -66,14 +66,14 @@ extension FreeToken {
                 
                 // Open a file handle for writing to the output file
                 guard let outputHandle = try? FileHandle(forWritingTo: outputFileURL) else {
-                    print("[FreeToken] Failed to create output file handle for \(outputFileURL.path).")
+                    FreeToken.shared.logger("Failed to create output file handle for \(outputFileURL.path).", .error)
                     throw Self.couldNotReassembleFileCreateError
                 }
                 
                 // Iterate over each part and append its data to the output file
                 for partURL in sortedParts {
                     guard let inputHandle = try? FileHandle(forReadingFrom: partURL) else {
-                        print("[FreeToken] Failed to open part file: \(partURL.path)")
+                        FreeToken.shared.logger("Failed to open part file: \(partURL.path)", .error)
                         throw Self.couldNotOpenFilePartError
                     }
                     
@@ -92,14 +92,14 @@ extension FreeToken {
                 }
                 
                 outputHandle.closeFile()
-                print("[FreeToken] Reassembled file saved to \(outputFileURL.path)")
+                FreeToken.shared.logger("Reassembled file saved to \(outputFileURL.path)", .info)
                 
                 // Delete all file parts after reassembly
                 for partURL in sortedParts {
                     do {
                         try fileManager.removeItem(at: partURL)
                     } catch {
-                        print("[FreeToken] Error removing part file: \(error)")
+                        FreeToken.shared.logger("Error removing part file: \(error)", .error)
                     }
                 }
             }

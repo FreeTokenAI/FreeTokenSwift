@@ -41,14 +41,14 @@ extension FreeToken {
             do {
                 compressedModelData = try Data(contentsOf: filePath)
             } catch {
-                print("[FreeToken] Error loading compressed file: \(Self.failedToLoadError.message ?? error.localizedDescription)")
+                FreeToken.shared.logger("Error loading compressed file: \(Self.failedToLoadError.message ?? error.localizedDescription)", .error)
                 throw Self.failedToLoadError
             }
             
             do {
                 uncompressedModelData = try compressedModelData.gunzipped()
             } catch {
-                print("[FreeToken] Error decompressing file: \(Self.failedToDecompressError.message ?? error.localizedDescription)")
+                FreeToken.shared.logger("[FreeToken] Error decompressing file: \(Self.failedToDecompressError.message ?? error.localizedDescription)", .error)
                 throw Self.failedToDecompressError
             }
             
@@ -59,7 +59,7 @@ extension FreeToken {
                 }
                 try uncompressedModelData.write(to: filePath.deletingPathExtension(), options: .atomic)
             } catch {
-                print("[FreeToken] Error writing decompressed file: \(Self.failedToWriteError.message ?? error.localizedDescription)")
+                FreeToken.shared.logger("[FreeToken] Error writing decompressed file: \(Self.failedToWriteError.message ?? error.localizedDescription)", .error)
                 throw Self.failedToWriteError
             }
             
@@ -67,7 +67,7 @@ extension FreeToken {
             do {
                 try FileManager.default.removeItem(at: filePath)
             } catch {
-                print("[FreeToken] Error removing gzipped file: \(Self.failedToRemoveError.message ?? error.localizedDescription)")
+                FreeToken.shared.logger("[FreeToken] Error removing gzipped file: \(Self.failedToRemoveError.message ?? error.localizedDescription)", .error)
                 throw Self.failedToRemoveError
             }
         }

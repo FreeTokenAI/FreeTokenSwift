@@ -66,36 +66,36 @@ extension FreeToken {
         }
         
         func run() async throws -> Result<Void, PipelineError> {
-            print("[FreeToken] Starting download pipeline.")
+            FreeToken.shared.logger("Starting download pipeline.", .info)
             
-            print("[FreeToken] Verifying existing files on disk.")
+            FreeToken.shared.logger("Verifying existing files on disk.", .info)
             if await finalVerify() {
                 progressTracker?(1.0)
                 return .success(())
             } else {
-                print("[FreeToken] All files are not verified. Starting download pipeline.")
+                FreeToken.shared.logger("All files are not verified. Starting download pipeline.", .info)
             }
             
             guard await downloadFiles() else {
                 return .failure(.downloadFailed)
             }
             
-            print("[FreeToken] Downloaded files. Verifying integrity.")
+            FreeToken.shared.logger("Downloaded files. Verifying integrity.", .info)
             guard await verifyDownloadedFiles() else {
                 return .failure(.downloadVerificationFailed)
             }
             
-            print("[FreeToken] Downloaded files verified. Reassembling split files.")
+            FreeToken.shared.logger("Downloaded files verified. Reassembling split files.", .info)
             guard try await reassembleFiles() else {
                 return .failure(.reassemblyFailed)
             }
             
-            print("[FreeToken] Reassembled files. Decompressing files.")
+            FreeToken.shared.logger("Reassembled files. Decompressing files.", .info)
             guard try await decompressFiles() else {
                 return .failure(.decompressionFailed)
             }
             
-            print("[FreeToken] Decompressed files. Verifying all final files.")
+            FreeToken.shared.logger("Decompressed files. Verifying all final files.", .info)
             guard await finalVerify() else {
                 return .failure(.finalVerificationFailed)
             }

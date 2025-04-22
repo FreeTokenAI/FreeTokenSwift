@@ -67,14 +67,14 @@ extension FreeToken {
                 if fileManager.fileExists(atPath: self.modelBasePath.path) == false {
                     do {
                         try fileManager.createDirectory(at: self.modelBasePath, withIntermediateDirectories: true)
-                        print("Model cache directory created successfully")
+                        FreeToken.shared.logger("Model cache directory created successfully", .info)
                     } catch {
-                        print("Failed to create model directory.")
+                        FreeToken.shared.logger("Failed to create model directory.", .error)
                         return
                     }
                 }
             } else {
-                print("[FreeToken] AI Model path is defined - ignoring all model definitions from cloud")
+                FreeToken.shared.logger("AI Model path is defined - ignoring all model definitions from cloud", .info)
                 self.modelBasePath = overrideModelPath!
                 self.state = .downloaded
             }
@@ -107,25 +107,25 @@ extension FreeToken {
             let profiler = Profiler()
 
             if state == .downloading {
-                print("[FreeToken] Currently downloading AI model - Cannot download more than once")
+                FreeToken.shared.logger("Currently downloading AI model - Cannot download more than once", .info)
                 return false
             }
             
             if modelPathOverride {
-                print("[FreeToken] Model files are baked into the app, no downloading required.")
+                FreeToken.shared.logger("Model files are baked into the app, no downloading required.", .info)
                 return true
             }
             
             switch verifyClientVersionSupported() {
             case .success(_):
-                print("[FreeToken] Client version is compatible with AI model")
+                FreeToken.shared.logger("Client version is compatible with AI model", .info)
             case .failure(_):
-                print("[FreeToken] Client version is NOT compatible with AI model")
+                FreeToken.shared.logger("Client version is NOT compatible with AI model", .error)
                 profiler.end(eventType: .downloadModel, eventTypeID: modelCode, isSuccess: false, errorMessage: "Client version is not compatible with AI model.")
                 return false
             }
             
-            print("[FreeToken] Starting AI model file downloads...")
+            FreeToken.shared.logger("Starting AI model file downloads...", .info)
             let downloadPipeline = DownloadPipelineManager(baseDirectory: modelBasePath, downloadFiles: modelFiles, verifyFiles: verifyFiles, progressTracker: progress)
             
             do {
@@ -142,7 +142,7 @@ extension FreeToken {
                     return false
                 }
             } catch {
-                print("[FreeToken] Error downloading AI model: \(error.localizedDescription)")
+                FreeToken.shared.logger("Error downloading AI model: \(error.localizedDescription)", .error)
                 self.state = .failed(error: error.localizedDescription)
                 return false
             }
@@ -155,11 +155,11 @@ extension FreeToken {
             
             do {
                 try fileManager.removeItem(atPath: self.modelBasePath.path)	
-                print("[FreeToken] Successfully reset model cache")
+                FreeToken.shared.logger("Successfully reset model cache", .info)
                 self.state = .notDownloaded
                 return true
             } catch {
-                print("[FreeToken] Failed to remove AI Model Cache with error: \(error.localizedDescription)")
+                FreeToken.shared.logger("Failed to remove AI Model Cache with error: \(error.localizedDescription)", .error)
                 self.state = .unverified
                 return false
             }
@@ -179,7 +179,7 @@ extension FreeToken {
             self.loadedState = .loading
             
             guard case .downloaded = self.state else {
-                print("[FreeToken] AI model has not been downloaded")
+                FreeToken.shared.logger("AI model has not been downloaded", .error)
                 return .failure(self.aiModelNotDownloadedError)
             }
 
@@ -187,7 +187,7 @@ extension FreeToken {
                 // Find the first .gguf file in the modelPath directory
                 let ggufFiles = try FileManager.default.contentsOfDirectory(atPath: modelPath.path).filter { $0.hasSuffix(".gguf") }
                 guard let ggufFile = ggufFiles.first else {
-                    print("[FreeToken] No .gguf file found in model directory")
+                    FreeToken.shared.logger("No .gguf file found in model directory", .error)
                     return .failure(failedToLoadModelError)
                 }
                 
@@ -196,7 +196,7 @@ extension FreeToken {
                 self.engine = try LlamaCppSwift(modelPath: "\(modelPath.path)/\(ggufFile)", modelConfiguration: configuration)
                 return .success(true)
             } catch {
-                print("[FreeToken] Error loading model: \(error.localizedDescription)")
+                FreeToken.shared.logger("Error loading model: \(error.localizedDescription)", .error)
                 return .failure(failedToLoadModelError)
             }
         }
@@ -258,7 +258,7 @@ extension FreeToken {
                 let contextWindowManager = ContextWindowManager(totalTokenSize: modelOptions.contextWindowSize, modelManager: self)
                 let prompt = try contextWindowManager.generate(messages: messages)
                 
-                print("[FreeToken] Context Managed Prompt: \(prompt)")
+                FreeToken.shared.logger("Context Managed Prompt: \(prompt)", .info)
                 
                 (response, usage) = try self.runEngine(prompt: prompt, tokenStream: tokenStream)
                 semaphore.signal() // Signal to end if the task finishes
@@ -277,7 +277,7 @@ extension FreeToken {
                 toolCalls = allTools
                 responseContent = ""
             } else {
-                print("[FreeToken] No tool calls found in response: \(responseContent)")
+                FreeToken.shared.logger("No tool calls found in response: \(responseContent)", .info)
             }
 
             return Codings.ShowMessageResponse(
@@ -346,7 +346,7 @@ extension FreeToken {
             let engine = self.engine!
             let tokenCount = try engine.tokenCount(prompt)
 
-            print("[FreeToken] Prompt tokens count: \(tokenCount)")
+            FreeToken.shared.logger("Prompt tokens count: \(tokenCount)", .info)
             
             let startTime = DispatchTime.now()
             let semaphore = DispatchSemaphore(value: 0)

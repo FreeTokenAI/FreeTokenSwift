@@ -45,7 +45,7 @@ extension FreeToken {
             
             private func readStream() -> Bool {
                 guard let stream = InputStream(url: file) else {
-                    print("[FreeToken] Unable to open file stream for verification: \(file.path)")
+                    FreeToken.shared.logger("Unable to open file stream for verification: \(file.path)", .error)
                     return false
                 }
                 
@@ -56,7 +56,7 @@ extension FreeToken {
                 while stream.hasBytesAvailable {
                     let bytesRead = stream.read(&buffer, maxLength: buffer.count)
                     if bytesRead < 0 {
-                        print("Error reading file stream.")
+                        FreeToken.shared.logger("Error reading file stream,", .error)
                         return false
                     }
                     context.update(data: Data(buffer[..<bytesRead]))

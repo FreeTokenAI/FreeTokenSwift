@@ -118,7 +118,7 @@ extension FreeToken {
                     }
                     
                     do {
-                        print("[FreeToken] File \(url.lastPathComponent) downloaded successfully")
+                        FreeToken.shared.logger("File \(url.lastPathComponent) downloaded successfully", .info)
                         
                         let fileManager = FileManager.default
                         let fileExists = fileManager.fileExists(atPath: finalPath.path)
@@ -137,7 +137,7 @@ extension FreeToken {
                         try fileManager.moveItem(at: tempURL, to: finalPath)
                         completion(.success(finalPath))
                     } catch {
-                        print("[FreeToken] Could not move downloaded file to final location: \(error.localizedDescription)")
+                        FreeToken.shared.logger("Could not move downloaded file to final location: \(error.localizedDescription)", .error)
                         completion(.failure(error))
                     }
                 }

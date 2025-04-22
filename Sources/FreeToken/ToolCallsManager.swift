@@ -120,7 +120,7 @@ extension FreeToken {
                     let result = try await handleInternalLocalCall(toolCall: toolCall)
                     results += result
                 } catch {
-                    print("[FreeToken] Error handling internal local call: \(error)")
+                    FreeToken.shared.logger("Error handling internal local call: \(error)", .error)
                 }
             }
             
@@ -176,7 +176,7 @@ extension FreeToken {
                 successCallback(result)
             } error: { error in
                 // NoOp
-                print("[FreeToken] Internal article lookup failed to retrieve documents from cloud. Ignoring")
+                FreeToken.shared.logger("Internal article lookup failed to retrieve documents from cloud. Ignoring", .warning)
                 successCallback("")
             }
         }
