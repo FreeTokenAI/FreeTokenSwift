@@ -227,12 +227,12 @@ public class FreeToken: @unchecked Sendable {
                 
                 self.documentManager = DocumentManager(chunkSize: response.documentsConfig.documentChunkSize, overlapSize: response.documentsConfig.documentChunkOverlapSize, encrypt: self.encrypt, decrypt: self.decrypt)
                 
-                self.logger("Device registered successfully", .info)
+                FreeToken.shared.logger("Device registered successfully", .info)
                 
                 profiler.end(eventType: Profiler.EventType.createDevice, isSuccess: true)
                 success()
             case .failure(let errorResponse):
-                self.logger("Failed to register device: \(errorResponse.message ?? errorResponse.localizedDescription)", .error)
+                FreeToken.shared.logger("Failed to register device: \(errorResponse.message ?? errorResponse.localizedDescription)", .error)
                 profiler.end(eventType: .createDevice, isSuccess: false, errorMessage: errorResponse.message ?? errorResponse.localizedDescription)
                 error(FreeTokenError.convertErrorResponse(errorResponse: errorResponse))
             }
@@ -338,23 +338,23 @@ public class FreeToken: @unchecked Sendable {
             // Success -> Download AI model
             
             if aiModelManager.state == .downloaded {
-                print("[FreeToken] Model already downloded")
+                FreeToken.shared.logger("Model already downloded", .info)
                 successCallback(true)
                 return
             }
             
             if deviceManager.isAICapable == false {
-                print("[FreeToken] Cannot download AI model as AI is not supported on this device.")
+                FreeToken.shared.logger("Cannot download AI model as AI is not supported on this device.", .error)
                 successCallback(false)
                 return
             }
 
             Task {
                 if await aiModelManager.downloadIfNeeded(progress: progressPercent) {
-                    print("[FreeToken] Model downloaded successfully")
+                    FreeToken.shared.logger("Model downloaded successfully", .info)
                     successCallback(true)
                 } else {
-                    print("[FreeToken] Model did not download successfully")
+                    FreeToken.shared.logger("Model did not download successfully", .error)
                     errorCallback(FreeTokenError.convertErrorResponse(errorResponse: self.aiModelDownloadError))
                 }
             }
@@ -414,11 +414,11 @@ public class FreeToken: @unchecked Sendable {
                 }
                 
                 profiler.end(eventType: Profiler.EventType.createMessageThread, eventTypeID: response.id, isSuccess: true)
-                print("[FreeToken] Message thread created successfully: \(response.id)")
+                FreeToken.shared.logger("Message thread created successfully: \(response.id)", .info)
                 success(MessageThread(from: response))
             case .failure(let error):
                 profiler.end(eventType: .createMessageThread, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                print("[FreeToken] Failed to create message thread: \(error)")
+                FreeToken.shared.logger("Failed to create message thread: \(error)", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
             }
         }
@@ -541,11 +541,11 @@ public class FreeToken: @unchecked Sendable {
                 }
                 
                 profiler.end(eventType: Profiler.EventType.addMessageToThread, eventTypeID: response.id, isSuccess: true)
-                print("[FreeToken] Added message to thread. Message ID: \(response.id!)")
+                FreeToken.shared.logger("Added message to thread. Message ID: \(response.id!)", .info)
                 successCompletion(Message(from: response))
             case .failure(let error):
                 profiler.end(eventType: .addMessageToThread, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                print("[FreeToken] Message could not be added to thread: \(error)")
+                FreeToken.shared.logger("Message could not be added to thread: \(error)", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
             }
         }
@@ -686,11 +686,11 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.generateCloudCompletion, isSuccess: true)
-                print("[FreeToken] Completion generated succesfully")
+                FreeToken.shared.logger("Completion generated succesfully", .info)
                 successCompletion(Completion(from: response))
             case .failure(let error):
                 profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                print("[FreeToken] Completion failed to generate")
+                FreeToken.shared.logger("Completion failed to generate", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
             }
         }
@@ -800,11 +800,11 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.createDocument, isSuccess: true)
-                print("[FreeToken] Document created successfully")
+                FreeToken.shared.logger("Document created successfully", .info)
                 successCompletion(Document(from: response))
             case .failure(let error):
                 profiler.end(eventType: .createDocument, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                print("[FreeToken] Document failed to create with error: \(error)")
+                FreeToken.shared.logger("Document failed to create with error: \(error)", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
             }
         }
@@ -924,7 +924,7 @@ public class FreeToken: @unchecked Sendable {
                 successCompletion(DocumentSearchResults(from: response))
             case .failure(let error):
                 profiler.end(eventType: .searchDocuments, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                print("[FreeToken] Document search failed with error \(error.message ?? error.localizedDescription)")
+                FreeToken.shared.logger("Document search failed with error \(error.message ?? error.localizedDescription)", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
             }
         }
@@ -974,7 +974,7 @@ public class FreeToken: @unchecked Sendable {
             if deviceManager?.isAICapable == true {
                 if aiModelManager?.state != .downloaded {
                     if self.deviceMode?.isQuickStartMode == true {
-                        print("[FreeToken] Quick Start Activated!")
+                        FreeToken.shared.logger("Quick Start Activated!", .info)
                         // Quick start mode activated
                         cloudRun = true
                     } else {
@@ -984,13 +984,13 @@ public class FreeToken: @unchecked Sendable {
                     }
                 } else {
                     // Downloaded
-                    print("[FreeToken] Model downloaded and AI supported - cloud run False")
+                    FreeToken.shared.logger("Model downloaded and AI supported - cloud run False", .info)
                     cloudRun = false
                 }
             } else {
                 if  self.deviceMode?.isCompatibilityMode == true {
                     // Compatibility Mode activated
-                    print("[FreeToken] Compatibility Mode Activated!")
+                    FreeToken.shared.logger("Compatibility Mode Activated!", .info)
                     cloudRun = true
                 } else {
                     chatStatusStream?(nil, "failed")
@@ -1009,7 +1009,7 @@ public class FreeToken: @unchecked Sendable {
                 }
             }
         } else {
-            print("[FreeToken] Force cloud run set to: \(forceCloudRun!)")
+            FreeToken.shared.logger("Force cloud run set to: \(forceCloudRun!)", .info)
             cloudRun = forceCloudRun!
             
             if cloudRun == false, aiModelManager?.state != .downloaded {
@@ -1024,12 +1024,12 @@ public class FreeToken: @unchecked Sendable {
             }
         }
         
-        print("[FreeToken] Running Tool Call Agent")
+        FreeToken.shared.logger("Running Tool Call Agent", .info)
         // Run tool calls prior to running the message thread
         chatStatusStream?(nil, "checking_for_tool_calls")
         self.runFunctionCallAgent(cloudRun: cloudRun, messageThreadID: id) { toolMessage, agentMessages, forceCloudRun, skip in
             if skip {
-                print("[FreeToken] No tool calls, running message thread")
+                FreeToken.shared.logger("No tool calls, running message thread", .info)
                 self._runMessageThread(messageThreadID: id, cloudRun: forceCloudRun, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
                 return
             }
@@ -1037,15 +1037,15 @@ public class FreeToken: @unchecked Sendable {
             // Have the prompt or the agent message
             if let toolMessage = toolMessage {
                 // Ran in the cloud & has at least one tool call - handle the tool results now
-                print("[FreeToken] Handing off tool calls")
+                FreeToken.shared.logger("Handing off tool calls", .info)
                 chatStatusStream?(nil, "handing_off_tool_calls")
                 self.handleToolCalls(toolCalls: toolMessage.toolCalls!, messageThreadID: id, documentSearchScope: documentSearchScope, externalToolCallback: toolCallback, chatStatusStream: chatStatusStream) { toolResult in
                     // Successful tool call
-                    print("[FreeToken] Successfull tool calls, adding tool result to thread: \(toolResult)")
+                    FreeToken.shared.logger("Successfull tool calls, adding tool result to thread: \(toolResult)", .info)
                     // Add Message to Thread
                     self.addMessageToThread(messageThreadID: id, role: "tool", content: "", toolResult: toolResult) { message in
                         // Continue with message thread run
-                        print("[FreeToken] Running the message thread with tool result message added")
+                        FreeToken.shared.logger("Running the message thread with tool result message added", .info)
                         self._runMessageThread(messageThreadID: id, cloudRun: forceCloudRun, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
                     } error: { error in
                         errorCompletion(error)
@@ -1093,12 +1093,12 @@ public class FreeToken: @unchecked Sendable {
                             // Handle the tool calls
                             self.handleToolCalls(toolCalls: resultMessage.toolCalls!, messageThreadID: id, documentSearchScope: documentSearchScope, externalToolCallback: toolCallback, chatStatusStream: chatStatusStream) { toolResult in
                                 
-                                print("[FreeToken] Successfull tool calls, adding tool result to thread")
+                                FreeToken.shared.logger("Successfull tool calls, adding tool result to thread", .info)
 
                                 // Add the tool result to the message thread
                                 self.addMessageToThread(messageThreadID: id, role: "tool", content: "", toolResult: toolResult) { message in
                                     
-                                    print("[FreeToken] Running the message thread with tool result message added")
+                                    FreeToken.shared.logger("Running the message thread with tool result message added", .info)
                                     // Run the message thread
                                     self._runMessageThread(messageThreadID: id, cloudRun: forceCloudRun, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
                                 } error: { error in
@@ -1181,7 +1181,7 @@ public class FreeToken: @unchecked Sendable {
             case .failure(let error):
                 let profilerEventType = cloudRun ? Profiler.EventType.runMessageThreadCloud : Profiler.EventType.runMessageThreadLocal
                 profiler.end(eventType: profilerEventType, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                print("[FreeToken] Message thread failed to run with error \(error.message ?? error.localizedDescription)")
+                FreeToken.shared.logger("Message thread failed to run with error \(error.message ?? error.localizedDescription)", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
             }
         }
@@ -1291,11 +1291,11 @@ public class FreeToken: @unchecked Sendable {
         fetchResource(path: path, responseType: Codings.ShowMessageThreadRunResponse.self) { result in
             switch result {
             case .success(let response):
-                print("[FreeToken] Get Message Thread Run was successful by ID \(id)")
+                FreeToken.shared.logger("Get Message Thread Run was successful by ID \(id)", .info)
                 successCompletion(MessageThreadRun(from: response))
                 return
             case .failure(let error):
-                print("[FreeToken] Get Message Thread Run failed with error \(error.message ?? error.localizedDescription)")
+                FreeToken.shared.logger("Get Message Thread Run failed with error \(error.message ?? error.localizedDescription)", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
                 return
             }
@@ -1326,7 +1326,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         if deviceManager?.isAICapable == false {
-            print("[FreeToken] Load Model: Device not capable of AI, nothing to do here")
+            FreeToken.shared.logger("Load Model: Device not capable of AI, nothing to do here", .info)
             successCompletion(false)
             return
         }
@@ -1407,11 +1407,11 @@ public class FreeToken: @unchecked Sendable {
         
         let eventType = profiler.eventType!.rawValue
         
-        print("[FreeToken] Telemetry Stats - Event: \(eventType): Time: \(profiler.msDuration()!)ms")
+        FreeToken.shared.logger("Telemetry Stats - Event: \(eventType): Time: \(profiler.msDuration()!)ms", .info)
         
         Task.detached(priority: .background) {
             guard self.isDeviceRegistered() else {
-                print("[FreeToken] Telemetry: Device not registered")
+                FreeToken.shared.logger("Telemetry: Device not registered", .warning)
                 return
             }
             
@@ -1423,7 +1423,7 @@ public class FreeToken: @unchecked Sendable {
 //                    print("[FreeToken] Created telemetry successfully: \(response.message)")
                     break
                 case .failure(let error):
-                    print("[FreeToken] Telemetry Creation Error: \(error.message ?? error.localizedDescription)")
+                    FreeToken.shared.logger("[FreeToken] Telemetry Creation Error: \(error.message ?? error.localizedDescription)", .error)
                 }
             }
         }

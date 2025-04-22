@@ -119,7 +119,7 @@ extension FreeToken {
             let blocks = blocksToInclude.reversed()
             
             if  blocks.isEmpty {
-                print("[FreeToken] Warning: No content blocks were included in the sliding window due to token size constraints.")
+                FreeToken.shared.logger("Warning: No content blocks were included in the sliding window due to token size constraints.", .warning)
             }
             
             var slidingWindow = ""

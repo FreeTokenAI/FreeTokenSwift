@@ -31,7 +31,7 @@ extension FreeToken {
                 let errorMessage = (
                     "[FreeToken] The system cannot provide \(requiredMemory) VRAM (\(availableMemory) available) as requested to the app. The model cannot be initialized on the device."
                 )
-                print(errorMessage)
+                FreeToken.shared.logger(errorMessage, .error)
                 
                 sufficientVRAM = false
             } else {

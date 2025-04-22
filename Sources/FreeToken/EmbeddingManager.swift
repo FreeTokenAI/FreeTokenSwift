@@ -65,19 +65,19 @@ extension FreeToken {
         func downloadModel(progress progressCompleted: Optional<@Sendable (_ percentage: Double) -> Void> = nil, successCallback: Optional<@Sendable () -> Void> = nil, failureCallback: Optional<@Sendable (FreeTokenError) -> Void> = nil) async {
 
             if modelState == .ready {
-                print("[FreeToken] Embedding model is already downloaded.")
+                FreeToken.shared.logger("Embedding model is already downloaded.", .info)
                 successCallback?()
                 return
             }
             
             if modelState == .downloading {
-                print("[FreeToken] Embedding model is already downloading.")
+                FreeToken.shared.logger("Embedding model is already downloading.", .info)
                 failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.modelAlreadyDownloadingError))
                 return
             }
             
             if managerState != .configured {
-                print("[FreeToken] Embedding manager is not configured.")
+                FreeToken.shared.logger("Embedding manager is not configured.", .error)
                 failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.managerNotConfigured))
                 return
             }
@@ -88,7 +88,7 @@ extension FreeToken {
                 do {
                     try FileManager.default.createDirectory(at: config.modelPath, withIntermediateDirectories: true, attributes: nil)
                 } catch {
-                    print("[FreeToken] Error creating embedding model directory: \(error.localizedDescription)")
+                    FreeToken.shared.logger("Error creating embedding model directory: \(error.localizedDescription)", .error)
                     return
                 }
             }
@@ -108,12 +108,12 @@ extension FreeToken {
                 case .failure(let error):
                     modelState = .downloadInvalid
                     let errorDescription = error.localizedDescription
-                    print("[FreeToken] Error downloading embedding model files: \(errorDescription)")
+                    FreeToken.shared.logger("Error downloading embedding model files: \(errorDescription)", .error)
                     failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.modelDownloadError))
                 }
             } catch {
                 modelState = .downloadInvalid
-                print("[FreeToken] Error downloading embedding model files: \(error.localizedDescription)")
+                FreeToken.shared.logger("Error downloading embedding model files: \(error.localizedDescription)", .error)
                 failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.modelDownloadError))
             }
         }
@@ -126,7 +126,7 @@ extension FreeToken {
                 try fileManager.removeItem(at: modelStore)
                 modelState = .unknown
             } catch {
-                print("[FreeToken] Error removing embedding model directory: \(error.localizedDescription)")
+                FreeToken.shared.logger("Error removing embedding model directory: \(error.localizedDescription)", .error)
                 throw FreeTokenError.convertErrorResponse(errorResponse: Self.couldNotRemoveModelError)
             }
         }
@@ -146,7 +146,7 @@ extension FreeToken {
             if config.modelName == "gist-embedding-v0" {
                 return GistEmbeddingV0Model()
             } else {
-                print("[FreeToken] Tried to initialize model of unknown name: \(config.modelName)")
+                FreeToken.shared.logger("Tried to initialize model of unknown name: \(config.modelName)", .error)
                 return nil
             }
         }
@@ -162,7 +162,7 @@ extension FreeToken {
             do {
                 result = try model!.generate(text: text)
             } catch {
-                print("[FreeToken] Error generating embedding: \(error.localizedDescription)")
+                FreeToken.shared.logger("Error generating embedding: \(error.localizedDescription)", .error)
                 throw FreeTokenError.convertErrorResponse(errorResponse: Self.unableToGenerateEmbedding)
             }
 
