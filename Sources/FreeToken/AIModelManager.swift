@@ -340,6 +340,10 @@ extension FreeToken {
         }
         
         internal func runEngine(prompt: String, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) throws -> (response: [String: String], usage: Codings.TokenUsageResponse) {
+            if loadedState == .unloaded {
+                _ = loadModel()
+            }
+            
             var response = ["role": "assistant", "content": ""]
             var responseContent = ""
             

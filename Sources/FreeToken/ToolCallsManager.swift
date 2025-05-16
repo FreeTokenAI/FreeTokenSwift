@@ -12,7 +12,7 @@ extension FreeToken {
         private let rawToolCalls: String
         
         private let availableCloudToolCalls: [String]
-        private let internalLocalToolCalls = ["article_lookup", "void"]
+        private let internalLocalToolCalls = ["article_lookup", "web_search", "void"]
         private let documentSearchScope: String?
         
         private var result: String = ""
@@ -42,7 +42,11 @@ extension FreeToken {
             }
         }
         
-        internal func process(externalToolCallHandler: Optional<@Sendable ([ToolCall]) -> String> = nil, cloudToolCallHandler: @escaping @Sendable ([ToolCall]) -> String, success successCallback: @escaping @Sendable (_ result: String) -> Void) throws {
+        internal func process(
+            externalToolCallHandler: Optional<@Sendable ([ToolCall]) -> String> = nil,
+            cloudToolCallHandler: @escaping @Sendable ([ToolCall]) -> String,
+            success successCallback: @escaping @Sendable (_ result: String) -> Void
+        ) throws {
             try parseToolCalls()
 
             if toolCalls.isEmpty {
@@ -50,7 +54,7 @@ extension FreeToken {
                 return
             }
 
-            let remainingToolCalls: [ToolCall] = toolCalls.filter { toolCall in
+            let remainingToolCalls = toolCalls.filter { toolCall in
                 let isCloudCall = availableCloudToolCalls.contains { $0 == toolCall.name }
                 let isInternalCall = internalLocalToolCalls.contains { $0 == toolCall.name }
                 return !isCloudCall && !isInternalCall
@@ -62,36 +66,45 @@ extension FreeToken {
             let toolCallResultsCollector = ToolCallResultsCollector()
             let dispatchGroup = DispatchGroup()
 
-            if !cloudToolCalls.isEmpty {
+            func launchTask(_ task: @Sendable @escaping () async -> Void) {
                 dispatchGroup.enter()
                 Task {
+                    defer { dispatchGroup.leave() }
+                    await task()
+                }
+            }
+
+            if !cloudToolCalls.isEmpty {
+                launchTask { [self] in
                     let result = await self.handleInternalCloudCalls(toolCalls: cloudToolCalls, cloudToolCallHandler: cloudToolCallHandler)
                     await toolCallResultsCollector.appendResult(result)
-                    dispatchGroup.leave()
                 }
             }
 
             if !remainingToolCalls.isEmpty {
-                dispatchGroup.enter()
-                Task {
+                launchTask { [self] in
                     let result = await self.handleExternalCalls(toolCalls: remainingToolCalls, externalToolCallHandler: externalToolCallHandler)
                     await toolCallResultsCollector.appendResult(result)
-                    dispatchGroup.leave()
                 }
             }
 
             if !internalCalls.isEmpty {
-                dispatchGroup.enter()
-                Task {
+                launchTask { [self] in
                     let result = await self.handleInternalLocalCalls(toolCalls: internalCalls)
                     await toolCallResultsCollector.appendResult(result)
-                    dispatchGroup.leave()
                 }
+            }
+
+            // If all lists are empty, notify immediately (avoid hanging)
+            if cloudToolCalls.isEmpty && remainingToolCalls.isEmpty && internalCalls.isEmpty {
+                successCallback("")
+                return
             }
 
             dispatchGroup.notify(queue: .main) {
                 Task {
-                    successCallback(await toolCallResultsCollector.getResults())
+                    let results = await toolCallResultsCollector.getResults()
+                    successCallback(results)
                 }
             }
         }
@@ -131,6 +144,12 @@ extension FreeToken {
             if toolCall.name == "article_lookup", let query = toolCall.arguments["query"] {
                 return await withCheckedContinuation { continuation in
                     internal_articleLookup(query: query, searchScope: documentSearchScope) { result in
+                        continuation.resume(returning: result)
+                    }
+                }
+            } else if toolCall.name == "web_search", let query = toolCall.arguments["query"] {
+                return await withCheckedContinuation { continuation in
+                    internal_webSearch(query: query, freshness: toolCall.arguments["freshness"]) { result in
                         continuation.resume(returning: result)
                     }
                 }
@@ -177,6 +196,37 @@ extension FreeToken {
             } error: { error in
                 // NoOp
                 FreeToken.shared.logger("Internal article lookup failed to retrieve documents from cloud. Ignoring", .warning)
+                successCallback("")
+            }
+        }
+        
+        private func internal_webSearch(query: String, freshness: String? = nil, success successCallback: @escaping @Sendable (_ result: String) -> Void) {
+            var freshnessEnum: FreeToken.WebSearchFreshness? = nil
+            
+            if freshness != nil {
+                freshnessEnum = FreeToken.WebSearchFreshness(rawValue: freshness!)
+            }
+            
+            FreeToken.shared.webSearch(query: query, freshness: freshnessEnum) { searchResults in
+                var result = "Web search results to help answer the user's question:"
+                
+                for webResult in searchResults {
+                    result.append("""
+                    =================================================
+                    WEB SEARCH RESULT: 
+                    NAME: \(webResult.name)
+                    URL: \(webResult.url)
+                    DATE PUBLISHED: \(webResult.datePublished ?? "Unknown")
+                    DATE LAST CRAWLED: \(webResult.dateLastCrawled ?? "Unknown")
+                    RESULT CONTENT: 
+                    \(webResult.summary)
+                """)
+                }
+                
+                successCallback(result)
+            } error: { error in
+                // NoOp
+                FreeToken.shared.logger("Internal web search failed to retrieve documents from cloud. Ignoring", .warning)
                 successCallback("")
             }
         }

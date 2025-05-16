@@ -107,6 +107,14 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    enum WebSearchFreshness: String {
+        case noLimit = "noLimit"
+        case oneDay = "oneDay"
+        case oneWeek = "oneWeek"
+        case oneMonth = "oneMonth"
+        case oneYear = "oneYear"
+    }
+    
     // Methods:
     
     private init() {
@@ -229,11 +237,11 @@ public class FreeToken: @unchecked Sendable {
                 
                 FreeToken.shared.logger("Device registered successfully", .info)
                 
-                profiler.end(eventType: Profiler.EventType.createDevice, isSuccess: true)
+                profiler.end(eventType: Profiler.EventType.registerDeviceSession, isSuccess: true)
                 success()
             case .failure(let errorResponse):
                 FreeToken.shared.logger("Failed to register device: \(errorResponse.message ?? errorResponse.localizedDescription)", .error)
-                profiler.end(eventType: .createDevice, isSuccess: false, errorMessage: errorResponse.message ?? errorResponse.localizedDescription)
+                profiler.end(eventType: .registerDeviceSession, isSuccess: false, errorMessage: errorResponse.message ?? errorResponse.localizedDescription)
                 error(FreeTokenError.convertErrorResponse(errorResponse: errorResponse))
             }
         }
@@ -925,6 +933,30 @@ public class FreeToken: @unchecked Sendable {
             case .failure(let error):
                 profiler.end(eventType: .searchDocuments, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
                 FreeToken.shared.logger("Document search failed with error \(error.message ?? error.localizedDescription)", .error)
+                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+            }
+        }
+    }
+    
+    func webSearch(query: String, resultCount: Int? = nil, freshness: WebSearchFreshness? = .noLimit, success successCompletion: @escaping @Sendable ([WebSearchResult]) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+        guard isDeviceRegistered() else {
+            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            return
+        }
+        
+        let path = "tool_calls/web_search"
+        let data = Codings.WebSearchRequest(query: query, resultCount: resultCount, freshness: freshness?.rawValue)
+        
+        let profiler = Profiler()
+        postData(path: path, data: data, responseType: Codings.WebSearchResults.self) { result in
+            switch result {
+            case .success(let response):
+                profiler.end(eventType: Profiler.EventType.webSearch, isSuccess: true)
+                let results = response.results.map { WebSearchResult(from: $0) }
+                successCompletion(results)
+            case .failure(let error):
+                profiler.end(eventType: .webSearch, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
+                FreeToken.shared.logger("Web search failed with error \(error.message ?? error.localizedDescription)", .error)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
             }
         }

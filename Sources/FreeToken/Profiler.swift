@@ -22,8 +22,7 @@ extension FreeToken {
             get {
                 if eventType != nil {
                     switch eventType! {
-                    case .getDevice: return "Device"
-                    case .createDevice: return "Device"
+                    case .registerDeviceSession: return "Device"
                     case .unknown: return ""
                     case .downloadModel: return "AiModel"
                     case .createMessageThread: return "MessageThread"
@@ -37,6 +36,7 @@ extension FreeToken {
                     case .loadModel: return "AiModel"
                     case .internalToolRun: return "InternalToolRun"
                     case .toolCallAgentRun: return "ToolCallAgentRun"
+                    case .webSearch: return "WebSearch"
                     }
                 } else {
                     return ""
@@ -46,8 +46,7 @@ extension FreeToken {
         
         public enum EventType: String {
             case unknown = "unknown"
-            case getDevice = "get_device"
-            case createDevice = "create_device"
+            case registerDeviceSession = "register_device_session"
             case downloadModel = "download_model"
             case createMessageThread = "create_message_thread"
             case addMessageToThread = "add_message_to_thread"
@@ -60,6 +59,7 @@ extension FreeToken {
             case loadModel = "load_model"
             case internalToolRun = "internal_tool_run"
             case toolCallAgentRun = "tool_call_agent_run"
+            case webSearch = "web_search"
         }
         
         init() {

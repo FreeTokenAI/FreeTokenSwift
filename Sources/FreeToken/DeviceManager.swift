@@ -19,7 +19,14 @@ extension FreeToken {
         private let sufficientMetalSupport: Bool
         
         public init(memoryRequirement: Int) {
-            let vRAM = os_proc_available_memory()
+            #if os(macOS)
+                // CHeck available memory on macOS
+                let device = MTLCreateSystemDefaultDevice()
+                let vRAM = device?.recommendedMaxWorkingSetSize ?? 0
+            #else
+                // Check if this is iOS
+                let vRAM = os_proc_available_memory()
+            #endif
 
             if (vRAM < memoryRequirement) {
                 let requiredMemory = String (
