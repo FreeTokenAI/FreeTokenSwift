@@ -125,7 +125,6 @@ extension FreeToken {
                 let topP: Float
                 let contextWindowSize: Int
                 let temperature: Float
-                let batchSize: Int
                 let maxTokenCount: Int
                 let toolRole: String
                 let stopTokens: [String]
@@ -136,7 +135,6 @@ extension FreeToken {
                     case topP = "top_p"
                     case contextWindowSize = "context_window_size"
                     case temperature
-                    case batchSize = "batch_size"
                     case maxTokenCount = "max_token_count"
                     case toolRole = "tool_role"
                     case stopTokens = "stop_tokens"

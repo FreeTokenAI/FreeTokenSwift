@@ -8,13 +8,13 @@ import Foundation
 
 extension FreeToken {
     
-    class ContextWindowManager {
+    class ContextWindowManager: @unchecked Sendable {
         static let notEnoughAvailableTokensError = Codings.ErrorResponse(error: "notEnoughAvailableTokens", message: "There are not enough available tokens in the context window for the system prompt and user message", code: 10000)
         static let missingSystemPromptError = Codings.ErrorResponse(error: "missingSystemPrompt", message: "The system prompt must be the first message", code: 10001)
         static let missingPromptMessageError = Codings.ErrorResponse(error: "missingPromptMessage", message: "A prompt is missing.", code: 10002)
         
         
-        let totalTokenSize: Int
+        let maxPromptWindowSize: Int
         let modelManager: AIModelManager
         
         struct ContentBlock {
@@ -27,12 +27,12 @@ extension FreeToken {
             }
         }
         
-        init(totalTokenSize: Int, modelManager: AIModelManager) {
-            self.totalTokenSize = totalTokenSize
+        init(contextWindowSize: Int, maxGenerationTokens: Int, modelManager: AIModelManager) {
+            self.maxPromptWindowSize = contextWindowSize - maxGenerationTokens
             self.modelManager = modelManager
         }
         
-        func generate(messages: [Codings.ShowMessageResponse]) throws -> String {
+        func generate(messages: [Codings.ShowMessageResponse]) async throws -> String {
             let systemPrompt = messages.first
             let promptMessage = messages.last
             let chatHistory: [Codings.ShowMessageResponse] = messages.dropFirst().dropLast()
@@ -45,17 +45,17 @@ extension FreeToken {
                 throw Self.missingPromptMessageError
             }
             
-            return try messagesGenerate(systemPrompt: systemPrompt!, promptMessage: promptMessage!, chatHistory: chatHistory)
+            return try await messagesGenerate(systemPrompt: systemPrompt!, promptMessage: promptMessage!, chatHistory: chatHistory)
         }
         
-        func messagesGenerate(systemPrompt: Codings.ShowMessageResponse, promptMessage: Codings.ShowMessageResponse, chatHistory: [Codings.ShowMessageResponse]? = nil) throws -> String {
-            let systemPromptBlock = try generateBlock(message: systemPrompt)
-            let userMessageBlock = try generateBlock(message: promptMessage)
-            let chatHistoryBlocks = try chatHistory?.map { message in
-                return try generateBlock(message: message)
+        func messagesGenerate(systemPrompt: Codings.ShowMessageResponse, promptMessage: Codings.ShowMessageResponse, chatHistory: [Codings.ShowMessageResponse]? = nil) async throws -> String {
+            let systemPromptBlock = try await generateBlock(message: systemPrompt)
+            let userMessageBlock = try await generateBlock(message: promptMessage)
+            let chatHistoryBlocks = try await chatHistory?.concurrentMap { message in
+                return try await self.generateBlock(message: message)
             }
             let assistantMessage = Codings.ShowMessageResponse(id: nil, role: "assistant", content: "", toolCalls: nil, toolResult: nil, isToolMessage: nil, encryptionEnabled: nil, createdAt: nil, updatedAt: nil, tokenUsage: nil)
-            let assistantPromptBlock = try generateBlock(message: assistantMessage, headerOnly: true)
+            let assistantPromptBlock = try await generateBlock(message: assistantMessage, headerOnly: true)
             
             guard preFlight([systemPromptBlock, userMessageBlock, assistantPromptBlock]) else {
                 throw Self.notEnoughAvailableTokensError
@@ -65,7 +65,7 @@ extension FreeToken {
         }
         
         private func preFlight(_ blocks: [ContentBlock]) -> Bool {
-            var availableTokens = totalTokenSize
+            var availableTokens = maxPromptWindowSize
             
             for block in blocks {
                 availableTokens -= block.tokenCount
@@ -75,15 +75,15 @@ extension FreeToken {
         }
             
         
-        private func generateBlock(message: Codings.ShowMessageResponse, headerOnly: Bool = false) throws -> ContentBlock {
+        private func generateBlock(message: Codings.ShowMessageResponse, headerOnly: Bool = false) async throws -> ContentBlock {
             let content = modelManager.generateMessagePrompt(message: message, headerOnly: headerOnly)
-            let tokenCount = try modelManager.tokenCount(content)
+            let tokenCount = try await modelManager.tokenCount(content)
             
             return ContentBlock(content: content, tokenCount: tokenCount)
         }
         
         private func assembleBlocks(systemBlock: ContentBlock, userBlock: ContentBlock, chatHistoryBlocks: [ContentBlock]?, assistantBlock: ContentBlock) -> String {
-            let availableTokens = totalTokenSize
+            let availableTokens = maxPromptWindowSize
             let slidingWindowTokens = availableTokens - systemBlock.tokenCount - userBlock.tokenCount - assistantBlock.tokenCount
             var slidingWindowContent = ""
             if let chatHistoryBlocks = chatHistoryBlocks {

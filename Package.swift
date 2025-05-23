@@ -21,7 +21,6 @@ let package = Package(
         .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", from: "1.20.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.18"),
         .package(url: "https://github.com/1024jp/GzipSwift", from: "6.1.0"),
-        .package(url: "https://github.com/FreeTokenAI/LlamaCppSwift", branch: "main")
     ],
     targets: [
         .target(
@@ -30,10 +29,11 @@ let package = Package(
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "Gzip", package: "GzipSwift"),
-                .product(name: "LlamaCppSwift", package: "LlamaCppSwift"),
+                .target(name: "llama")
             ],
             path: "Sources/FreeToken"
         ),
+        .binaryTarget(name: "llama", path: "Frameworks/llama.xcframework"),
         .testTarget(
             name: "FreeTokenTests",
             dependencies: ["FreeToken"]

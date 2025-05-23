@@ -344,20 +344,20 @@ public class FreeToken: @unchecked Sendable {
         
         await EmbeddingManager.shared.downloadModel(progress: progressPercent) {
             // Success -> Download AI model
-            
-            if aiModelManager.state == .downloaded {
-                FreeToken.shared.logger("Model already downloded", .info)
-                successCallback(true)
-                return
-            }
-            
-            if deviceManager.isAICapable == false {
-                FreeToken.shared.logger("Cannot download AI model as AI is not supported on this device.", .error)
-                successCallback(false)
-                return
-            }
-
             Task {
+                if await aiModelManager.stateManager.getState() == .downloaded {
+                    FreeToken.shared.logger("Model already downloded", .info)
+                    successCallback(true)
+                    return
+                }
+                
+                if deviceManager.isAICapable == false {
+                    FreeToken.shared.logger("Cannot download AI model as AI is not supported on this device.", .error)
+                    successCallback(false)
+                    return
+                }
+
+            
                 if await aiModelManager.downloadIfNeeded(progress: progressPercent) {
                     FreeToken.shared.logger("Model downloaded successfully", .info)
                     successCallback(true)
@@ -642,7 +642,7 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        if aiModelManager?.state == .downloaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
+        if await aiModelManager?.stateManager.getState() == .downloaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
             // Generate local completion
             await generateLocalCompletion(prompt: prompt) { completion in
                 successCompletion(completion)
@@ -730,7 +730,7 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        guard case .downloaded = aiModelManager!.state else {
+        guard await self.aiModelManager?.stateManager.getState() == .downloaded else {
             errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: aiModelManager!.aiModelNotDownloadedError))
             return
         }
@@ -742,7 +742,7 @@ public class FreeToken: @unchecked Sendable {
         let prompt = "\(aiModelManager.specialTokens.beginningOfText)\(prompt)"
         
         do {
-            result = try aiModelManager.runEngine(prompt: prompt)
+            result = try await aiModelManager.runEngine(prompt: prompt)
             let response = result!.response
             let output = response["content"]!
             let completion = Completion(response: output)
@@ -990,7 +990,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - toolCallback: Optional closure to handle tool calls
     ///
     /// - Returns: Void
-    public func runMessageThread(id: String, forceCloudRun: Optional<Bool> = nil, documentSearchScope: Optional<String> = nil, success successCompletion: @escaping @Sendable (MessageThreadRun) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: String) -> Void> = nil, toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil) {
+    public func runMessageThread(id: String, forceCloudRun: Optional<Bool> = nil, documentSearchScope: Optional<String> = nil, success successCompletion: @escaping @Sendable (MessageThreadRun) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: String) -> Void> = nil, toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil) async {
         
         chatStatusStream?(nil, "starting_run")
         guard isDeviceRegistered() else {
@@ -1004,7 +1004,7 @@ public class FreeToken: @unchecked Sendable {
         
         if forceCloudRun == nil {
             if deviceManager?.isAICapable == true {
-                if aiModelManager?.state != .downloaded {
+                if await aiModelManager?.stateManager.getState() != .downloaded {
                     if self.deviceMode?.isQuickStartMode == true {
                         FreeToken.shared.logger("Quick Start Activated!", .info)
                         // Quick start mode activated
@@ -1044,7 +1044,7 @@ public class FreeToken: @unchecked Sendable {
             FreeToken.shared.logger("Force cloud run set to: \(forceCloudRun!)", .info)
             cloudRun = forceCloudRun!
             
-            if cloudRun == false, aiModelManager?.state != .downloaded {
+            if cloudRun == false, await aiModelManager?.stateManager.getState() != .downloaded {
                 chatStatusStream?(nil, "failed")
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: aiModelManager!.aiModelNotDownloadedError))
                 return
@@ -1059,7 +1059,7 @@ public class FreeToken: @unchecked Sendable {
         FreeToken.shared.logger("Running Tool Call Agent", .info)
         // Run tool calls prior to running the message thread
         chatStatusStream?(nil, "checking_for_tool_calls")
-        self.runFunctionCallAgent(cloudRun: cloudRun, messageThreadID: id) { toolMessage, agentMessages, forceCloudRun, skip in
+        await self.runFunctionCallAgent(cloudRun: cloudRun, messageThreadID: id) { toolMessage, agentMessages, forceCloudRun, skip in
             if skip {
                 FreeToken.shared.logger("No tool calls, running message thread", .info)
                 self._runMessageThread(messageThreadID: id, cloudRun: forceCloudRun, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
@@ -1114,7 +1114,7 @@ public class FreeToken: @unchecked Sendable {
                     }
                     
                     // Run on local AI
-                    let resultMessage = try self.aiModelManager!.sendMessagesToAISync(messages: messages)
+                    let resultMessage = try await self.aiModelManager!.sendMessagesToAI(messages: messages)
                     
                     if resultMessage.toolCalls != nil {
                         
@@ -1207,7 +1207,9 @@ public class FreeToken: @unchecked Sendable {
                         promptMessages.append(contentsOf: response.promptMessages)
                     }
                     
-                    self.runMessageThreadLocally(messageThreadRunResponse: response, messageThreadID: id, messages: promptMessages, profiler: profiler, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
+                    Task {
+                        await self.runMessageThreadLocally(messageThreadRunResponse: response, messageThreadID: id, messages: promptMessages, profiler: profiler, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
+                    }
                 }
                 chatStatusStream?(nil, "stream_ended")
             case .failure(let error):
@@ -1251,7 +1253,7 @@ public class FreeToken: @unchecked Sendable {
         return systemContext
     }
     
-    private func runMessageThreadLocally(messageThreadRunResponse response: Codings.ShowMessageThreadRunResponse, messageThreadID: String, messages: [Codings.ShowMessageResponse], profiler: Profiler, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: String) -> Void> = nil, success successCompletion: @escaping @Sendable (MessageThreadRun) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    private func runMessageThreadLocally(messageThreadRunResponse response: Codings.ShowMessageThreadRunResponse, messageThreadID: String, messages: [Codings.ShowMessageResponse], profiler: Profiler, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: String) -> Void> = nil, success successCompletion: @escaping @Sendable (MessageThreadRun) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
 
         // Process messages synchronously
         var responseMessage: Codings.ShowMessageResponse
@@ -1259,7 +1261,7 @@ public class FreeToken: @unchecked Sendable {
         // Send off to the AI
         do {
             chatStatusStream?(nil, "sending_to_local_ai")
-            responseMessage = try aiModelManager!.sendMessagesToAISync(messages: messages, tokenStream: { newTokens in
+            responseMessage = try await aiModelManager!.sendMessagesToAI(messages: messages, tokenStream: { newTokens in
                 chatStatusStream?(newTokens, "streaming_tokens")
             })
         } catch {
@@ -1351,7 +1353,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: A generic enumeration result of Bool, ErrorResponse
-    public func loadModel(success successCompletion: @escaping (Bool) -> Void, error errorCompletion: @escaping (FreeTokenError) -> Void) {
+    public func loadModel(success successCompletion: @escaping (Bool) -> Void, error errorCompletion: @escaping (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
             return
@@ -1363,7 +1365,7 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        let response = aiModelManager!.loadModel()
+        let response = await aiModelManager!.loadModel()
         switch response {
         case .success(let isSuccess):
             successCompletion(isSuccess)
@@ -1411,13 +1413,13 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: Dictionary of message result including role & content keys
     /// - Throws: FreeTokenError if the device is not registered or if there is an error during the local chat
-        public func localChat(content: String, role: String) throws -> [String: String] {
+        public func localChat(content: String, role: String) async throws -> [String: String] {
         if !isDeviceRegistered() {
             throw FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError)
         }
         
         do {
-            return try aiModelManager!.localChat(content: content, role: role)
+            return try await aiModelManager!.localChat(content: content, role: role)
         } catch {
             throw error
         }
@@ -1461,7 +1463,7 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    private func runFunctionCallAgent(cloudRun: Bool, messageThreadID: String, success successCompletion: @escaping @Sendable (_ functionMessage: Codings.ShowMessageResponse?, _ agentMessages: [Codings.ShowMessageResponse]?, _ forceCloudRun: Bool, _ skip: Bool) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    private func runFunctionCallAgent(cloudRun: Bool, messageThreadID: String, success successCompletion: @escaping @Sendable (_ functionMessage: Codings.ShowMessageResponse?, _ agentMessages: [Codings.ShowMessageResponse]?, _ forceCloudRun: Bool, _ skip: Bool) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         
         let request = Codings.ToolCallAgentRequest(messageThreadID: messageThreadID, cloudRun: cloudRun)
         
@@ -1469,22 +1471,24 @@ public class FreeToken: @unchecked Sendable {
         self.postData(path: "tool_calls/agent", data: request, responseType: Codings.ToolCallAgentResponse.self) { result in
             switch result {
             case .success(let response):
-                profiler.end(eventType: .toolCallAgentRun, isSuccess: true)
-                if response.cloudRun {
-                    if let toolMessage = response.toolMessage {
-                        // Return the resulting tool call
-                        successCompletion(toolMessage, nil, response.cloudRun, false)
+                Task {
+                    profiler.end(eventType: .toolCallAgentRun, isSuccess: true)
+                    if response.cloudRun {
+                        if let toolMessage = response.toolMessage {
+                            // Return the resulting tool call
+                            await successCompletion(toolMessage, nil, response.cloudRun, false)
+                        } else {
+                            // Cloud run was activated - likely no tools defined
+                            await successCompletion(nil, nil, response.cloudRun, true)
+                        }
                     } else {
-                        // Cloud run was activated - likely no tools defined
-                        successCompletion(nil, nil, response.cloudRun, true)
-                    }
-                } else {
-                    // Return messages to be parsed
-                    if let agentMessages = response.agentMessages {
-                        successCompletion(nil, agentMessages, response.cloudRun, false)
-                    } else {
-                        // Likely no tools defined
-                        successCompletion(nil, nil, response.cloudRun, true)
+                        // Return messages to be parsed
+                        if let agentMessages = response.agentMessages {
+                            await successCompletion(nil, agentMessages, response.cloudRun, false)
+                        } else {
+                            // Likely no tools defined
+                            await successCompletion(nil, nil, response.cloudRun, true)
+                        }
                     }
                 }
             case .failure(let error):
