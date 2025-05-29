@@ -1,5 +1,5 @@
 {
-  "originHash" : "bb79aeeb87393545566be0305cc89c78efca31ea825952b305420e780a43c8d3",
+  "originHash" : "1bf1fc04febb51634b01b4c88b1778ebf09549133b6f5a7ed6d2b75f47bd6547",
   "pins" : [
     {
       "identity" : "gzipswift",
@@ -17,15 +17,6 @@
       "state" : {
         "revision" : "bbddb92fc51ae420b87300298370fd1dfc308f73",
         "version" : "1.1.1"
-      }
-    },
-    {
-      "identity" : "llamacppswift",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/FreeTokenAI/LlamaCppSwift",
-      "state" : {
-        "branch" : "main",
-        "revision" : "43b4157778595853f9a7f6e3ff6f88f1877e8e2b"
       }
     },
     {
