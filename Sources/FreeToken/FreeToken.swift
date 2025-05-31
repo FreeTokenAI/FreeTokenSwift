@@ -750,9 +750,14 @@ public class FreeToken: @unchecked Sendable {
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: result!.usage)
             successCompletion(completion)
         } catch {
-            let error = error as! FreeTokenError
-            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-            errorCompletion(error)
+            var codingError = error as? Codings.ErrorResponse
+            
+            if codingError == nil {
+                codingError = Codings.ErrorResponse(error: "unknownCompletionError", message: error.localizedDescription, code: nil)
+            }
+            
+            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: codingError!.message ?? error.localizedDescription)
+            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: codingError!))
         }
     }
     
