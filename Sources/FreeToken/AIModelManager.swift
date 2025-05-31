@@ -29,6 +29,7 @@ extension FreeToken {
         public let aiModelNotDownloadedError = Codings.ErrorResponse(error: "aiModelNotDownloaded", message: "AI model has not yet been downloded. Try .downloadAIModel() first", code: 2001)
         public let modelAlreadyLoadingError = Codings.ErrorResponse(error: "aiModelAlreadyLoading", message: "Model already loading. Wait until AI Model is loaded and try again", code: 2002)
         public let failedToLoadModelError = Codings.ErrorResponse(error: "failedToLoadModel", message: "Failed to load model", code: 2003)
+        static public let aiModelNotLoadedError = Codings.ErrorResponse(error: "aiModelNotLoaded", message: "AI model is not loaded. Try .loadModel() first", code: 2004)
         
         public enum ModelState: Equatable {
             case unverified
@@ -50,11 +51,10 @@ extension FreeToken {
             var state: ModelState = .unverified
             var loadedState: LoadedState = .unloaded
             
-                        
             func setState(_ state: ModelState) {
                 self.state = state
             }
-            
+                                    
             func setLoadedState(_ loadedState: LoadedState) {
                 self.loadedState = loadedState
             }
@@ -63,48 +63,82 @@ extension FreeToken {
                 return state
             }
             
-            func getLoadedState() -> LoadedState {
+            func getLoadedState() async -> LoadedState {
+                if let engine = await getEngine() {
+                    if await engine.isModelLoaded() {
+                        loadedState = .loaded
+                    } else {
+                        loadedState = .unloaded
+                    }
+                } else {
+                    loadedState = .unloaded
+                }
+                
                 return loadedState
             }
             
+            
             @LlamaCppSwiftActor
-            func initializeEngine(modelPath: String, configuration: AIModelConfiguration) throws {
+            private func getEngine() -> LlamaCppSimpleRun? {
+                return engine
+            }
+            
+            @LlamaCppSwiftActor
+            func initializeEngine(modelPath: String, configuration: AIModelConfiguration) async {
                 self.engine = LlamaCppSimpleRun(modelPath: modelPath, configuration: configuration)
             }
             
             @LlamaCppSwiftActor
             func unloadEngine() async {
-                await self.engine?.cleanup()
+                self.engine?.cleanup()
                 self.engine = nil
+                await self.setLoadedState(.unloaded)
             }
             
             @LlamaCppSwiftActor
             func tokenCount(_ text: String, addBos: Bool = false) async throws -> Int {
                 guard let engine = self.engine else {
-                    throw NSError(domain: "AIStateManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Engine not loaded"])
+                    throw AIModelManager.aiModelNotLoadedError
                 }
                 
-                return try await engine.tokenCount(text, addBos: addBos)
+                if await getLoadedState() != .loaded {
+                    throw AIModelManager.aiModelNotLoadedError
+                }
+                
+                return engine.tokenCount(text, addBos: addBos)
             }
             
             @LlamaCppSwiftActor
             func generate(for prompt: String) async throws -> AsyncThrowingStream<String, Error> {
                 guard let engine = self.engine else {
-                    throw NSError(domain: "AIStateManager", code: 1, userInfo: [NSLocalizedDescriptionKey: "Engine not loaded"])
+                    throw AIModelManager.aiModelNotLoadedError
                 }
                 
-                return try await engine.generate(prompt: prompt)
+                if await getLoadedState() != .loaded {
+                    throw AIModelManager.aiModelNotLoadedError
+                }
+                
+                return engine.generate(prompt: prompt)
             }
             
             @LlamaCppSwiftActor
             func lastRunStats() async -> LastRunStats? {
-                let stats = await engine?.lastRunStats
+                let stats = engine?.lastRunStats
                 
                 if let stats = stats {
                     return LastRunStats(totalTokens: stats.totalTokens, elapsed: stats.elapsed, tokensPerSecond: stats.tokensPerSecond)
                 } else {
                     return nil
                 }
+            }
+            
+            @LlamaCppSwiftActor
+            func stopGeneration() async {
+                guard let engine = self.engine else {
+                    return
+                }
+                
+                engine.stopGeneration()
             }
             
             struct LastRunStats {
@@ -267,7 +301,7 @@ extension FreeToken {
                 
                 let configuration = AIModelConfiguration(topK: modelOptions.topK, topP: modelOptions.topP, nCTX: modelOptions.contextWindowSize, temperature: modelOptions.temperature, maxTokenCount: modelOptions.maxTokenCount, stopTokens: modelOptions.stopTokens)
                 
-                try await self.stateManager.initializeEngine(modelPath: "\(modelPath.path)/\(ggufFile)", configuration: configuration)
+                await self.stateManager.initializeEngine(modelPath: "\(modelPath.path)/\(ggufFile)", configuration: configuration)
                 return .success(true)
             } catch {
                 FreeToken.shared.logger("Error loading model: \(error.localizedDescription)", .error)
@@ -278,7 +312,6 @@ extension FreeToken {
         public func unloadModel() {
             Task {
                 await self.stateManager.unloadEngine()
-                await self.stateManager.setLoadedState(.unloaded)
             }
         }
         
@@ -362,6 +395,10 @@ extension FreeToken {
                 updatedAt: nil,
                 tokenUsage: usage!
             )
+        }
+        
+        func stopGeneration() async {
+            await self.stateManager.stopGeneration()
         }
         
         func generateMessagesPrompt(messages: [Codings.ShowMessageResponse]) -> String {

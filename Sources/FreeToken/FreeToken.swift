@@ -962,6 +962,24 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    /// Stop a running generation of the local AI
+    ///
+    /// ```
+    ///    client.stopLocalGeneration()
+    /// ```
+    ///  > Tip: Use this method to stop generation as your app goes into the background. This will help prevent crashes.
+    ///
+    /// - Returns: Void
+    public func stopLocalGeneration() async {
+        guard isDeviceRegistered() else {
+            FreeToken.shared.logger("Device not registered, cannot stop generation", .error)
+            return
+        }
+        
+        await aiModelManager?.stopGeneration()
+    }
+
+    
     /// Run a message thread through the AI
     ///
     /// ```
@@ -1385,9 +1403,7 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: Void
     public func unloadModel() {
-        Task {
-            await aiModelManager?.unloadModel()
-        }
+        aiModelManager?.unloadModel()
     }
     
     /// Send one message directly to the AI without going to the cloud

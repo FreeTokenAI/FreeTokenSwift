@@ -15,6 +15,9 @@ extension FreeToken {
         private var ctx: OpaquePointer
         private let modelNVocab: Int32
         private let configuration: AIModelConfiguration
+        private let modelPath: String
+        private var isGenerating: Bool = false
+        private var shouldStopGeneration: Bool = false
         var lastRunStats: LastRunStats?
         
         struct LastRunStats {
@@ -24,6 +27,8 @@ extension FreeToken {
         }
         
         init(modelPath: String, configuration: AIModelConfiguration) {
+            self.modelPath = modelPath
+            
             llama_backend_init()
             llama_numa_init(GGML_NUMA_STRATEGY_DISABLED)
             
@@ -51,6 +56,20 @@ extension FreeToken {
             self.configuration = configuration
         }
         
+        func isModelLoaded() -> Bool {
+            let bufferSize = 256
+            let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: bufferSize)
+            defer { buffer.deallocate() }
+            
+            
+            let desc = llama_model_desc(model, buffer, bufferSize)
+            if desc > 0 {
+                return true
+            } else {
+                return false
+            }
+        }
+        
         /// Tokenizes a prompt
         func tokenize(_ prompt: String, addBos: Bool = false) -> [llama_token] {
             let vocab = llama_model_get_vocab(model)
@@ -66,7 +85,16 @@ extension FreeToken {
         
         /// Clears all model and batch state for a fresh run
         func reset() {
+            isGenerating = false
+            shouldStopGeneration = false
             llama_kv_self_clear(ctx)
+        }
+        
+        /// Stop Generation
+        func stopGeneration() {
+            if isGenerating {
+                shouldStopGeneration = true
+            }
         }
         
         /// Generates output from a prompt, up to maxTokens
@@ -74,6 +102,7 @@ extension FreeToken {
             let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
             
             Task { @Sendable [self] in
+                self.isGenerating = true
                 do {
                     reset()
                     
@@ -114,6 +143,11 @@ extension FreeToken {
                     
                     // 2. Generate tokens, using a new batch each time
                     while generated < configuration.maxTokenCount {
+                        if shouldStopGeneration {
+                            shouldStopGeneration = false
+                            break
+                        }
+                        
                         guard let logitsPtr = llama_get_logits(ctx) else {
                             throw NSError(domain: "llama", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get logits"])
                         }
@@ -190,6 +224,8 @@ extension FreeToken {
                     }
                     continuation.finish()
                     llama_sampler_free(sampler)
+                    self.isGenerating = false
+                    self.shouldStopGeneration = false
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -211,7 +247,7 @@ extension FreeToken {
                     }
                 }
             }
-            if let (idx, stop) = earliest {
+            if let (idx, _) = earliest {
                 let prefix = String(text[..<idx])
                 return (prefix, true)
             } else {
