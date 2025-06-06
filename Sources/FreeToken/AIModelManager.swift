@@ -31,7 +31,7 @@ extension FreeToken {
         public let failedToLoadModelError = Codings.ErrorResponse(error: "failedToLoadModel", message: "Failed to load model", code: 2003)
         static public let aiModelNotLoadedError = Codings.ErrorResponse(error: "aiModelNotLoaded", message: "AI model is not loaded. Try .loadModel() first", code: 2004)
         
-        public enum ModelState: Equatable {
+        enum ModelState: Equatable {
             case unverified
             case notDownloaded
             case downloading
@@ -39,7 +39,7 @@ extension FreeToken {
             case failed(error: String)
         }
         
-        public enum LoadedState: Equatable {
+        enum LoadedState: Equatable {
             case unloaded
             case loading
             case loaded
@@ -54,7 +54,7 @@ extension FreeToken {
             func setState(_ state: ModelState) {
                 self.state = state
             }
-                                    
+            
             func setLoadedState(_ loadedState: LoadedState) {
                 self.loadedState = loadedState
             }
@@ -109,7 +109,7 @@ extension FreeToken {
             }
             
             @LlamaCppSwiftActor
-            func generate(for prompt: String) async throws -> AsyncThrowingStream<String, Error> {
+            func generate(for prompt: String, runIdentifier: String) async throws -> AsyncThrowingStream<String, Error> {
                 guard let engine = self.engine else {
                     throw AIModelManager.aiModelNotLoadedError
                 }
@@ -118,7 +118,7 @@ extension FreeToken {
                     throw AIModelManager.aiModelNotLoadedError
                 }
                 
-                return engine.generate(prompt: prompt)
+                return engine.generate(prompt: prompt, runIdentifier: runIdentifier)
             }
             
             @LlamaCppSwiftActor
@@ -148,7 +148,7 @@ extension FreeToken {
             }
         }
         
-        public init(modelConfig: Codings.AiModelResponse, clientVersion: String, overrideModelPath: Optional<URL> = nil) {
+        init(modelConfig: Codings.AiModelResponse, clientVersion: String, overrideModelPath: Optional<URL> = nil) {
             self.modelCode = modelConfig.code
             self.modelFiles = modelConfig.files.toDownload
             self.verifyFiles = modelConfig.files.toVerify
@@ -182,7 +182,7 @@ extension FreeToken {
                 }
             }
         }
-
+        
         actor ResultsCollector {
             private var results: [Result<URL, Error>] = []
             private var downloadedBytes: Int = 0
@@ -206,9 +206,9 @@ extension FreeToken {
             }
         }
         
-        public func downloadIfNeeded(progress: Optional<@Sendable (_ percentage: Double) -> Void> = nil) async -> Bool {
+        func downloadIfNeeded(progress: Optional<@Sendable (_ percentage: Double) -> Void> = nil) async -> Bool {
             let profiler = Profiler()
-
+            
             
             if await self.stateManager.getState() == .downloading {
                 FreeToken.shared.logger("Currently downloading AI model - Cannot download more than once", .info)
@@ -252,7 +252,7 @@ extension FreeToken {
             }
         }
         
-        public func resetCache() -> Bool {
+        func resetCache() -> Bool {
             let fileManager = FileManager.default
             
             unloadModel()
@@ -273,7 +273,7 @@ extension FreeToken {
             }
         }
         
-        public func loadModel() async -> Result<Bool, Codings.ErrorResponse> {
+        func loadModel() async -> Result<Bool, Codings.ErrorResponse> {
             let modelPath = self.modelBasePath
             
             if await self.stateManager.getLoadedState() == .loaded {
@@ -290,7 +290,7 @@ extension FreeToken {
                 FreeToken.shared.logger("AI model has not been downloaded", .error)
                 return .failure(self.aiModelNotDownloadedError)
             }
-
+            
             do {
                 // Find the first .gguf file in the modelPath directory
                 let ggufFiles = try FileManager.default.contentsOfDirectory(atPath: modelPath.path).filter { $0.hasSuffix(".gguf") }
@@ -309,13 +309,14 @@ extension FreeToken {
             }
         }
         
-        public func unloadModel() {
+        func unloadModel() {
             Task {
                 await self.stateManager.unloadEngine()
             }
         }
         
-        public func localChat(content: String, role: String) async throws -> [String: String] {
+        
+        func localChat(messages: [Message], runIdentifier: String) async throws -> Message {
             guard await self.stateManager.getState() == .downloaded else {
                 throw self.aiModelNotDownloadedError
             }
@@ -324,19 +325,17 @@ extension FreeToken {
                 _ = await loadModel()
             }
             
-            let message = Codings.ShowMessageResponse(id: nil, role: role, content: content, toolCalls: nil, toolResult: nil, isToolMessage: nil, encryptionEnabled: nil, createdAt: nil, updatedAt: nil, tokenUsage: nil)
             
-            let prompt = generateMessagesPrompt(messages: [message])
+            let prompt = generateMessagesPrompt(messages: messages)
             
-            var response: [String: String] = [:]
-            (response, _) = try await self.runEngine(prompt: prompt)
-
-            response["role"] = "assistant"
+            let response: String
+            let usage: TokenUsage
+            (response, usage) = try await self.runEngine(prompt: prompt, runIdentifier: runIdentifier)
             
-            return response
+            return Message(role: .assistant, content: response, tokenUsage: usage)
         }
         
-        public func tokenCount(_ text: String) async throws -> Int {
+        func tokenCount(_ text: String) async throws -> Int {
             guard await self.stateManager.getState() == .downloaded else {
                 throw self.aiModelNotDownloadedError
             }
@@ -348,7 +347,7 @@ extension FreeToken {
             return try await self.stateManager.tokenCount(text)
         }
         
-        public func sendMessagesToAI(messages: [Codings.ShowMessageResponse], tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> Codings.ShowMessageResponse {
+        func sendPromptToAI(prompt: String, runIdentifier: String, tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
             guard await self.stateManager.getState() == .downloaded else {
                 throw self.aiModelNotDownloadedError
             }
@@ -357,110 +356,111 @@ extension FreeToken {
                 _ = await loadModel()
             }
             
-            var response: [String: String] = [:]
-            var usage: Codings.TokenUsageResponse? = nil
+            return try await self.runEngine(prompt: prompt, runIdentifier: runIdentifier, tokenStream: tokenStream)
+        }
+        
+        func sendMessagesToAI(messages: [Message], runIdentifier: String, tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> (response: Message, usage: TokenUsage) {
+            guard await self.stateManager.getState() == .downloaded else {
+                throw self.aiModelNotDownloadedError
+            }
             
-            // Main task for sending messages to the AI engine
+            if await self.stateManager.getLoadedState() != .loaded {
+                _ = await loadModel()
+            }
+            
+            let response: String
+            let usage: TokenUsage
 
-            let contextWindowManager = ContextWindowManager(contextWindowSize: modelOptions.contextWindowSize, maxGenerationTokens: modelOptions.maxTokenCount, modelManager: self)
+            let contextWindowManager = ContextWindowManager(modelManager: self)
             let prompt = try await contextWindowManager.generate(messages: messages)
             
-            FreeToken.shared.logger("Context Managed Prompt: \(prompt)", .info)
+            (response, usage) = try await self.runEngine(prompt: prompt, runIdentifier: runIdentifier, tokenStream: tokenStream)
             
-            (response, usage) = try await self.runEngine(prompt: prompt, tokenStream: tokenStream)
-            
-            var responseContent = response["content"]!
-            
-            let toolCallParser = ParseToolCalls(toolCalls: responseContent)
-            
-            try? toolCallParser.call()
-            
-            var toolCalls: String? = nil
-            if let allTools = toolCallParser.allTools {
-                toolCalls = allTools
-                responseContent = ""
-            } else {
-                FreeToken.shared.logger("No tool calls found in response: \(responseContent)", .info)
-            }
-
-            return Codings.ShowMessageResponse(
-                id: nil,
-                role: "assistant",
-                content: responseContent,
-                toolCalls: toolCalls,
-                toolResult: nil,
-                isToolMessage: toolCalls != nil,
-                encryptionEnabled: nil,
-                createdAt: nil,
-                updatedAt: nil,
-                tokenUsage: usage!
-            )
+            return (Message(role: .assistant, content: response), usage)
         }
         
         func stopGeneration() async {
             await self.stateManager.stopGeneration()
         }
         
-        func generateMessagesPrompt(messages: [Codings.ShowMessageResponse]) -> String {
+        func generateMessagesPrompt(messages: [Message]) -> String {
             let tokens = self.specialTokens
             var prompt = tokens.beginningOfText
             
             for message in messages {
-                prompt += generateMessagePrompt(message: message)
+                let messagePrompt: String
+                let tokenCount: Int
+                (messagePrompt, tokenCount) = generateMessagePrompt(message: message)
+                prompt += messagePrompt
             }
             
             // Add the assistant header
-            prompt += tokens.startHeaderId
-            prompt += "assistant"
-            prompt += tokens.endHeaderId
+            let (messagePrompt, tokenCount) = generateMessagePrompt(message: Message(role: .assistant, content: ""), headerOnly: true)
+            
+            prompt += messagePrompt
             
             return prompt
         }
         
-        func generateMessagePrompt(message: Codings.ShowMessageResponse, headerOnly: Bool = false) -> String {
-            // Just encode via LLama Tokens for now - later drive these from the server.
+        func generateMessagePrompt(message: Message, headerOnly: Bool = false) -> (prompt: String, tokenCount: Int) {
             let tokens = self.specialTokens
+            var tokenCount = 0
 
             var prompt = tokens.startHeaderId
-            if message.role == "tool" {
+            if tokens.startHeaderId != "" {
+                tokenCount += 1
+            }
+            
+            if message.role == .tool {
                 prompt += modelOptions.toolRole
             } else {
-                prompt += message.role
+                prompt += message.role.rawValue
             }
+            tokenCount += 1 // Token for user/assistant/etc.
+            
             prompt += tokens.endHeaderId
+            if tokens.endHeaderId != "" {
+                tokenCount += 1
+            }
             
             if headerOnly {
-                return prompt
+                return (prompt, tokenCount)
             }
             
-            if message.toolCalls != nil {
-                prompt += message.toolCalls!
-            } else if message.toolResult != nil {
-                prompt += "{ \"output\": \"\(message.toolResult!)\" }"
-            } else {
-                prompt += message.content
+            prompt += message.content
+            if message.content != "" {
+                let messageTokenCount = message.tokenCount ?? 0
+                tokenCount += messageTokenCount
+                
+                if messageTokenCount == 0 {
+                    FreeToken.shared.logger("✉️ Message \(message.id) has a ZERO token count attribute - this may cause context window calculation problems", .warning)
+                }
             }
                 
             prompt += tokens.endOfTurnId
+            if tokens.endOfTurnId != "" {
+                tokenCount += 1
+            }
             
-            return prompt
+            return (prompt, tokenCount)
         }
         
-        internal func runEngine(prompt: String, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: [String: String], usage: Codings.TokenUsageResponse) {
+        internal func runEngine(prompt: String, runIdentifier: String, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
             if await self.stateManager.getLoadedState() != .loaded {
                 _ = await loadModel()
             }
             
-            var response = ["role": "assistant", "content": ""]
             var responseContent = ""
             
             let tokenCount = try await self.stateManager.tokenCount(prompt)
+            
+            FreeToken.shared.logger("Running AI model with prompt:", .info)
+            FreeToken.shared.logger(prompt, .info)
 
             FreeToken.shared.logger("Prompt tokens count: \(tokenCount)", .info)
-            
-            
 
-            for try await value in try await self.stateManager.generate(for: prompt) {
+            for try await value in try await self.stateManager.generate(for: prompt, runIdentifier: runIdentifier) {
+                print(value, terminator: "")
                 responseContent += value
                 if let streamHandler = tokenStream {
                     streamHandler(value)
@@ -471,11 +471,9 @@ extension FreeToken {
             let completionTokenCount = try await self.stateManager.tokenCount(responseContent, addBos: false)
             let tokensPerSecond = lastRunStats?.tokensPerSecond ?? 0.0
             
-            response["content"] = responseContent
+            let tokenUsage = TokenUsage(promptTokens: tokenCount, completionTokens: completionTokenCount, totalTokens: (tokenCount + completionTokenCount), tokensPerSecond: Float(tokensPerSecond))
             
-            let tokenUsage = Codings.TokenUsageResponse(promptTokens: tokenCount, completionTokens: completionTokenCount, totalTokens: (tokenCount + completionTokenCount), prefillTokensPerSecond: nil, decodeTokensPerSecond: Float(tokensPerSecond), numPrefillTokens: nil)
-            
-            return (response, tokenUsage)
+            return (responseContent, tokenUsage)
         }
         
         private func verifyClientVersionSupported() -> Result<Bool, Codings.ErrorResponse> {

@@ -8,19 +8,21 @@
 import Foundation
 
 extension FreeToken {
+    enum ToolValues {
+        case name(String)
+        case arguments([String: String])
+    }
+    
     class ParseToolCalls {
         var toolCalls: String?
         var toolMatches: [String]?
         var allTools: String?
         var parsedTools: [[String: ToolValues]] = []
+        private let toolNames: [String]
         
-        enum ToolValues {
-            case name(String)
-            case arguments([String: String])
-        }
-        
-        init(toolCalls: String?) {
+        init(toolCalls: String?, toolNames: [String] = []) {
             self.toolCalls = toolCalls
+            self.toolNames = toolNames
         }
         
         func call() throws {
@@ -34,11 +36,12 @@ extension FreeToken {
             let regex = try NSRegularExpression(pattern: toolPattern, options: [])
             
             // Match the tool calls inside the square brackets
-            if let match = regex.firstMatch(in: toolCalls, options: [], range: NSRange(location: 0, length: toolCalls.utf16.count)) {
-                let range = match.range
-                if let matchString = Range(range, in: toolCalls) {
-                    toolMatches = [String(toolCalls[matchString])]
+            let matches = regex.matches(in: toolCalls, options: [], range: NSRange(location: 0, length: toolCalls.utf16.count))
+            toolMatches = matches.compactMap { match in
+                if let matchRange = Range(match.range, in: toolCalls) {
+                    return String(toolCalls[matchRange])
                 }
+                return nil
             }
             
             guard let toolMatches = toolMatches else {

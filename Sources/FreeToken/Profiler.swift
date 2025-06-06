@@ -16,7 +16,7 @@ extension FreeToken {
         public var errorMessage: String?
         public var eventTypeID: String?
         public var isSuccess: Bool?
-        public var tokenStats: Codings.TokenUsageResponse?
+        public var tokenStats: TokenUsage?
         
         public var eventObjectType: String {
             get {
@@ -28,6 +28,7 @@ extension FreeToken {
                     case .createMessageThread: return "MessageThread"
                     case .addMessageToThread: return "MessageThread"
                     case .generateCloudCompletion: return ""
+                    case .generateCloudChatCompletion: return ""
                     case .generateLocalCompletion: return ""
                     case .createDocument: return "Document"
                     case .searchDocuments: return "DocumentChunk"
@@ -51,6 +52,7 @@ extension FreeToken {
             case createMessageThread = "create_message_thread"
             case addMessageToThread = "add_message_to_thread"
             case generateCloudCompletion = "generate_cloud_completion"
+            case generateCloudChatCompletion = "generate_cloud_chat_completion"
             case generateLocalCompletion = "generate_local_completion"
             case createDocument = "create_document"
             case searchDocuments = "search_documents"
@@ -66,7 +68,7 @@ extension FreeToken {
             self.startTime = DispatchTime.now()
         }
         
-        public func end(eventType: EventType, eventTypeID: Optional<String> = nil, isSuccess: Optional<Bool> = nil, errorMessage: Optional<String> = nil, tokenStats: Optional<Codings.TokenUsageResponse> = nil) {
+        public func end(eventType: EventType, eventTypeID: Optional<String> = nil, isSuccess: Optional<Bool> = nil, errorMessage: Optional<String> = nil, tokenStats: Optional<TokenUsage> = nil) {
             endTime = DispatchTime.now()
             self.eventType = eventType
             self.eventTypeID = eventTypeID

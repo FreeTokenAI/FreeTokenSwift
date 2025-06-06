@@ -18,6 +18,9 @@ extension FreeToken {
         private let modelPath: String
         private var isGenerating: Bool = false
         private var shouldStopGeneration: Bool = false
+        private var conversationTokenCount: Int = 0
+        private var currentRunIdentifier: String?
+        private var lastPromptTokens: [llama_token] = []
         var lastRunStats: LastRunStats?
         
         struct LastRunStats {
@@ -61,7 +64,6 @@ extension FreeToken {
             let buffer = UnsafeMutablePointer<CChar>.allocate(capacity: bufferSize)
             defer { buffer.deallocate() }
             
-            
             let desc = llama_model_desc(model, buffer, bufferSize)
             if desc > 0 {
                 return true
@@ -83,11 +85,21 @@ extension FreeToken {
             return tokenize(prompt, addBos: addBos).count
         }
         
-        /// Clears all model and batch state for a fresh run
-        func reset() {
+        /// Clears all model and batch state for a completely new conversation
+        func resetConversation() {
             isGenerating = false
             shouldStopGeneration = false
             llama_kv_self_clear(ctx)
+            conversationTokenCount = 0
+            currentRunIdentifier = nil
+            lastPromptTokens = []
+        }
+        
+        /// Light reset that preserves KV cache for conversation continuity
+        private func resetGeneration() {
+            isGenerating = false
+            shouldStopGeneration = false
+            // Preserve KV cache and conversation state
         }
         
         /// Stop Generation
@@ -97,43 +109,179 @@ extension FreeToken {
             }
         }
         
-        /// Generates output from a prompt, up to maxTokens
-        func generate(prompt: String) -> AsyncThrowingStream<String, Error> {
+        /// Gets the current run identifier
+        func getCurrentRunIdentifier() -> String? {
+            return currentRunIdentifier
+        }
+        
+        /// Gets current conversation length in tokens
+        func getConversationLength() -> Int {
+            return conversationTokenCount
+        }
+        
+        /// Checks if additional tokens can fit in context window
+        func canFitInContext(additionalTokens: Int) -> Bool {
+            let reservedTokens = 4
+            return conversationTokenCount + additionalTokens + configuration.maxTokenCount < Int(configuration.nCTX) - reservedTokens
+        }
+        
+        /// Finds the new tokens that were added to the end of the current prompt compared to the last prompt
+        private func findNewTokens(currentTokens: [llama_token], previousTokens: [llama_token]) -> [llama_token] {
+            // If previous is empty, all current tokens are new
+            guard !previousTokens.isEmpty else { return currentTokens }
+            
+            // If current is shorter than previous, this is a completely new conversation
+            guard currentTokens.count >= previousTokens.count else { return currentTokens }
+            
+            // Check if the previous tokens are a prefix of the current tokens
+            let prefixMatches = zip(previousTokens, currentTokens).allSatisfy { $0 == $1 }
+            
+            if prefixMatches {
+                // Previous tokens are a prefix, return only the new tokens at the end
+                return Array(currentTokens.dropFirst(previousTokens.count))
+            } else {
+                // The prompts diverged, treat as completely new conversation
+                return currentTokens
+            }
+        }
+        
+        /// Processes tokens and adds them to the conversation context without generating
+        /// - Parameters:
+        ///   - text: The text to add to conversation context
+        ///   - runIdentifier: Identifier for the conversation thread
+        func appendToConversation(_ text: String, runIdentifier: String) throws {
+            // Check if we need to start fresh
+            if currentRunIdentifier != runIdentifier {
+                resetConversation()
+                currentRunIdentifier = runIdentifier
+            }
+            
+            let tokens = tokenize(text)
+            let newTokens = findNewTokens(currentTokens: tokens, previousTokens: lastPromptTokens)
+            
+            guard canFitInContext(additionalTokens: newTokens.count) else {
+                throw NSError(
+                    domain: "llama",
+                    code: 2,
+                    userInfo: [NSLocalizedDescriptionKey: "Adding new tokens would exceed context window."]
+                )
+            }
+            
+            if !newTokens.isEmpty {
+                var batch = llama_batch_init(Int32(newTokens.count), 0, 1)
+                defer { llama_batch_free(batch) }
+                
+                for (i, token) in newTokens.enumerated() {
+                    batch.add(
+                        token: token,
+                        position: Int32(conversationTokenCount + i),
+                        seqIDs: [0],
+                        logit: false  // Don't compute logits for context-only tokens
+                    )
+                }
+                
+                if llama_decode(ctx, batch) != 0 {
+                    throw NSError(domain: "llama", code: 1, userInfo: [NSLocalizedDescriptionKey: "Failed to process context tokens"])
+                }
+                
+                conversationTokenCount += newTokens.count
+                lastPromptTokens = tokens
+            }
+        }
+        
+        /// Generates output from a prompt with conversation continuity based on run identifier
+        /// - Parameters:
+        ///   - prompt: The input prompt to generate from
+        ///   - runIdentifier: Unique identifier for the conversation thread. If different from last run, starts fresh.
+        func generate(prompt: String, runIdentifier: String) -> AsyncThrowingStream<String, Error> {
             let (stream, continuation) = AsyncThrowingStream<String, Error>.makeStream()
             
             Task { @Sendable [self] in
                 self.isGenerating = true
                 do {
-                    reset()
+                    resetGeneration()
                     
                     let sampler = llama_sampler_chain_init(llama_sampler_chain_default_params())
+                    defer { llama_sampler_free(sampler) }
+                    
                     llama_sampler_chain_add(sampler, llama_sampler_init_temp(configuration.temperature))
                     llama_sampler_chain_add(sampler, llama_sampler_init_top_k(Int32(configuration.topK)))
                     llama_sampler_chain_add(sampler, llama_sampler_init_top_p(configuration.topP, 1))
                     llama_sampler_chain_add(sampler, llama_sampler_init_dist(1234))
                     
-                    // 1. Tokenize prompt
-                    let promptTokens = tokenize(prompt) // Prompt tokens
-                    let reservedTokens = 4 // Throw in a few extra tokens to give some breathing room
-                    if promptTokens.count + configuration.maxTokenCount > Int(configuration.nCTX) - reservedTokens {
+                    // Tokenize the full prompt
+                    let promptTokens = tokenize(prompt)
+                    
+                    // Determine if we need to start fresh or continue existing conversation
+                    let isNewConversation = currentRunIdentifier != runIdentifier
+                    let tokensToProcess: [llama_token]
+                    let startPosition: Int
+                    
+                    if isNewConversation {
+                        // New conversation - reset everything
+                        resetConversation()
+                        currentRunIdentifier = runIdentifier
+                        tokensToProcess = promptTokens
+                        startPosition = 0
+                        lastPromptTokens = promptTokens
+                        print("🗣️ Cache MISS: New conversation - processing \(tokensToProcess.count) tokens")
+                    } else {
+                        // Continuing existing conversation - find only the new tokens
+                        let newTokens = findNewTokens(currentTokens: promptTokens, previousTokens: lastPromptTokens)
+                        
+                        if newTokens.count == promptTokens.count {
+                            // The entire prompt is new (diverged from previous), reset conversation
+                            resetConversation()
+                            currentRunIdentifier = runIdentifier
+                            tokensToProcess = promptTokens
+                            startPosition = 0
+                            lastPromptTokens = promptTokens
+                            print("🗣️ Cache MISS: Conversation diverged - processing \(tokensToProcess.count) tokens")
+                        } else {
+                            // Only process the new tokens at the end
+                            tokensToProcess = newTokens
+                            startPosition = conversationTokenCount
+                            lastPromptTokens = promptTokens
+                            print("🗣️ Cache HIT: Processing \(tokensToProcess.count) new tokens (saved \(promptTokens.count - tokensToProcess.count) tokens)")
+                        }
+                    }
+                    
+                    // Check context limits
+                    let reservedTokens = 4
+                    let totalNeededTokens = startPosition + tokensToProcess.count + configuration.maxTokenCount
+                    if totalNeededTokens > Int(configuration.nCTX) - reservedTokens {
                         throw NSError(
                             domain: "llama",
                             code: 2,
-                            userInfo: [NSLocalizedDescriptionKey: "Prompt (\(promptTokens.count)) + maxTokens (\(configuration.maxTokenCount)) exceeds context window (\(Int(configuration.nCTX) - reservedTokens))."]
+                            userInfo: [NSLocalizedDescriptionKey: "Conversation (\(startPosition)) + prompt (\(tokensToProcess.count)) + maxTokens (\(configuration.maxTokenCount)) exceeds context window (\(Int(configuration.nCTX) - reservedTokens))."]
                         )
                     }
-                    var genBatch = llama_batch_init(Int32(promptTokens.count), 0, 1)
                     
-                    // Fill batch with prompt tokens
-                    for (i, tok) in promptTokens.enumerated() {
-                        genBatch.add(token: tok, position: Int32(i), seqIDs: [0], logit: false)
+                    // Process the new prompt tokens (if any)
+                    if !tokensToProcess.isEmpty {
+                        var promptBatch = llama_batch_init(Int32(tokensToProcess.count), 0, 1)
+                        defer { llama_batch_free(promptBatch) }
+                        
+                        for (i, token) in tokensToProcess.enumerated() {
+                            let tokenPosition = Int32(startPosition + i)
+                            let isLastToken = i == tokensToProcess.count - 1
+                            promptBatch.add(
+                                token: token,
+                                position: tokenPosition,
+                                seqIDs: [0],
+                                logit: isLastToken  // Only compute logits for last token
+                            )
+                        }
+                        
+                        if llama_decode(ctx, promptBatch) != 0 {
+                            throw NSError(domain: "llama", code: 1, userInfo: [NSLocalizedDescriptionKey: "Decode failed"])
+                        }
+                        
+                        conversationTokenCount = startPosition + tokensToProcess.count
+                    } else {
+                        // No new tokens to process - this shouldn't happen on first run
+                        throw NSError(domain: "llama", code: 4, userInfo: [NSLocalizedDescriptionKey: "No tokens to process"])
                     }
-                    genBatch.logits[Int(genBatch.n_tokens) - 1] = 1 // compute logits for last token
-                    
-                    if llama_decode(ctx, genBatch) != 0 {
-                        throw NSError(domain: "llama", code: 1, userInfo: [NSLocalizedDescriptionKey: "Decode failed"])
-                    }
-                    llama_batch_free(genBatch)
                     
                     let genStart = Date()
                     
@@ -141,31 +289,44 @@ extension FreeToken {
                     var utf8Buffer = Data()
                     var outputBuffer = ""
                     
-                    // 2. Generate tokens, using a new batch each time
+                    // Generate tokens one by one
+                    var lastBatchSize = tokensToProcess.count // Track the size of the last batch processed
                     while generated < configuration.maxTokenCount {
                         if shouldStopGeneration {
                             shouldStopGeneration = false
                             break
                         }
                         
-                        guard let logitsPtr = llama_get_logits(ctx) else {
-                            throw NSError(domain: "llama", code: 3, userInfo: [NSLocalizedDescriptionKey: "Failed to get logits"])
+                        // For the first iteration, use the prompt batch logits
+                        // For subsequent iterations, use the single-token generation batch logits
+                        let logitIndex: Int32
+                        if generated == 0 {
+                            // First generation - use the last token from the prompt batch
+                            logitIndex = Int32(lastBatchSize - 1)
+                        } else {
+                            // Subsequent generations - use the single token from the generation batch
+                            logitIndex = 0
                         }
-                        let maxToken = llama_sampler_sample(sampler, ctx, genBatch.n_tokens - 1)
+                        
+                        // Sample using the correct logit index
+                        let nextToken = llama_sampler_sample(sampler, ctx, logitIndex)
                         let vocab = llama_model_get_vocab(model)
-                        if llama_vocab_is_eog(vocab, maxToken) {
+                        
+                        // Check for end of generation
+                        if llama_vocab_is_eog(vocab, nextToken) {
                             break
                         }
                         
-                        // Convert token to string (as bytes)
+                        // Convert token to string
                         var piece = [CChar](repeating: 0, count: 32)
-                        let nPiece = llama_token_to_piece(vocab, maxToken, &piece, 32, 0, false)
+                        let nPiece = llama_token_to_piece(vocab, nextToken, &piece, 32, 0, false)
                         if nPiece > 0 {
                             let index = min(Int(nPiece), piece.count - 1)
                             piece[index] = 0
                             let bytes = piece[0..<index].map { UInt8(bitPattern: $0) }
                             utf8Buffer.append(contentsOf: bytes)
                             
+                            // Process UTF-8 buffer
                             while !utf8Buffer.isEmpty {
                                 var maxValidPrefix = 0
                                 for i in (1...utf8Buffer.count) {
@@ -196,15 +357,26 @@ extension FreeToken {
                             }
                         }
                         
-                        // Prepare fresh batch for next token
-                        genBatch = llama_batch_init(1, 0, 1)
-                        genBatch.add(token: maxToken, position: Int32(promptTokens.count) + Int32(generated), seqIDs: [0], logit: true)
-                        if llama_decode(ctx, genBatch) != 0 { break }
-                        llama_batch_free(genBatch)
+                        // Prepare batch for next token
+                        var genBatch = llama_batch_init(1, 0, 1)
+                        defer { llama_batch_free(genBatch) }
                         
+                        genBatch.add(
+                            token: nextToken,
+                            position: Int32(conversationTokenCount),
+                            seqIDs: [0],
+                            logit: true
+                        )
+                        
+                        if llama_decode(ctx, genBatch) != 0 {
+                            break
+                        }
+                        
+                        conversationTokenCount += 1
                         generated += 1
                         
-                        if Int32(generated) + Int32(promptTokens.count) >= configuration.nCTX {
+                        // Check context limits
+                        if conversationTokenCount >= Int(configuration.nCTX) - reservedTokens {
                             break
                         }
                     }
@@ -215,6 +387,7 @@ extension FreeToken {
                     print("Generated \(generated) tokens in \(elapsed) seconds (\(tokensPerSecond) tokens/sec)")
                     self.lastRunStats = LastRunStats(totalTokens: generated, elapsed: elapsed, tokensPerSecond: tokensPerSecond)
                     
+                    // Send any remaining output
                     if !outputBuffer.isEmpty {
                         continuation.yield(outputBuffer)
                     }
@@ -222,18 +395,19 @@ extension FreeToken {
                         continuation.yield(str)
                         await Task.yield()
                     }
+                    
                     continuation.finish()
-                    llama_sampler_free(sampler)
                     self.isGenerating = false
                     self.shouldStopGeneration = false
                 } catch {
                     continuation.finish(throwing: error)
+                    self.isGenerating = false
+                    self.shouldStopGeneration = false
                 }
             }
             
             return stream
         }
-        
         
         private func checkForStopToken(_ text: String) -> (String, Bool) {
             // Returns (text up to stop token, shouldStop)
@@ -266,12 +440,9 @@ extension FreeToken {
     }
     
     typealias Batch = llama_batch
-
 }
 
-
 extension FreeToken.Batch {
-
     mutating func add(token: llama_token,
                       position: llama_pos,
                       seqIDs: [llama_seq_id],
@@ -286,5 +457,4 @@ extension FreeToken.Batch {
         self.logits[nextIndex] = logit ? 1 : 0
         self.n_tokens += 1
     }
-
 }
