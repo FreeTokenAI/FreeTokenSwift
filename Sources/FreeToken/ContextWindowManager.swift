@@ -76,13 +76,13 @@ extension FreeToken {
         }
         
         private func messagesGenerate(systemPrompt: Message, promptMessage: Message, chatHistory: [Message]) async throws -> [ContentBlock] {
-            let systemPromptBlock = try await generateBlock(message: systemPrompt)
-            let userMessageBlock = try await generateBlock(message: promptMessage)
-            let chatHistoryBlocks = try await chatHistory.concurrentMap { message in
-                return try await self.generateBlock(message: message)
+            let systemPromptBlock = generateBlock(message: systemPrompt)
+            let userMessageBlock = generateBlock(message: promptMessage)
+            let chatHistoryBlocks = chatHistory.map { message in
+                return self.generateBlock(message: message)
             }
             
-            let assistantPromptBlock = try await generateBlock(message: Message(role: .assistant, content: ""), headerOnly: true)
+            let assistantPromptBlock = generateBlock(message: Message(role: .assistant, content: ""), headerOnly: true)
             
             guard preFlight([systemPromptBlock, userMessageBlock, assistantPromptBlock]) else {
                 throw Self.notEnoughAvailableTokensError

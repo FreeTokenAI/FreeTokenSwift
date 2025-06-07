@@ -142,7 +142,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - appToken: A `String` representing the API key used for authentication of your client.
     ///     - baseURL: Optional base URL for the API (e.g., `https://api.example.com/`). Defaults to `nil`.
     ///     - overrideModelPath: An optional `URL` for the override model path. Defaults to `nil`.
-    ///     - logLevel: Optional log level for the client. Default is `.info` 
+    ///     - logLevel: Optional log level for the client. Default is `.info`
     ///
     /// - Returns: A configured `FreeToken` instance.
     public func configure(appToken: String, baseURL: Optional<URL> = nil, overrideModelPath: Optional<URL> = nil, logLevel: FreeTokenLogger.LogLevel = .info) -> FreeToken {
@@ -510,7 +510,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - messageThreadID: ID of the message thread to add the message
     ///     - message: The `Message` object to add to the thread
     ///     - success: A closure to capture the results of the call to add the message to the thread
-    ///     - toolCalls: This parameter is used when creating Role calls from the AI - it can be used when importing existing threads from other systems.    
+    ///     - toolCalls: This parameter is used when creating Role calls from the AI - it can be used when importing existing threads from other systems.
     ///     - success: A closure to capture the results of the call to add the message to the thread
     ///     - error: A closure to capture any errors that occur during the call
     ///
@@ -1294,18 +1294,17 @@ public class FreeToken: @unchecked Sendable {
                         // Send the token string to the AI for completion
                         let resultContent: String
                         let usage: TokenUsage
-                        (resultContent, usage) = try await self.aiModelManager!.sendPromptToAI(prompt: tokenString, runIdentifier: messageThreadID) { token in
-                            chatStatusStream?(token, .streaming_tokens)
-                            // TODO: Try to start handling tool calls before the AI completes
-                        }
                         
-                        FreeToken.shared.logger("🧠 Local AI run completed successfully", .info)
-                        
-                        let resultMessage = Message(role: .assistant, content: resultContent, tokenUsage: usage)
-                        await self.addMessageToThread(messageThreadID: messageThreadID, message: resultMessage) { resultMessage in
+                        do {
+                            (resultContent, usage) = try await self.aiModelManager!.sendPromptToAI(prompt: tokenString, runIdentifier: messageThreadID) { token in
+                                chatStatusStream?(token, .streaming_tokens)
+                                // TODO: Try to start handling tool calls before the AI completes
+                            }
+                            FreeToken.shared.logger("🧠 Local AI run completed successfully", .info)
+                            let resultMessage = Message(role: .assistant, content: resultContent, tokenUsage: usage)
                             successResult(resultMessage)
-                        } error: { error in
-                            errorCompletion(error)
+                        } catch {
+                            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error as! Codings.ErrorResponse))
                         }
                     }
                 }
@@ -1356,18 +1355,18 @@ public class FreeToken: @unchecked Sendable {
 //
 //        // Process messages synchronously
 //        var responseMessage: Codings.ShowMessageResponse
-//        
+//
 //        // Send off to the AI
 //        do {
 ////            let chatStreamManager = ChatStreamManager(toolNames: toolNames!)
-//            
+//
 //            chatStatusStream?(nil, "sending_to_local_ai")
 //            responseMessage = try await aiModelManager!.sendMessagesToAI(messages: messages, tokenStream: { newTokens in
 //                // Pass the decoded response to a Chat Stream post processing class
 //                // If the post-processor sees somethign that matches a tool call, it will inform the caller via the chatStatusStream
-//                
+//
 ////                let streamTokens = chatStreamManager.streamChunkFilter(newTokens, isFinal: false)
-////                
+////
 ////                if streamTokens != "" {
 //                    chatStatusStream?(newTokens, "streaming_tokens")
 ////                }
@@ -1386,10 +1385,10 @@ public class FreeToken: @unchecked Sendable {
 //            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
 //            return
 //        }
-//        
+//
 //        // Process the Results
 //        let tokenUsage = responseMessage.tokenUsage
-//        
+//
 //        self.addMessageToThread(messageThreadID: messageThreadID, role: responseMessage.role, content: responseMessage.content, toolCalls: responseMessage.toolCalls) { message in
 //            let newResponse = Codings.ShowMessageThreadRunResponse(
 //                id: response.id,
@@ -1412,7 +1411,7 @@ public class FreeToken: @unchecked Sendable {
 //            errorCompletion(error)
 //        }
 //    }
-//    
+//
     /// Get a Message Thread Run by ID
     ///
     /// ```
@@ -1454,7 +1453,7 @@ public class FreeToken: @unchecked Sendable {
     /// Load the AI Model into the device memory
     ///
     /// ```
-    ///     client.loadModel(success: { 
+    ///     client.loadModel(success: {
     ///         // Model is loaded and ready for use
     ///     }, error: { error in
     ///         // Handle the error - Retry?
