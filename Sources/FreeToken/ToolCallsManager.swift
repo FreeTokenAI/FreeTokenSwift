@@ -203,7 +203,7 @@ extension FreeToken {
             }
             
             FreeToken.shared.webSearch(query: query, freshness: freshnessEnum) { searchResults in
-                var result = "Web search results to help answer the user's question:"
+                var result = "WEB SEARCH RESULTS\n\nUse these results to help answer the user's question:"
                 
                 for webResult in searchResults {
                     result.append("""
@@ -217,6 +217,8 @@ extension FreeToken {
                     \(webResult.summary)
                 """)
                 }
+                
+                result.append("\n\nALWAYS cite URLs of web searches in your response\n\n------ END WEB SEARCH RESULTS ------\n\n")
                 
                 successCallback(result)
             } error: { error in
