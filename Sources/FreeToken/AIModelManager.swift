@@ -109,7 +109,7 @@ extension FreeToken {
             }
             
             @LlamaCppSwiftActor
-            func generate(for prompt: String, runIdentifier: String) async throws -> AsyncThrowingStream<String, Error> {
+            func generate(for prompt: String, maxTokens: Int? = nil, runIdentifier: String) async throws -> AsyncThrowingStream<String, Error> {
                 guard let engine = self.engine else {
                     throw AIModelManager.aiModelNotLoadedError
                 }
@@ -118,7 +118,7 @@ extension FreeToken {
                     throw AIModelManager.aiModelNotLoadedError
                 }
                 
-                return engine.generate(prompt: prompt, runIdentifier: runIdentifier)
+                return engine.generate(prompt: prompt, runIdentifier: runIdentifier, maxTokens: maxTokens)
             }
             
             @LlamaCppSwiftActor
@@ -299,7 +299,7 @@ extension FreeToken {
                     return .failure(failedToLoadModelError)
                 }
                 
-                let configuration = AIModelConfiguration(topK: modelOptions.topK, topP: modelOptions.topP, nCTX: modelOptions.contextWindowSize, temperature: modelOptions.temperature, maxTokenCount: modelOptions.maxTokenCount, stopTokens: modelOptions.stopTokens)
+                let configuration = AIModelConfiguration(from: self.modelOptions)
                 
                 await self.stateManager.initializeEngine(modelPath: "\(modelPath.path)/\(ggufFile)", configuration: configuration)
                 return .success(true)
@@ -389,13 +389,12 @@ extension FreeToken {
             
             for message in messages {
                 let messagePrompt: String
-                let tokenCount: Int
-                (messagePrompt, tokenCount) = generateMessagePrompt(message: message)
+                (messagePrompt, _) = generateMessagePrompt(message: message)
                 prompt += messagePrompt
             }
             
             // Add the assistant header
-            let (messagePrompt, tokenCount) = generateMessagePrompt(message: Message(role: .assistant, content: ""), headerOnly: true)
+            let (messagePrompt, _) = generateMessagePrompt(message: Message(role: .assistant, content: ""), headerOnly: true)
             
             prompt += messagePrompt
             
@@ -445,7 +444,7 @@ extension FreeToken {
             return (prompt, tokenCount)
         }
         
-        internal func runEngine(prompt: String, runIdentifier: String, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
+        internal func runEngine(prompt: String, maxTokens: Int? = nil, runIdentifier: String, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
             if await self.stateManager.getLoadedState() != .loaded {
                 _ = await loadModel()
             }
@@ -459,7 +458,7 @@ extension FreeToken {
 
             FreeToken.shared.logger("Prompt tokens count: \(tokenCount)", .info)
 
-            for try await value in try await self.stateManager.generate(for: prompt, runIdentifier: runIdentifier) {
+            for try await value in try await self.stateManager.generate(for: prompt, maxTokens: maxTokens, runIdentifier: runIdentifier) {
                 print(value, terminator: "")
                 responseContent += value
                 if let streamHandler = tokenStream {

@@ -654,11 +654,12 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - prompt: The prompt you want to send to the AI for completion
     ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface. (Think of this like a model ID, unique to the individual AI model)
+    ///     - maxTokens: Optional maximum number of tokens to generate in the completion
     ///     - success: A closure to capture the results of the call to generate the completion
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, maxTokens: Int? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
             return
@@ -675,7 +676,7 @@ public class FreeToken: @unchecked Sendable {
         } else {
             // Generate cloud completion
             if self.deviceMode?.isPrivacyMode == false {
-                generateCloudCompletion(prompt: prompt, success: successCompletion, error: errorCompletion)
+                generateCloudCompletion(prompt: prompt, maxTokens: maxTokens, success: successCompletion, error: errorCompletion)
             } else {
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: cloudCompletionPrivacyModeError))
             }
@@ -700,17 +701,18 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - prompt: Prompt to have the AI complete
     ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface. (Think of this like a model ID, unique to the individual AI model)
+    ///     - maxTokens: Optional maximum number of tokens to generate in the completion
     ///     - success: A closure to capture the results of the AI completion
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, maxTokens: Int? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
             return
         }
 
-        let request = Codings.CreateCompletionRequest(prompt: prompt, model: modelCode)
+        let request = Codings.CreateCompletionRequest(prompt: prompt, model: modelCode, maxTokens: maxTokens)
         let profiler = Profiler()
         postData(path: "completions", data: request, responseType: Codings.CreateCompletionResponse.self) { result in
             switch result {
@@ -742,11 +744,12 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Parameters:
     ///     - prompt: Prompt to have the AI complete
+    ///     - maxTokens: Optional maximum number of tokens to generate in the completion
     ///     - success: A closure that is called after the successful call to the AI
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateLocalCompletion(prompt: String, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func generateLocalCompletion(prompt: String, maxTokens: Int? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
             return
@@ -765,7 +768,7 @@ public class FreeToken: @unchecked Sendable {
         
         do {
             let uuid = UUID().uuidString
-            result = try await aiModelManager.runEngine(prompt: prompt, runIdentifier: uuid)
+            result = try await aiModelManager.runEngine(prompt: prompt, maxTokens: maxTokens, runIdentifier: uuid)
             let completion = Completion(response: result!.response)
 
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: result!.usage)
@@ -802,7 +805,7 @@ public class FreeToken: @unchecked Sendable {
             if let chatStatusStream = chatStatusStream {
                 
                 // The entire response will be streamed not just message chunks - so we need to filter it out
-                if let range = chunk.range(of: "message_chunk"), let match = messageChunkRegex.firstMatch(in: chunk, options: [], range: NSRange(location: 0, length: chunk.utf16.count)) {
+                if chunk.range(of: "message_chunk") != nil, messageChunkRegex.firstMatch(in: chunk, options: [], range: NSRange(location: 0, length: chunk.utf16.count)) != nil {
                     // Decode the chunk with MessageContentChunk
                     // If the last character is a comma, remove it
                     var chunk = chunk
@@ -820,7 +823,6 @@ public class FreeToken: @unchecked Sendable {
                             
                             // Check if the chunk is a message chunk
                             messageContentChunk.messageChunks.forEach { messageChunk in
-                                messageChunk.messageChunk
                                 // If the content is empty, we skip it
                                 if !messageChunk.messageChunk.isEmpty {
                                     // Send the message chunk to the chat status stream

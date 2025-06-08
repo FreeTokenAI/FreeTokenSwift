@@ -126,6 +126,10 @@ extension FreeToken {
                 let contextWindowSize: Int
                 let temperature: Float
                 let maxTokenCount: Int
+                let penaltyLastN: Int32
+                let penaltyRepeat: Float
+                let penaltyFrequency: Float
+                let penaltyPresence: Float
                 let toolRole: String
                 let stopTokens: [String]
                 let codeTag: String
@@ -136,6 +140,10 @@ extension FreeToken {
                     case contextWindowSize = "context_window_size"
                     case temperature
                     case maxTokenCount = "max_token_count"
+                    case penaltyLastN = "penalty_last_n"
+                    case penaltyRepeat = "penalty_repeat"
+                    case penaltyFrequency = "penalty_frequency"
+                    case penaltyPresence = "penalty_presence"
                     case toolRole = "tool_role"
                     case stopTokens = "stop_tokens"
                     case codeTag = "code_tag"
@@ -257,6 +265,13 @@ extension FreeToken {
         struct CreateCompletionRequest: Encodable {
             let prompt: String
             let model: String?
+            let maxTokens: Int?
+            
+            enum CodingKeys: String, CodingKey {
+                case prompt
+                case model
+                case maxTokens = "max_tokens"
+            }
         }
         
         struct CreateCompletionResponse: Decodable {

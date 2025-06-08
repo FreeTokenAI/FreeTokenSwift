@@ -8,15 +8,24 @@ extension FreeToken {
         let nCTX: Int
         let temperature: Float
         let maxTokenCount: Int
+        let penaltyLastN: Int32
+        let penaltyRepeat: Float
+        let penaltyFrequency: Float
+        let penaltyPresence: Float
         let stopTokens: [String]
         
-        init(topK: Int, topP: Float, nCTX: Int, temperature: Float, maxTokenCount: Int, stopTokens: [String]) {
-            self.topK = topK
-            self.topP = topP
-            self.nCTX = nCTX
-            self.temperature = temperature
-            self.maxTokenCount = maxTokenCount
-            self.stopTokens = stopTokens
+        
+        internal init(from modelOptions: Codings.AiModelConfigResponse.ModelOptions) {
+            self.topK = modelOptions.topK
+            self.topP = modelOptions.topP
+            self.nCTX = modelOptions.contextWindowSize
+            self.temperature = modelOptions.temperature
+            self.maxTokenCount = modelOptions.maxTokenCount
+            self.penaltyLastN = modelOptions.penaltyLastN
+            self.penaltyRepeat = modelOptions.penaltyRepeat
+            self.penaltyFrequency = modelOptions.penaltyFrequency
+            self.penaltyPresence = modelOptions.penaltyPresence
+            self.stopTokens = modelOptions.stopTokens
         }
     }
 }
