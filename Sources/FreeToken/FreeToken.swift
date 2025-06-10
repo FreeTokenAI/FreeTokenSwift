@@ -667,7 +667,7 @@ public class FreeToken: @unchecked Sendable {
         
         if await aiModelManager?.stateManager.getState() == .downloaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
             // Generate local completion
-            await generateLocalCompletion(prompt: prompt) { completion in
+            await generateLocalCompletion(prompt: prompt, maxTokens: maxTokens) { completion in
                 successCompletion(completion)
             } error: { error in
                 errorCompletion(error)
