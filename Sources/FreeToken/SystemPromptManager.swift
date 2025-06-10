@@ -18,11 +18,13 @@ extension FreeToken {
         }
 
         func generate() -> Message {
-            var systemContext = systemPromptParts.instructions
+            var systemContext = systemPromptParts.instructions.content
+            var tokenCount = 0
             
             if let threadSearchResultsContext = systemPromptParts.threadSearchResultsContext {
-                systemContext += threadSearchResultsContext
-                systemContext += "\n\n"
+                systemContext += threadSearchResultsContext.content
+                tokenCount += threadSearchResultsContext.tokenCount
+                
                 for message in threadSearchResults {
                     systemContext += "\(message.role): \(passThroughDecrypt(message.content))\n"
                 }
@@ -30,13 +32,15 @@ extension FreeToken {
             
             if let toolDefinitions = systemPromptParts.toolDefinitions {
                 systemContext += toolDefinitions.prompt
+                tokenCount += toolDefinitions.tokenCount
             }
             
             if let pinnedContext = systemPromptParts.pinnedContext {
-                systemContext += "\n\n\(passThroughDecrypt(pinnedContext))\n\n"
+                systemContext += "\n\n\(passThroughDecrypt(pinnedContext.content))\n\n"
+                tokenCount += pinnedContext.tokenCount
             }
             
-            return Message(role: .system, content: systemContext)
+            return Message(role: .system, content: systemContext, tokenCount: tokenCount)
         }
         
         private func passThroughDecrypt(_ content: String) -> String {

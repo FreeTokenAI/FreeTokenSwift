@@ -432,7 +432,7 @@ extension FreeToken {
                 tokenCount += messageTokenCount
                 
                 if messageTokenCount == 0 {
-                    FreeToken.shared.logger("✉️ Message \(String(describing: message.id)) has a ZERO token count attribute - this may cause context window calculation problems", .warning)
+                    FreeToken.shared.logger("✉️ Message has a ZERO token count attribute - this may cause context window calculation problems - message content: \(message.content)", .warning)
                 }
             }
                 

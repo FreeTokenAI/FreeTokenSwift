@@ -415,26 +415,38 @@ extension FreeToken {
         
         struct ToolDefinitions: Decodable {
             let prompt: String
+            let tokenCount: Int
             let toolNames: [String]
             
             enum CodingKeys: String, CodingKey {
                 case prompt
+                case tokenCount = "token_count"
                 case toolNames = "tool_names"
             }
         }
         
         
         struct SystemPromptParts: Decodable {
-            let instructions: String
+            let instructions: SystemPromptPart
             let toolDefinitions: ToolDefinitions?
-            let threadSearchResultsContext: String?
-            let pinnedContext: String?
+            let threadSearchResultsContext: SystemPromptPart?
+            let pinnedContext: SystemPromptPart?
             
             enum CodingKeys: String, CodingKey {
                 case instructions
                 case toolDefinitions = "tool_definitions"
                 case threadSearchResultsContext = "thread_search_results_context"
                 case pinnedContext = "pinned_context"
+            }
+        }
+        
+        struct SystemPromptPart: Decodable {
+            let content: String
+            let tokenCount: Int
+            
+            enum CodingKeys: String, CodingKey {
+                case content
+                case tokenCount = "token_count"
             }
         }
         
@@ -516,7 +528,7 @@ extension FreeToken {
             let content: String
             let toolCalls: String?
             let encryptionEnabled: Bool?
-            let tokenCount: Int?
+            let tokenCount: Int
             let createdAt: Date?
             let updatedAt: Date?
             
@@ -815,15 +827,15 @@ extension FreeToken {
             self.tokenCount = nil
         }
         
-        internal init(role: MessageRole, content: String, tokenUsage: TokenUsage? = nil) {
+        internal init(role: MessageRole, content: String, tokenUsage: TokenUsage? = nil, tokenCount: Int? = nil) {
             self.role = role
             self.content = content
             self.tokenUsage = tokenUsage
+            self.tokenCount = tokenCount
             
             self.id = nil
             self.createdAt = nil
             self.updatedAt = nil
-            self.tokenCount = nil
         }
         
         internal init(from showMessageResponse: Codings.ShowMessageResponse) {

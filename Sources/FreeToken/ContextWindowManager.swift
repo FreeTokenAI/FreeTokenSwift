@@ -119,6 +119,12 @@ extension FreeToken {
         }
         
         private func slidingWindow(contentBlocks: [ContentBlock], availableTokens: Int) -> [ContentBlock] {
+            guard !contentBlocks.isEmpty else {
+                // There are no content blocks to include in the sliding window.
+                return []
+            }
+            
+            
             // Take the last messages from the array first and work your way back until there are no more messages or no more available tokens.
             var remainingTokens = availableTokens
             

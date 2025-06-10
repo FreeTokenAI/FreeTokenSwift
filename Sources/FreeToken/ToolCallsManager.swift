@@ -9,20 +9,22 @@ import Foundation
 
 extension FreeToken {
     class ToolCallsManager: @unchecked Sendable {
-        private let rawToolCalls: String
+        private let messageContent: String
+        private let toolNames: [String]
         
         private let availableCloudToolCalls: [String]
-        private let internalLocalToolCalls = ["article_lookup", "web_search", "void"]
+        private let internalLocalToolCalls = ["article_lookup", "web_search"]
         private let documentSearchScope: String?
         
         private var toolCalls: [ToolCall] = []
         
         private let unhandledInternalToolCallError = Codings.ErrorResponse(error: "unhandledInternalToolCall", message: "A tool call was classified as internal, but was not handled by code. This could happen if your client is out of date.", code: 4000)
         
-        internal init(toolCalls rawToolCalls: String, availableCloudToolCalls: [String], documentSearchScope: String?) {
-            self.rawToolCalls = rawToolCalls
+        internal init(messageContent: String, availableCloudToolCalls: [String], toolNames: [String], documentSearchScope: String?) {
+            self.messageContent = messageContent
             self.availableCloudToolCalls = availableCloudToolCalls
             self.documentSearchScope = documentSearchScope
+            self.toolNames = toolNames
         }
         
         actor ToolCallResultsCollector {
@@ -105,19 +107,9 @@ extension FreeToken {
         }
         
         private func parseToolCalls() throws {
-            let parser = ParseToolCalls(toolCalls: rawToolCalls)
-            try parser.call()
+            let parser = ParseToolCalls(messageContent: messageContent, toolNames: toolNames)
             
-            self.toolCalls = parser.parsedTools.map { toolCall in
-                var name: String = ""
-                var args: [String: String] = [:]
-                if case let .name(n) = toolCall["name"], case let .arguments(a) = toolCall["arguments"] {
-                    name = n
-                    args = a
-                }
-                
-                return ToolCall(name: name, arguments: args)
-            }
+            self.toolCalls = try parser.parse()
         }
         
         private func handleInternalLocalCalls(toolCalls: [ToolCall]) async -> String {
