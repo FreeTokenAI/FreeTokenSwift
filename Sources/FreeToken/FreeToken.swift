@@ -124,6 +124,7 @@ public class FreeToken: @unchecked Sendable {
         case stream_ended = "stream_ended"
         case sending_to_local_ai = "sending_to_local_ai"
         case sending_to_cloud_ai = "sending_to_cloud_ai"
+        case evaluating_tool_calls = "evaluating_tool_calls"
     }
     
     // Methods:
@@ -768,7 +769,7 @@ public class FreeToken: @unchecked Sendable {
         
         do {
             let uuid = UUID().uuidString
-            result = try await aiModelManager.runEngine(prompt: prompt, maxTokens: maxTokens, runIdentifier: uuid)
+            result = try await aiModelManager.runEngine(prompt: prompt, maxTokens: maxTokens, runIdentifier: uuid, noContextCache: true)
             let completion = Completion(response: result!.response)
 
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: result!.usage)
@@ -1129,6 +1130,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///     - chatStatusStream: Optional closure to capture the status of the chat stream
     ///     - toolCallback: Optional closure to handle tool calls
+    ///     - toolRunOnly: Boolean to indicate if this run is only to generate tool calls, not for a user response
     ///
     /// - Returns: Void
     public func runMessageThread(
@@ -1138,7 +1140,10 @@ public class FreeToken: @unchecked Sendable {
         success successCompletion: @escaping @Sendable (Message) -> Void,
         error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void,
         chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil,
-        toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil) async {
+        toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil,
+        toolRunOnly: Bool = true,
+        maxTokens: Int? = nil
+    ) async {
         
             chatStatusStream?(nil, .starting)
         guard isDeviceRegistered() else {
@@ -1192,7 +1197,19 @@ public class FreeToken: @unchecked Sendable {
                     
                     // Assemble the system prompt
                     let systemPromptManager = SystemPromptManager(decrypt: self.decrypt, systemPromptParts: response.systemPromptParts, threadSearchResults: response.threadSearchResults)
-                    messages.append(systemPromptManager.generate())
+                    
+                    let systemPrompt: Message
+                    
+                    
+                    if toolRunOnly == true {
+                        // The system prompt will only contain tool definitions
+                        systemPrompt = systemPromptManager.generateTool()
+                    } else {
+                        // The system prompt will not have tool definitions
+                        systemPrompt = systemPromptManager.generateWithoutTools()
+                    }
+                    
+                    messages.append(systemPrompt)
                     
                     // Add prompt messages to the messages array
                     let promptMessages = response.promptMessages.map { message in
@@ -1225,43 +1242,7 @@ public class FreeToken: @unchecked Sendable {
                                     // If tools are defined on the server (in the system prompt) then try to process them.
                                     if let toolDefinitions = response.systemPromptParts.toolDefinitions {
                                         FreeToken.shared.logger("🛠️ Checking for tool calls", .info)
-                                        let toolCallManager = ToolCallsManager(messageContent: resultMessage.content, availableCloudToolCalls: self.deviceDetails!.availableCloudToolCalls, toolNames: toolDefinitions.toolNames, documentSearchScope: documentSearchScope)
-                                        
-                                        try toolCallManager.process(externalToolCallHandler: toolCallback) { toolCalls in
-                                            // TODO: Future Feature: Handle Cloud Tool Calls
-                                            return ""
-                                        } success: { result in
-                                            if result != "" {
-                                                // Tool result was returned
-                                                // Create a tool message
-                                                FreeToken.shared.logger("🔧 Tool calls processed successfully", .info)
-                                                let jsonResult = "{\"toolResults\": \"\(result)\"}"
-                                                let toolMessage = Message(role: .tool, content: jsonResult)
-                                                Task {
-                                                    await self.addMessageToThread(messageThreadID: messageThreadID, message: toolMessage) { toolResultMessage in
-                                                        // Run message thread again with tool result
-                                                        Task {
-                                                            await self.runMessageThread(id: messageThreadID, forceCloudRun: forceCloudRun, documentSearchScope: documentSearchScope, success: successCompletion, error: errorCompletion, chatStatusStream: chatStatusStream, toolCallback: toolCallback)
-                                                        }
-                                                    } error: { error in
-                                                        FreeToken.shared.logger("🔴 Failed to add tool result message: \(error)", .error)
-                                                        errorCompletion(error)
-                                                    }
-                                                }
-                                            } else {
-                                                // No tool result, just call the success callback
-                                                if cloudRun == true {
-                                                    profiler.end(eventType: Profiler.EventType.runMessageThreadCloud, isSuccess: true, tokenStats: resultMessage.tokenUsage)
-                                                } else {
-                                                    profiler.end(eventType: Profiler.EventType.runMessageThreadLocal, isSuccess: true, tokenStats: resultMessage.tokenUsage)
-                                                }
-                                                
-                                                FreeToken.shared.logger("✅ Message thread run completed successfully", .info)
-                                                
-                                                chatStatusStream?(nil, .stream_ended)
-                                                successCompletion(message)
-                                            }
-                                        }
+                                        try self.runToolCall(messageThreadID: messageThreadID, aiMessage: resultMessage, toolNames: toolDefinitions.toolNames, profiler: profiler, isCloudRun: cloudRun, documentSearchScope: documentSearchScope, toolCallback: toolCallback, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
                                     } else {
                                         // No tools were defined on the server, just call the success callback
                                         chatStatusStream?(nil, .stream_ended)
@@ -1293,7 +1274,7 @@ public class FreeToken: @unchecked Sendable {
                         
                         FreeToken.shared.logger("🧠 Sending messages to the cloud for chat completion", .info)
                         // Send messages to the cloud for completion
-                        self.generateCloudChatCompletion(messages: contextWindowMessages, chatStatusStream: chatStatusStream, success: successResult, error: errorResult)
+                        self.generateCloudChatCompletion(messages: contextWindowMessages, maxTokens: maxTokens, chatStatusStream: chatStatusStream, success: successResult, error: errorResult)
                     } else {
                         // Run locally
                         chatStatusStream?(nil, .sending_to_local_ai)
@@ -1304,7 +1285,7 @@ public class FreeToken: @unchecked Sendable {
                         let usage: TokenUsage
                         
                         do {
-                            (resultContent, usage) = try await self.aiModelManager!.sendPromptToAI(prompt: tokenString, runIdentifier: messageThreadID) { token in
+                            (resultContent, usage) = try await self.aiModelManager!.sendPromptToAI(prompt: tokenString,  runIdentifier: messageThreadID, maxTokens: maxTokens) { token in
                                 chatStatusStream?(token, .streaming_tokens)
                                 // TODO: Try to start handling tool calls before the AI completes
                             }
@@ -1312,7 +1293,9 @@ public class FreeToken: @unchecked Sendable {
                             let resultMessage = Message(role: .assistant, content: resultContent, tokenUsage: usage)
                             successResult(resultMessage)
                         } catch {
-                            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error as! Codings.ErrorResponse))
+                            let errorResponse = error as! FreeTokenError
+                            FreeToken.shared.logger("🔴 Local AI run failed with error: \(errorResponse.message ?? errorResponse.localizedDescription)", .error)
+                            errorCompletion(error as! FreeTokenError)
                         }
                     }
                 }
@@ -1321,6 +1304,57 @@ public class FreeToken: @unchecked Sendable {
                 FreeToken.shared.logger("Message thread run failed with error \(error.message ?? error.localizedDescription)", .error)
                 chatStatusStream?(nil, .failed)
                 errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+            }
+        }
+    }
+    
+    private func runToolCall(
+            messageThreadID: String,
+            aiMessage resultMessage: Message,
+            toolNames: [String] = [],
+            profiler: Profiler,
+            isCloudRun cloudRun: Bool = false,
+            documentSearchScope: String? = nil,
+            toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil,
+            chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil,
+            success successCompletion: @escaping @Sendable (Message) -> Void,
+            error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void
+    ) throws {
+        let toolCallManager = ToolCallsManager(messageContent: resultMessage.content, availableCloudToolCalls: self.deviceDetails!.availableCloudToolCalls, toolNames: toolNames, documentSearchScope: documentSearchScope)
+        
+        try toolCallManager.process(externalToolCallHandler: toolCallback) { toolCalls in
+            // TODO: Future Feature: Handle Cloud Tool Calls
+            return ""
+        } success: { result in
+            if result != "" {
+                // Tool result was returned
+                // Create a tool message
+                FreeToken.shared.logger("🔧 Tool calls processed successfully", .info)
+                let jsonResult = "{\"toolResults\": \"\(result)\"}"
+                let toolMessage = Message(role: .tool, content: jsonResult)
+                Task {
+                    await self.addMessageToThread(messageThreadID: messageThreadID, message: toolMessage) { toolResultMessage in
+                        // Run message thread again with tool result
+                        Task {
+                            await self.runMessageThread(id: messageThreadID, forceCloudRun: cloudRun, documentSearchScope: documentSearchScope, success: successCompletion, error: errorCompletion, chatStatusStream: chatStatusStream, toolCallback: toolCallback, toolRunOnly: false)
+                        }
+                    } error: { error in
+                        FreeToken.shared.logger("🔴 Failed to add tool result message: \(error)", .error)
+                        errorCompletion(error)
+                    }
+                }
+            } else {
+                // No tool result, just call the success callback
+                if cloudRun == true {
+                    profiler.end(eventType: Profiler.EventType.runMessageThreadCloud, isSuccess: true, tokenStats: resultMessage.tokenUsage)
+                } else {
+                    profiler.end(eventType: Profiler.EventType.runMessageThreadLocal, isSuccess: true, tokenStats: resultMessage.tokenUsage)
+                }
+                
+                FreeToken.shared.logger("✅ Message thread run completed successfully", .info)
+                
+                chatStatusStream?(nil, .stream_ended)
+                successCompletion(resultMessage)
             }
         }
     }

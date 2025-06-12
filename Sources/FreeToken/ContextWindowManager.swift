@@ -17,6 +17,7 @@ extension FreeToken {
         
         let maxPromptWindowSize: Int
         let modelManager: AIModelManager
+        let reserveTokens: Int = 100
         
         struct ContentBlock {
             let content: String
@@ -32,7 +33,7 @@ extension FreeToken {
         
         init(modelManager: AIModelManager) {
             let modelConfig = modelManager.modelOptions
-            self.maxPromptWindowSize = modelConfig.contextWindowSize - modelConfig.maxTokenCount
+            self.maxPromptWindowSize = modelConfig.contextWindowSize - modelConfig.maxTokenCount - self.reserveTokens
             self.modelManager = modelManager
         }
         

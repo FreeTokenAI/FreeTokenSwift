@@ -17,7 +17,7 @@ extension FreeToken {
             self.decrypt = decrypt
         }
 
-        func generate() -> Message {
+        func generateWithoutTools() -> Message {
             var systemContext = systemPromptParts.instructions.content
             var tokenCount = 0
             
@@ -30,14 +30,21 @@ extension FreeToken {
                 }
             }
             
-            if let toolDefinitions = systemPromptParts.toolDefinitions {
-                systemContext += toolDefinitions.prompt
-                tokenCount += toolDefinitions.tokenCount
-            }
-            
             if let pinnedContext = systemPromptParts.pinnedContext {
                 systemContext += "\n\n\(passThroughDecrypt(pinnedContext.content))\n\n"
                 tokenCount += pinnedContext.tokenCount
+            }
+            
+            return Message(role: .system, content: systemContext, tokenCount: tokenCount)
+        }
+        
+        func generateTool() -> Message {
+            var systemContext = systemPromptParts.instructions.content
+            var tokenCount = 0
+
+            if let toolDefinitions = systemPromptParts.toolDefinitions {
+                systemContext += toolDefinitions.prompt
+                tokenCount += toolDefinitions.tokenCount
             }
             
             return Message(role: .system, content: systemContext, tokenCount: tokenCount)

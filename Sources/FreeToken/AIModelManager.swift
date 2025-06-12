@@ -47,7 +47,7 @@ extension FreeToken {
         
         actor AIStateManager {
             @LlamaCppSwiftActor
-            var engine: LlamaCppSimpleRun?
+            var engine: LlamaCppMultiContextRun?
             var state: ModelState = .unverified
             var loadedState: LoadedState = .unloaded
             
@@ -79,13 +79,13 @@ extension FreeToken {
             
             
             @LlamaCppSwiftActor
-            private func getEngine() -> LlamaCppSimpleRun? {
+            private func getEngine() -> LlamaCppMultiContextRun? {
                 return engine
             }
             
             @LlamaCppSwiftActor
             func initializeEngine(modelPath: String, configuration: AIModelConfiguration) async {
-                self.engine = LlamaCppSimpleRun(modelPath: modelPath, configuration: configuration)
+                self.engine = LlamaCppMultiContextRun(modelPath: modelPath, configuration: configuration)
             }
             
             @LlamaCppSwiftActor
@@ -109,7 +109,7 @@ extension FreeToken {
             }
             
             @LlamaCppSwiftActor
-            func generate(for prompt: String, maxTokens: Int? = nil, runIdentifier: String) async throws -> AsyncThrowingStream<String, Error> {
+            func generate(for prompt: String, maxTokens: Int? = nil, runIdentifier: String, noContextCache: Bool = false) async throws -> AsyncThrowingStream<String, Error> {
                 guard let engine = self.engine else {
                     throw AIModelManager.aiModelNotLoadedError
                 }
@@ -118,7 +118,7 @@ extension FreeToken {
                     throw AIModelManager.aiModelNotLoadedError
                 }
                 
-                return engine.generate(prompt: prompt, runIdentifier: runIdentifier, maxTokens: maxTokens)
+                return engine.generate(prompt: prompt, runIdentifier: runIdentifier, maxTokens: maxTokens, isOneTimeRun: noContextCache)
             }
             
             @LlamaCppSwiftActor
@@ -347,7 +347,7 @@ extension FreeToken {
             return try await self.stateManager.tokenCount(text)
         }
         
-        func sendPromptToAI(prompt: String, runIdentifier: String, tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
+        func sendPromptToAI(prompt: String, runIdentifier: String, maxTokens: Int? = nil, tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
             guard await self.stateManager.getState() == .downloaded else {
                 throw self.aiModelNotDownloadedError
             }
@@ -356,7 +356,7 @@ extension FreeToken {
                 _ = await loadModel()
             }
             
-            return try await self.runEngine(prompt: prompt, runIdentifier: runIdentifier, tokenStream: tokenStream)
+            return try await self.runEngine(prompt: prompt, maxTokens: maxTokens, runIdentifier: runIdentifier, tokenStream: tokenStream)
         }
         
         func sendMessagesToAI(messages: [Message], runIdentifier: String, tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> (response: Message, usage: TokenUsage) {
@@ -444,7 +444,7 @@ extension FreeToken {
             return (prompt, tokenCount)
         }
         
-        internal func runEngine(prompt: String, maxTokens: Int? = nil, runIdentifier: String, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
+        internal func runEngine(prompt: String, maxTokens: Int? = nil, runIdentifier: String, noContextCache: Bool = false, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
             if await self.stateManager.getLoadedState() != .loaded {
                 _ = await loadModel()
             }
@@ -458,7 +458,7 @@ extension FreeToken {
 
             FreeToken.shared.logger("Prompt tokens count: \(tokenCount)", .info)
 
-            for try await value in try await self.stateManager.generate(for: prompt, maxTokens: maxTokens, runIdentifier: runIdentifier) {
+            for try await value in try await self.stateManager.generate(for: prompt, maxTokens: maxTokens, runIdentifier: runIdentifier, noContextCache: noContextCache) {
                 print(value, terminator: "")
                 responseContent += value
                 if let streamHandler = tokenStream {
