@@ -669,7 +669,7 @@ extension FreeToken {
                 
                 // Convert token to string and process output
                 var piece = [CChar](repeating: 0, count: 32)
-                let nPiece = llama_token_to_piece(vocab, nextToken, &piece, 32, 0, false)
+                let nPiece = llama_token_to_piece(vocab, nextToken, &piece, 32, 0, true)
                 if nPiece > 0 {
                     let index = min(Int(nPiece), piece.count - 1)
                     piece[index] = 0

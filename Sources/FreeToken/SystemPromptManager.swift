@@ -19,7 +19,7 @@ extension FreeToken {
 
         func generateWithoutTools() -> Message {
             var systemContext = systemPromptParts.instructions.content
-            var tokenCount = 0
+            var tokenCount = systemPromptParts.instructions.tokenCount
             
             if let threadSearchResultsContext = systemPromptParts.threadSearchResultsContext {
                 systemContext += threadSearchResultsContext.content
