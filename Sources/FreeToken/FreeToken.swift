@@ -1330,8 +1330,15 @@ public class FreeToken: @unchecked Sendable {
                 // Tool result was returned
                 // Create a tool message
                 FreeToken.shared.logger("🔧 Tool calls processed successfully", .info)
-                let jsonResult = "{\"toolResults\": \"\(result)\"}"
-                let toolMessage = Message(role: .tool, content: jsonResult)
+                
+                let toolResult: String
+                if self.deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults == true {
+                    toolResult = "{\"toolResults\": \"\(result)\"}"
+                } else {
+                    toolResult = result
+                }
+
+                let toolMessage = Message(role: .tool, content: toolResult)
                 Task {
                     await self.addMessageToThread(messageThreadID: messageThreadID, message: toolMessage) { toolResultMessage in
                         // Run message thread again with tool result

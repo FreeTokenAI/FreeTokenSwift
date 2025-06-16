@@ -15,6 +15,7 @@ extension FreeToken {
         let modelCode: String
         let specialTokens: Codings.AiModelConfigResponse.SpecialTokens
         let modelOptions: Codings.AiModelConfigResponse.ModelOptions
+        let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
         
         private let clientConfig: Codings.ShowClientConfig
         private let clientVersion: String
@@ -158,6 +159,7 @@ extension FreeToken {
             self.modelSizeBytes = modelConfig.sizeBytes
             self.specialTokens = modelConfig.config.specialTokens
             self.modelOptions = modelConfig.config.defaultSettings
+            self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
             
             if overrideModelPath == nil {
                 // Model should be setup for download
@@ -410,12 +412,20 @@ extension FreeToken {
                 tokenCount += 1
             }
             
-            if message.role == .tool {
-                prompt += modelOptions.toolRole
-            } else {
-                prompt += message.role.rawValue
+            switch message.role {
+                case .user:
+                prompt += promptTemplateConfig.userRole
+                if promptTemplateConfig.userRole != "" { tokenCount += 1 }
+                case .assistant:
+                prompt += promptTemplateConfig.assistantRole
+                if promptTemplateConfig.assistantRole != "" { tokenCount += 1 }
+                case .tool:
+                prompt += promptTemplateConfig.toolRole
+                if promptTemplateConfig.toolRole != "" { tokenCount += 1 }
+                case .system:
+                prompt += promptTemplateConfig.systemRole
+                if promptTemplateConfig.systemRole != "" { tokenCount += 1 }
             }
-            tokenCount += 1 // Token for user/assistant/etc.
             
             prompt += tokens.endHeaderId
             if tokens.endHeaderId != "" {
@@ -427,6 +437,7 @@ extension FreeToken {
             }
             
             prompt += message.content
+
             if message.content != "" {
                 let messageTokenCount = message.tokenCount ?? 0
                 tokenCount += messageTokenCount
@@ -435,7 +446,7 @@ extension FreeToken {
                     FreeToken.shared.logger("✉️ Message has a ZERO token count attribute - this may cause context window calculation problems - message content: \(message.content)", .warning)
                 }
             }
-                
+
             prompt += tokens.endOfTurnId
             if tokens.endOfTurnId != "" {
                 tokenCount += 1

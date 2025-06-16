@@ -130,9 +130,7 @@ extension FreeToken {
                 let penaltyRepeat: Float
                 let penaltyFrequency: Float
                 let penaltyPresence: Float
-                let toolRole: String
                 let stopTokens: [String]
-                let codeTag: String
                 
                 enum CodingKeys: String, CodingKey {
                     case topK = "top_k"
@@ -144,36 +142,52 @@ extension FreeToken {
                     case penaltyRepeat = "penalty_repeat"
                     case penaltyFrequency = "penalty_frequency"
                     case penaltyPresence = "penalty_presence"
-                    case toolRole = "tool_role"
                     case stopTokens = "stop_tokens"
-                    case codeTag = "code_tag"
                 }
             }
             
             struct SpecialTokens: Decodable {
                 let beginningOfText: String
-                let endOfText: String
                 let startHeaderId: String
                 let endHeaderId: String
-                let endOfMessageId: String
                 let endOfTurnId: String
                 
                 enum CodingKeys: String, CodingKey {
                     case beginningOfText = "beginning_of_text"
-                    case endOfText = "end_of_text"
                     case startHeaderId = "start_header_id"
                     case endHeaderId = "end_header_id"
-                    case endOfMessageId = "end_of_message_id"
                     case endOfTurnId = "end_of_turn_id"
+                }
+            }
+            
+            struct PromptTemplateConfig: Decodable {
+                let toolRole: String
+                let userRole: String
+                let assistantRole: String
+                let systemRole: String
+                let appendSystemToUserPrompt: Bool
+                let messagesAlwaysStartWithUser: Bool
+                let jsonToolResults: Bool
+                
+                enum CodingKeys: String, CodingKey {
+                    case toolRole = "tool_role"
+                    case userRole = "user_role"
+                    case assistantRole = "assistant_role"
+                    case systemRole = "system_role"
+                    case appendSystemToUserPrompt = "append_system_to_user_prompt"
+                    case messagesAlwaysStartWithUser = "messages_always_start_with_user"
+                    case jsonToolResults = "json_tool_results"
                 }
             }
             
             let defaultSettings: ModelOptions
             let specialTokens: SpecialTokens
+            let promptTemplateConfig: PromptTemplateConfig
             
             enum CodingKeys: String, CodingKey {
                 case defaultSettings = "default_settings"
                 case specialTokens = "special_tokens"
+                case promptTemplateConfig = "prompt_template_config"
             }
         }
         

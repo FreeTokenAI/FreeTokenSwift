@@ -18,6 +18,8 @@ extension FreeToken {
         let maxPromptWindowSize: Int
         let modelManager: AIModelManager
         let reserveTokens: Int = 100
+        let alwaysStartWithUserMessage: Bool
+        let appendSystemToUserPrompt: Bool
         
         struct ContentBlock {
             let content: String
@@ -35,6 +37,8 @@ extension FreeToken {
             let modelConfig = modelManager.modelOptions
             self.maxPromptWindowSize = modelConfig.contextWindowSize - modelConfig.maxTokenCount - self.reserveTokens
             self.modelManager = modelManager
+            self.alwaysStartWithUserMessage = modelManager.promptTemplateConfig.messagesAlwaysStartWithUser
+            self.appendSystemToUserPrompt = modelManager.promptTemplateConfig.appendSystemToUserPrompt
         }
         
         func generate(messages: [Message]) async throws -> String {
@@ -78,18 +82,18 @@ extension FreeToken {
         
         private func messagesGenerate(systemPrompt: Message, promptMessage: Message, chatHistory: [Message]) async throws -> [ContentBlock] {
             let systemPromptBlock = generateBlock(message: systemPrompt)
-            let userMessageBlock = generateBlock(message: promptMessage)
+            let promptMessageBlock = generateBlock(message: promptMessage)
             let chatHistoryBlocks = chatHistory.map { message in
                 return self.generateBlock(message: message)
             }
             
             let assistantPromptBlock = generateBlock(message: Message(role: .assistant, content: ""), headerOnly: true)
             
-            guard preFlight([systemPromptBlock, userMessageBlock, assistantPromptBlock]) else {
+            guard preFlight([systemPromptBlock, promptMessageBlock, assistantPromptBlock]) else {
                 throw Self.notEnoughAvailableTokensError
             }
 
-            return assembleBlocks(systemBlock: systemPromptBlock, userBlock: userMessageBlock, chatHistoryBlocks: chatHistoryBlocks, assistantBlock: assistantPromptBlock)
+            return assembleBlocks(systemBlock: systemPromptBlock, userBlock: promptMessageBlock, chatHistoryBlocks: chatHistoryBlocks, assistantBlock: assistantPromptBlock)
         }
         
         private func preFlight(_ blocks: [ContentBlock]) -> Bool {
@@ -112,9 +116,32 @@ extension FreeToken {
         private func assembleBlocks(systemBlock: ContentBlock, userBlock: ContentBlock, chatHistoryBlocks: [ContentBlock], assistantBlock: ContentBlock) -> [ContentBlock] {
             let availableTokens = maxPromptWindowSize
             let slidingWindowTokens = availableTokens - systemBlock.tokenCount - userBlock.tokenCount - assistantBlock.tokenCount
-            let slidingWindowBlocks = slidingWindow(contentBlocks: chatHistoryBlocks, availableTokens: slidingWindowTokens)
+            var slidingWindowBlocks = slidingWindow(contentBlocks: chatHistoryBlocks, availableTokens: slidingWindowTokens)
             
-            let blocks: [ContentBlock] = [systemBlock] + slidingWindowBlocks + [userBlock, assistantBlock]
+            var blocks: [ContentBlock]
+            var userBlock = userBlock
+            
+            if appendSystemToUserPrompt == true {
+                if let firstBlock = slidingWindowBlocks.first {
+                    // Append to first Message in sliding window
+                    let message = Message(role: firstBlock.message.role, content: (systemBlock.content + "\n\n" + firstBlock.message.content), tokenCount: firstBlock.tokenCount + systemBlock.tokenCount)
+                    let newBlock = generateBlock(message: message)
+                    slidingWindowBlocks.removeFirst()
+                    
+                    slidingWindowBlocks.insert(newBlock, at: 0)
+                } else {
+                    // Append to userBlock prompt
+                    let content = systemBlock.message.content + "\n\n" + userBlock.message.content
+                    
+                    let message = Message(role: userBlock.message.role, content: content, tokenCount: userBlock.tokenCount + systemBlock.tokenCount)
+                    
+                    userBlock = generateBlock(message: message)
+                }
+                
+                blocks = slidingWindowBlocks + [userBlock, assistantBlock]
+            } else {
+                blocks = [systemBlock] + slidingWindowBlocks + [userBlock, assistantBlock]
+            }
             
             return blocks
         }
@@ -142,10 +169,16 @@ extension FreeToken {
                 }
             }
             
-            let blocks = blocksToInclude.reversed() as Array<ContentBlock>
+            var blocks: [ContentBlock] = blocksToInclude.reversed()
+            
+            if alwaysStartWithUserMessage == true {
+                while blocks.first?.message.role != .user && !blocks.isEmpty {
+                    blocks.removeFirst()
+                }
+            }
             
             if  blocks.isEmpty {
-                FreeToken.shared.logger("Warning: No content blocks were included in the sliding window due to token size constraints.", .warning)
+                FreeToken.shared.logger("⚠️ No content blocks were included in the message context sliding window due to token size constraints.", .warning)
             }
             
             return blocks
