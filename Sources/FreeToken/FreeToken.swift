@@ -783,6 +783,10 @@ public class FreeToken: @unchecked Sendable {
     ///
     func generateCloudChatCompletion(messages: [Message], model: String? = nil, maxTokens: Int? = nil, topK: Int? = nil, topP: Float? = nil, temperature: Float? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil, success successCallback: @escaping @Sendable (Message) -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) -> Void) {
         
+        // Filter out empty assistant message (not required for a cloud completion)
+        let messages = messages.filter { message in
+            !(message.role == .assistant && message.content == "")
+        }
         
         let requestMessages = messages.map { message in
             return Codings.CodableMessage(role: message.role.rawValue, content: message.content)
