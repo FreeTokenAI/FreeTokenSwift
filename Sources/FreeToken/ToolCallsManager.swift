@@ -136,7 +136,7 @@ extension FreeToken {
                 }
             } else if toolCall.name == "web_search", let query = toolCall.arguments["query"] {
                 return await withCheckedContinuation { continuation in
-                    internal_webSearch(query: query, freshness: toolCall.arguments["freshness"]) { result in
+                    internal_webSearch(query: query) { result in
                         continuation.resume(returning: result)
                     }
                 }
@@ -187,26 +187,23 @@ extension FreeToken {
             }
         }
         
-        private func internal_webSearch(query: String, freshness: String? = nil, success successCallback: @escaping @Sendable (_ result: String) -> Void) {
-            var freshnessEnum: FreeToken.WebSearchFreshness? = nil
+        private func internal_webSearch(query: String, success successCallback: @escaping @Sendable (_ result: String) -> Void) {
             
-            if freshness != nil {
-                freshnessEnum = FreeToken.WebSearchFreshness(rawValue: freshness!)
-            }
-            
-            FreeToken.shared.webSearch(query: query, freshness: freshnessEnum) { searchResults in
-                var result = "WEB SEARCH RESULTS\n\nUse these results to help answer the user's question:"
+            FreeToken.shared.webSearch(query: query) { searchResults in
+                var result = "WEB SEARCH RESULTS\n\nUse these results to answer the user's question:"
                 
                 for webResult in searchResults {
                     result.append("""
                     =================================================
                     WEB SEARCH RESULT: 
-                    NAME: \(webResult.name)
-                    URL: \(webResult.url)
-                    DATE PUBLISHED: \(webResult.datePublished ?? "Unknown")
-                    DATE LAST CRAWLED: \(webResult.dateLastCrawled ?? "Unknown")
-                    RESULT CONTENT: 
-                    \(webResult.summary)
+                    TITLE: \(webResult.title)
+                    URL: \(webResult.url != nil ? webResult.url!.absoluteString : "No URL provided")
+                    DESCRIPTION: \(webResult.description)
+                    RESULT AGE: \(webResult.age)
+                    \(webResult.metadata.isEmpty ? "" : "ADDITIONAL METADATA: \(webResult.metadata)")
+                    RELEVANT CONTENT CHUNKS: 
+                    \(webResult.snippet)
+                    
                 """)
                 }
                 

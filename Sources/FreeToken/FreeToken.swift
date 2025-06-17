@@ -109,14 +109,6 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    enum WebSearchFreshness: String {
-        case noLimit = "noLimit"
-        case oneDay = "oneDay"
-        case oneWeek = "oneWeek"
-        case oneMonth = "oneMonth"
-        case oneYear = "oneYear"
-    }
-    
     public enum ChatStreamStatus: String, @unchecked Sendable {
         case starting = "starting"
         case failed = "failed"
@@ -1062,14 +1054,14 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    func webSearch(query: String, resultCount: Int? = nil, freshness: WebSearchFreshness? = .noLimit, success successCompletion: @escaping @Sendable ([WebSearchResult]) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    func webSearch(query: String, resultCount: Int? = nil, success successCompletion: @escaping @Sendable ([WebSearchResult]) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
             return
         }
         
         let path = "tool_calls/web_search"
-        let data = Codings.WebSearchRequest(query: query, resultCount: resultCount, freshness: freshness?.rawValue)
+        let data = Codings.WebSearchRequest(query: query, resultCount: resultCount)
         
         let profiler = Profiler()
         postData(path: path, data: data, responseType: Codings.WebSearchResults.self) { result in
@@ -1503,6 +1495,8 @@ public class FreeToken: @unchecked Sendable {
     /// ```
     ///
     /// > Note: This is ephemerial and does not run via the cloud at all. This call does not include RAG or any context injection.
+    ///
+    /// > Note: This method does not manage context window size, be careful when using this method with large messages or many messages.
     ///
     /// > Warning: You must run ``downloadAIModel(completion:)`` prior to using this method. This will not work on devices
     /// > that do not support AI.

@@ -15,38 +15,26 @@ extension FreeToken {
         struct WebSearchRequest: Encodable {
             let query: String
             let resultCount: Int?
-            let freshness: String?
             
             enum CodingKeys: String, CodingKey {
                 case query
                 case resultCount = "result_count"
-                case freshness
             }
         }
 
-        
         struct WebSearchResults: Decodable {
             let results: [WebSearchResult]
         }
         
         struct WebSearchResult: Decodable {
-            let id: String
-            let name: String
-            let url: String
+            let title: String
+            let url: URL?
+            let type: String
             let snippet: String
-            let summary: String
-            let datePublished: String?
-            let dateLastCrawled: String?
-            
-            enum CodingKeys: String, CodingKey {
-                case id
-                case name
-                case url
-                case snippet
-                case summary
-                case datePublished = "date_published"
-                case dateLastCrawled = "date_last_crawled"
-            }
+            let description: String
+            let age: String
+            let thumbnail: URL?
+            let metadata: String
         }
         
         struct CreateDeviceSessionRequest: Encodable {
@@ -677,22 +665,22 @@ extension FreeToken {
     //MARK: - Public Classes
     
     public class WebSearchResult {
-        public let id: String
-        public let name: String
-        public let url: String
+        public let url: URL?
+        public let title: String
         public let snippet: String
-        public let summary: String
-        public let datePublished: String?
-        public let dateLastCrawled: String?
+        public let description: String
+        public let age: String
+        public let thumbnail: URL?
+        public let metadata: String
         
         internal init(from webSearchResultResponse: Codings.WebSearchResult) {
-            self.id = webSearchResultResponse.id
-            self.name = webSearchResultResponse.name
             self.url = webSearchResultResponse.url
+            self.title = webSearchResultResponse.title
             self.snippet = webSearchResultResponse.snippet
-            self.summary = webSearchResultResponse.summary
-            self.datePublished = webSearchResultResponse.datePublished
-            self.dateLastCrawled = webSearchResultResponse.dateLastCrawled
+            self.description = webSearchResultResponse.description
+            self.age = webSearchResultResponse.age
+            self.thumbnail = webSearchResultResponse.thumbnail
+            self.metadata = webSearchResultResponse.metadata
         }
 
     }
