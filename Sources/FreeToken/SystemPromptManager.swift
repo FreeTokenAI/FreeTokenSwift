@@ -40,7 +40,7 @@ extension FreeToken {
         
         func generateTool() -> Message {
             var systemContext = systemPromptParts.instructions.content
-            var tokenCount = 0
+            var tokenCount = systemPromptParts.instructions.tokenCount
 
             if let toolDefinitions = systemPromptParts.toolDefinitions {
                 systemContext += toolDefinitions.prompt
