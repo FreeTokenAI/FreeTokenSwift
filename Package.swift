@@ -33,7 +33,7 @@ let package = Package(
             ],
             path: "Sources/FreeToken"
         ),
-        .binaryTarget(name: "llama", path: "Frameworks/llama.xcframework"),
+        .binaryTarget(name: "llama", url: "https://github.com/ggml-org/llama.cpp/releases/download/b5699/llama-b5699-xcframework.zip", checksum: "19062d343f991ced0317aa56b23417fbfba537fa18e5a911d37f57ed326b3cb0"),
         .testTarget(
             name: "FreeTokenTests",
             dependencies: ["FreeToken"]
