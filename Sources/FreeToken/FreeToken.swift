@@ -122,7 +122,7 @@ public class FreeToken: @unchecked Sendable {
     // Methods:
     
     private init() {
-        self.baseURL = URL(string: "https://project-nova.fractionallab.com/api/v1/")!
+        self.baseURL = URL(string: "https://api.freetoken.ai/api/v1/")!
     }
     
     /// Configures the `FreeToken` client with the provided API key and base URL.
