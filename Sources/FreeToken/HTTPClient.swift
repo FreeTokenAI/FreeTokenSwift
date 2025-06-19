@@ -181,6 +181,45 @@ extension FreeToken {
             sendRequest(to: url, method: "POST", headers: headers, body: body, responseType: responseType, completion: completion)
         }
         
+        internal func delete(
+            from url: URL,
+            headers: [String: String] = [:],
+            completion: @escaping @Sendable (Result<Void, Codings.ErrorResponse>) -> Void
+        ) {
+            var request = URLRequest(url: url)
+            request.httpMethod = "DELETE"
+            request.allHTTPHeaderFields = headers
+            
+            let task = session.dataTask(with: request) { data, response, error in
+                if let error = error {
+                    // Handle client-side error
+                    let clientError = Codings.ErrorResponse(
+                        error: "ClientError",
+                        message: error.localizedDescription,
+                        code: nil
+                    )
+                    completion(.failure(clientError))
+                    return
+                }
+                
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    // Handle server-side error
+                    let serverError = Codings.ErrorResponse(
+                        error: "HTTPError",
+                        message: "Received HTTP status code \(String(describing: (response as? HTTPURLResponse)?.statusCode))",
+                        code: (response as? HTTPURLResponse)?.statusCode
+                    )
+                    completion(.failure(serverError))
+                    return
+                }
+                
+                completion(.success(()))
+            }
+            
+            task.resume()
+        }
+        
         internal func streamPost<T: Decodable>(
             to url: URL,
             headers: [String: String] = [:],

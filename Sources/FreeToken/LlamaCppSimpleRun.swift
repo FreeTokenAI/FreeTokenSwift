@@ -1,5 +1,6 @@
 import Foundation
 import llama
+import Metal
 
 extension FreeToken {
     @LlamaCppSwiftActor
@@ -130,7 +131,12 @@ extension FreeToken {
         
         /// Estimates memory usage and cleans up contexts if needed
         private func enforceMemoryLimits() throws {
+#if os(macOS)
+            let device = MTLCreateSystemDefaultDevice()
+            let availableMemory = device?.recommendedMaxWorkingSetSize ?? 0
+#else
             let availableMemory = os_proc_available_memory()
+#endif
             FreeToken.shared.logger("Available system memory is \(availableMemory / 1024 / 1024) mb", .info)
             
             if availableMemory < deviceMemoryBuffer {

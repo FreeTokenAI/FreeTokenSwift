@@ -436,6 +436,39 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    /// Delete a message thread
+    ///
+    /// ```
+    ///    client.deleteMessageThread(id: "[message-thread-id]", success: {
+    ///     // Message thread deleted successfully
+    ///     }, error: { error in
+    ///     // Failed to delete message thread
+    ///     })
+    /// ```
+    /// - Parameters:
+    ///   - id: ID of the message thread to delete
+    ///   - success: A closure that is executed when the message thread is successfully deleted
+    ///   - error: A closure that is executed if there is an error during the deletion of the message thread
+    /// - Returns: Void
+    public func deleteMessageThread(id: String, success successCompletion: @escaping @Sendable (_ id: String) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+        guard isDeviceRegistered() else {
+            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            return
+        }
+        
+        let path = "message_threads/\(id)"
+        deleteResource(path: path) { result in
+            switch result {
+            case .success:
+                FreeToken.shared.logger("🚮 Message thread deleted successfully: \(id)", .info)
+                successCompletion(id)
+            case .failure(let error):
+                FreeToken.shared.logger("🔴 Failed to delete message thread: \(error)", .error)
+                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+            }
+        }
+    }
+    
     /// Load a message thread from FreeToken Cloud
     ///
     /// ```
@@ -1625,7 +1658,7 @@ public class FreeToken: @unchecked Sendable {
     ///   - data: The object to send, encoded as JSON.
     ///   - responseType: The type of the expected response.
     ///   - completion: Completion handler with the decoded response or an error.
-    internal func postData<T: Decodable, U: Encodable>(
+    private func postData<T: Decodable, U: Encodable>(
         path: String,
         data: U,
         responseType: T.Type,
@@ -1700,6 +1733,37 @@ public class FreeToken: @unchecked Sendable {
         } catch {
             completion(.failure(error as! Codings.ErrorResponse))
         }
+    }
+    
+    /// Delete a resource
+    private func deleteResource(
+        path: String,
+        completion: @escaping @Sendable (Result<Void, Codings.ErrorResponse>) -> Void
+    ) {
+        guard isClientConfigured() else {
+            completion(.failure(self.clientNotConfiguredError))
+            return
+        }
+
+        let baseURL = self.baseURL!
+        let apiKey = self.appToken!
+        
+        let endpoint = baseURL.appendingPathComponent(path)
+        
+        // Set headers
+        var headers: [String: String] = [
+            "Authorization": "Bearer \(apiKey)",
+            "Content-Type": "application/json",
+            "Client-Type": clientType,
+            "Client-Version": clientVersion
+        ]
+        
+        if deviceSessionToken != nil {
+            headers["Device-Session-Token"] = deviceSessionToken
+        }
+
+        // Send the DELETE request
+        httpClient.delete(from: endpoint, headers: headers, completion: completion)
     }
 
 }
