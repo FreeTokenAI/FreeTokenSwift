@@ -15,14 +15,6 @@ extension FreeToken {
     class EmbeddingManager: @unchecked Sendable {
         static let shared = EmbeddingManager()
         
-        static let embeddingFailedError = Codings.ErrorResponse(error: "embeddingFailed", message: "The embedding model failed on the device.", code: 3000)
-        static let modelAlreadyDownloadingError = Codings.ErrorResponse(error: "modelDownloadingError", message: "The embedding model is downloading. Multiple download calls prohibited.", code: 3001)
-        static let modelDownloadError = Codings.ErrorResponse(error: "modelDownloadError", message: "The embedding model failed to download.", code: 3002)
-        static let unableToInitializeModel = Codings.ErrorResponse(error: "unableToInitializeModel", message: "The embedding model failed to initialize.", code: 3003)
-        static let unableToGenerateEmbedding = Codings.ErrorResponse(error: "unableToGenerateEmbedding", message: "The embedding model failed to generate an embedding.", code: 3004)
-        static let managerNotConfigured = Codings.ErrorResponse(error: "managerNotConfigured", message: "The embedding manager is not configured.", code: 3005)
-        static let couldNotRemoveModelError = Codings.ErrorResponse(error: "couldNotRemoveModelError", message: "Failed to remove model with error: Failed to remove model directory.", code: 3006)
-        
         enum ManagerState: Equatable {
             case unknown
             case configured
@@ -31,7 +23,6 @@ extension FreeToken {
         enum ModelState: Equatable {
             case unknown
             case downloading
-            case downloaded
             case downloadInvalid
             case ready
         }
@@ -72,13 +63,13 @@ extension FreeToken {
             
             if modelState == .downloading {
                 FreeToken.shared.logger("Embedding model is already downloading.", .info)
-                failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.modelAlreadyDownloadingError))
+                failureCallback?(FreeTokenError.modelAlreadyDownloading)
                 return
             }
             
             if managerState != .configured {
                 FreeToken.shared.logger("Embedding manager is not configured.", .error)
-                failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.managerNotConfigured))
+                failureCallback?(FreeTokenError.managerNotConfigured)
                 return
             }
             let config = self.config!
@@ -109,12 +100,12 @@ extension FreeToken {
                     modelState = .downloadInvalid
                     let errorDescription = error.localizedDescription
                     FreeToken.shared.logger("Error downloading embedding model files: \(errorDescription)", .error)
-                    failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.modelDownloadError))
+                    failureCallback?(FreeTokenError.modelDownload)
                 }
             } catch {
                 modelState = .downloadInvalid
                 FreeToken.shared.logger("Error downloading embedding model files: \(error.localizedDescription)", .error)
-                failureCallback?(FreeTokenError.convertErrorResponse(errorResponse: Self.modelDownloadError))
+                failureCallback?(FreeTokenError.modelDownload)
             }
         }
         
@@ -127,7 +118,7 @@ extension FreeToken {
                 modelState = .unknown
             } catch {
                 FreeToken.shared.logger("Error removing embedding model directory: \(error.localizedDescription)", .error)
-                throw FreeTokenError.convertErrorResponse(errorResponse: Self.couldNotRemoveModelError)
+                throw FreeTokenError.couldNotRemoveModel
             }
         }
 
@@ -152,9 +143,22 @@ extension FreeToken {
         }
         
         func generate(text: String) throws -> [Float] {
+            if modelState != .ready || modelState != .downloading {
+                FreeToken.shared.logger("Genreate called on embedding manager, but invalid model state, retrying download.", .warning)
+                Task.detached {
+                    await self.downloadModel()
+                }
+            }
+            
+            // If model is downloading, wait for it to be ready
+            while modelState == .downloading {
+                // Sleep for a short duration to avoid busy waiting
+                Thread.sleep(forTimeInterval: 0.2)
+            }
+            
             let model = initializeModel()
             if model == nil {
-                throw FreeTokenError.convertErrorResponse(errorResponse: Self.unableToInitializeModel)
+                throw FreeTokenError.unableToInitializeModel
             }
             
             var result: [Float]
@@ -163,7 +167,7 @@ extension FreeToken {
                 result = try model!.generate(text: text)
             } catch {
                 FreeToken.shared.logger("Error generating embedding: \(error.localizedDescription)", .error)
-                throw FreeTokenError.convertErrorResponse(errorResponse: Self.unableToGenerateEmbedding)
+                throw FreeTokenError.unableToGenerateEmbedding
             }
 
             return result
@@ -175,9 +179,7 @@ extension FreeToken {
             func generate(text: String) throws -> [Float]
         }
         
-        class GistEmbeddingV0Model: EmbeddingModel, @unchecked Sendable {
-            static let modelDoesNotExistAtPathError = Codings.ErrorResponse(error: "modelDoesNotExist", message: "The model does not exist at the specified path.", code: 7000)
-            
+        class GistEmbeddingV0Model: EmbeddingModel, @unchecked Sendable {            
             let name = "gist-embedding-v0"
             let maxTokens: Int = 512
             let hiddenSize: Int = 768
@@ -194,7 +196,7 @@ extension FreeToken {
                 if fileManager.fileExists(atPath: fullPath) {
                     _session = try ORTSession(env: env, modelPath: fullPath, sessionOptions: nil)
                 } else {
-                    throw Self.modelDoesNotExistAtPathError
+                    throw FreeTokenError.modelDoesNotExistAtPath(message: fullPath)
                 }
                 
                 return _session!
@@ -287,8 +289,7 @@ extension FreeToken {
                         let firstOutputName = allOutputNames.first,
                         let outputValue = outputs[firstOutputName]
                     else {
-                        throw NSError(domain: "EmbeddingModel", code: 1,
-                                      userInfo: [NSLocalizedDescriptionKey: "No output found in inference result"])
+                        throw FreeTokenError.noOutputsFoundInResult
                     }
 
                     // 12. Convert the tensor data into [Float]

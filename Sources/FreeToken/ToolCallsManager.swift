@@ -17,9 +17,7 @@ extension FreeToken {
         private let documentSearchScope: String?
         
         private var toolCalls: [ToolCall] = []
-        
-        private let unhandledInternalToolCallError = Codings.ErrorResponse(error: "unhandledInternalToolCall", message: "A tool call was classified as internal, but was not handled by code. This could happen if your client is out of date.", code: 4000)
-        
+                
         internal init(messageContent: String, availableCloudToolCalls: [String], toolNames: [String], documentSearchScope: String?) {
             self.messageContent = messageContent
             self.availableCloudToolCalls = availableCloudToolCalls
@@ -42,12 +40,12 @@ extension FreeToken {
         internal func process(
             externalToolCallHandler: Optional<@Sendable ([ToolCall]) -> String> = nil,
             cloudToolCallHandler: @escaping @Sendable ([ToolCall]) -> String,
-            success successCallback: @escaping @Sendable (_ result: String) -> Void
-        ) throws {
+            success successCallback: @escaping @Sendable (_ result: String) async -> Void
+        ) async throws {
             try parseToolCalls()
 
             if toolCalls.isEmpty {
-                successCallback("")
+                await successCallback("")
                 return
             }
 
@@ -94,14 +92,14 @@ extension FreeToken {
 
             // If all lists are empty, notify immediately (avoid hanging)
             if cloudToolCalls.isEmpty && remainingToolCalls.isEmpty && internalCalls.isEmpty {
-                successCallback("")
+                await successCallback("")
                 return
             }
 
             dispatchGroup.notify(queue: .main) {
                 Task {
                     let results = await toolCallResultsCollector.getResults()
-                    successCallback(results)
+                    await successCallback(results)
                 }
             }
         }
@@ -130,20 +128,24 @@ extension FreeToken {
         private func handleInternalLocalCall(toolCall: ToolCall) async throws -> String {
             if toolCall.name == "article_lookup", let query = toolCall.arguments["query"] {
                 return await withCheckedContinuation { continuation in
-                    internal_articleLookup(query: query, searchScope: documentSearchScope) { result in
-                        continuation.resume(returning: result)
+                    Task {
+                        await internal_articleLookup(query: query, searchScope: documentSearchScope) { result in
+                            continuation.resume(returning: result)
+                        }
                     }
                 }
             } else if toolCall.name == "web_search", let query = toolCall.arguments["query"] {
                 return await withCheckedContinuation { continuation in
-                    internal_webSearch(query: query) { result in
-                        continuation.resume(returning: result)
+                    Task {
+                        await internal_webSearch(query: query) { result in
+                            continuation.resume(returning: result)
+                        }
                     }
                 }
             } else if toolCall.name == "void" {
                 return ""
             } else {
-                throw FreeTokenError.convertErrorResponse(errorResponse: unhandledInternalToolCallError)
+                throw FreeTokenError.unhandledInternalToolCall
             }
         }
         
@@ -161,8 +163,8 @@ extension FreeToken {
             return externalToolCallHandler!(toolCalls)
         }
         
-        private func internal_articleLookup(query: String, searchScope: String?, success successCallback: @escaping @Sendable (_ result: String) -> Void) {
-            FreeToken.shared.searchDocuments(query: query, searchScope: searchScope, maxResults: 3) { searchResults in
+        private func internal_articleLookup(query: String, searchScope: String?, success successCallback: @escaping @Sendable (_ result: String) -> Void) async {
+            await FreeToken.shared.searchDocuments(query: query, searchScope: searchScope, maxResults: 3) { searchResults in
                 var result = "Article excerpts to help answer the user's question:"
                 
                 for documentChunk in searchResults.documentChunks {
@@ -187,9 +189,9 @@ extension FreeToken {
             }
         }
         
-        private func internal_webSearch(query: String, success successCallback: @escaping @Sendable (_ result: String) -> Void) {
+        private func internal_webSearch(query: String, success successCallback: @escaping @Sendable (_ result: String) -> Void) async {
             
-            FreeToken.shared.webSearch(query: query) { searchResults in
+            await FreeToken.shared.webSearch(query: query) { searchResults in
                 var result = "WEB SEARCH RESULTS\n\nUse these results to answer the user's question:"
                 
                 for webResult in searchResults {

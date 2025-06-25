@@ -10,7 +10,7 @@ import Metal
 
 extension FreeToken {
     class DeviceManager: @unchecked Sendable {
-        public var isAICapable: Bool {
+        var isAICapable: Bool {
             get {
                 return sufficientVRAM && sufficientMetalSupport
             }
@@ -18,7 +18,7 @@ extension FreeToken {
         private let sufficientVRAM: Bool
         private let sufficientMetalSupport: Bool
         
-        public init(memoryRequirement: Int) {
+        init(memoryRequirement: Int) {
             #if os(macOS)
                 // CHeck available memory on macOS
                 let device = MTLCreateSystemDefaultDevice()
@@ -36,7 +36,7 @@ extension FreeToken {
                     format: "%.1fMB", Double(vRAM) / Double(1 << 20)
                 )
                 let errorMessage = (
-                    "[FreeToken] The system cannot provide \(requiredMemory) VRAM (\(availableMemory) available) as requested to the app. The model cannot be initialized on the device."
+                    "The system cannot provide \(requiredMemory) VRAM (\(availableMemory) available) as requested to the app. The model cannot be initialized on the device."
                 )
                 FreeToken.shared.logger(errorMessage, .error)
                 

@@ -11,9 +11,14 @@ public class FreeToken: @unchecked Sendable {
     }
     
     let clientVersion = "1.0.0"
+    #if os(iOS)
     let clientType = "iOS"
+    #elseif os(macOS)
+    let clientType = "macOS"
+    #endif
     let telemetryDataVersion = 1
     let httpClient = HTTPClient()
+    let messagesManager: MessagesManager
     var baseURL: URL? = nil
     var appToken: String? = nil
     var deviceSessionToken: String? = nil
@@ -22,7 +27,7 @@ public class FreeToken: @unchecked Sendable {
         get {
             if _aiModelManager != nil { return self._aiModelManager } // Memoized
             if isDeviceRegistered() == false { return nil } // Device not registered
-            self._aiModelManager = AIModelManager(modelConfig: deviceDetails!.aiModel, clientVersion: clientVersion, overrideModelPath: overrideModelPath)
+            self._aiModelManager = AIModelManager(modelConfig: deviceDetails!.aiModel, clientVersion: clientVersion)
             return self._aiModelManager
         }
         set(manager) {
@@ -31,46 +36,14 @@ public class FreeToken: @unchecked Sendable {
     }
     
     private var _aiModelManager: AIModelManager? = nil
-    var overrideModelPath: URL? = nil
     var documentChunkSize: Int? = nil
     var documentChunkOverlapSize: Int? = nil
-    
     var deviceManager: DeviceManager? = nil
     var documentManager: DocumentManager? = nil
     
-    var encrypt: Optional<(_ encrypt: String) -> String> = nil
-    var decrypt: Optional<(_ decrypt: String) -> String> = nil
+    let encryptionManager = EncryptionManager()
     
-    var encryptionEnabled: Bool {
-        get {
-            return encrypt != nil
-        }
-    }
     var deviceMode: DeviceMode? = nil
-    
-    // Error Messages:
-    private let deviceNotRegisteredError = Codings.ErrorResponse(error: "deviceNotRegistered", message: "This device has not been registered. Try .registerDevice.", code: 1000)
-    private let clientDeallocatedError = Codings.ErrorResponse(error: "invalidState", message: "Client was deallocated", code: 1002)
-    private let aiModelDownloadError = Codings.ErrorResponse(error: "downloadError", message: "Model did not download successfully", code: 1003)
-    private let clientNotConfiguredError = Codings.ErrorResponse(error: "clientNotConfigured", message: "Client has not been configured. Try .configure()", code: 1004)
-    private let clientAIVersionMissmatchError = Codings.ErrorResponse(error: "clientAIVersionMissmatch", message: "This client version is not capable of running the AI model sent by the server. Please upgrade the client.", code: 1005)
-    private let deviceResetError = Codings.ErrorResponse(error: "deviceReset", message: "Could not reset the device", code: 1006)
-    private let cacheResetError = Codings.ErrorResponse(error: "cacheReset", message: "Could not reset the AI model cache", code: 1007)
-    private let invalidURLError = Codings.ErrorResponse(error: "InvalidURL", message: "Failed to construct URL with query parameters.", code: nil)
-    private let aiNotSupportedNoCompatibilityError = Codings.ErrorResponse(error: "aiNotSupportedNoCompitability", message: "AI is not supported on this device and compatibility mode is off", code: 1008)
-    private let responseTypeInvalidError = Codings.ErrorResponse(error: "responseTypeInvalid", message: "The response from the server was invalid", code: 1009)
-    private let handlingToolCallsFailedError = Codings.ErrorResponse(error: "handlingToolCallsFailed", message: "Failed to handle tool calls", code: 1010)
-    private let encryptionEnabledInCompatabilityModeError = Codings.ErrorResponse(error: "encryptionEnabledInCompatabilityMode", message: "Encryption is not available in compatability mode, for encryption turn on privacy mode in the admin.", code: 1011)
-    private let encryptedMessageLoadedInCompatabilityModeError = Codings.ErrorResponse(error: "encryptedMessageLoadedInCompatabilityMode", message: "An encrypted message was loaded from the server in compatability mode where no decryption method is defined.", code: 1012)
-    private let cloudCompletionPrivacyModeError = Codings.ErrorResponse(error: "cloudCompletionPrivacyModeError", message: "Application tried to run a completion in the cloud with Privacy Mode enabled. Likely cause is that the AI model is not downloaded yet.", code: 1013)
-    private let encryptedDocumentRecievedWithoutWayToDecryptError = Codings.ErrorResponse(error: "encryptedDocumentRecievedWithoutWayToDecrypt", message: "Recieved an encrypted document from the cloud, but no decryption method defined", code: 1014)
-    private let encryptedMessageThreadLoadedWithoutWayToDecryptError = Codings.ErrorResponse(error: "encryptedMessageThreadLoadedWithoutWayToDecrypt", message: "Recieved a message thread from the cloud, but no decryption method defined ", code: 1015)
-    private let noEncryptOrDecryptDefinedInPrivacyModeError = Codings.ErrorResponse(error: "noEncryptOrDecryptDefinedInPrivacyMode", message: "Encrypt & Decrypt must be added via the configure method in Privacy Mode", code: 1016)
-    private let encryptOrDecryptDefinedInCompatibilityModeError = Codings.ErrorResponse(error: "encryptOrDecryptDefinedInCompatibilityMode", message: "Encrypt & Decrypt must not be added via configure in Compatibility Mode", code: 1017)
-    private let deviceIncapableOfAiInPrivacyModeError = Codings.ErrorResponse(error: "deviceIncapableOfAiInPrivacyMode", message: "This device is not capable of AI and the App is configured for Privacy Mode (on-device AI only)", code: 1018)
-    private let cloudRunInPrivacyModeError = Codings.ErrorResponse(error: "cannotCloudRunAiInPrivacyMode", message: "Cloud run of a is not supported in Privacy Mode", code: 1019)
-    private let modelMustBeLoadedBeforeAddingMessageError = Codings.ErrorResponse(error: "modelMustBeLoadedBeforeAddingMessage", message: "Model must be loaded before adding a message", code: 1020)
-    private let cloudCompletionInvalidResponseError = Codings.ErrorResponse(error: "cloudCompletionInvalidResponse", message: "The response from the cloud completion was invalid", code: 1022)
     
     enum DeviceMode: String {
         case privacyMode = "privacy"
@@ -123,30 +96,27 @@ public class FreeToken: @unchecked Sendable {
     
     private init() {
         self.baseURL = URL(string: "https://api.freetoken.ai/api/v1/")!
+        self.messagesManager = MessagesManager(encryptionManager: self.encryptionManager)
+        self.messagesManager.client = self
     }
     
     /// Configures the `FreeToken` client with the provided API key and base URL.
     ///
     /// ```
-    ///  let client = FreeToken.shared.configure(appToken: "key-12345", baseURL: URL(string: "https://api.example.com/"), overrideModelPath: URL(string: "path/to/model"))
+    ///  let client = FreeToken.shared.configure(appToken: "key-12345", baseURL: URL(string: "https://api.example.com/"))
     /// ```
     ///
     /// - Parameters:
     ///     - appToken: A `String` representing the API key used for authentication of your client.
     ///     - baseURL: Optional base URL for the API (e.g., `https://api.example.com/`). Defaults to `nil`.
-    ///     - overrideModelPath: An optional `URL` for the override model path. Defaults to `nil`.
     ///     - logLevel: Optional log level for the client. Default is `.info`
     ///
     /// - Returns: A configured `FreeToken` instance.
-    public func configure(appToken: String, baseURL: Optional<URL> = nil, overrideModelPath: Optional<URL> = nil, logLevel: FreeTokenLogger.LogLevel = .info) -> FreeToken {
+    public func configure(appToken: String, baseURL: Optional<URL> = nil, logLevel: FreeTokenLogger.LogLevel = .info) -> FreeToken {
         self.appToken = appToken
         
         if let baseURL = baseURL {
             self.baseURL = baseURL
-        }
-        
-        if let overrideModelPath = overrideModelPath {
-            self.overrideModelPath = overrideModelPath
         }
 
         FreeTokenLogger.shared.configure(logLevel: logLevel)
@@ -176,8 +146,7 @@ public class FreeToken: @unchecked Sendable {
     /// - Throws: An error if the encryption or decryption process fails.
     public func privacyModeEncryption(encrypt encryptCallback: @escaping (_ encrypt: String) -> String, decrypt decryptCallback: @escaping (_ decrypt: String) -> String) throws {
 
-        self.encrypt = encryptCallback
-        self.decrypt = decryptCallback
+        self.encryptionManager.enableEncryption(encryptor: encryptCallback, decryptor: decryptCallback)
     }
     
     /// Determine Device Capabilities and Register with FreeToken Cloud
@@ -200,29 +169,25 @@ public class FreeToken: @unchecked Sendable {
     ///   - error: A closure that is executed if the call failed.
     ///
     /// - Returns: Void
-    public func registerDeviceSession(scope: String, success: @escaping @Sendable () -> Void, error: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func registerDeviceSession(scope: String, success: @escaping @Sendable () async -> Void, error: @escaping @Sendable (FreeTokenError) async -> Void) async {
         let profiler = Profiler()
         
         // Determine Device Capabilities
         let createDeviceSessionRequest = Codings.CreateDeviceSessionRequest(deviceSession: .init(scope: scope, clientType: clientType, clientVersion: clientVersion))
         
-        postData(path: "device_sessions", data: createDeviceSessionRequest, responseType: Codings.ShowDeviceSessionResponse.self) { result in
+        await postData(path: "device_sessions", data: createDeviceSessionRequest, responseType: Codings.ShowDeviceSessionResponse.self) { result in
             switch result {
             case .success(let response):
                 self.deviceMode = DeviceMode(from: response.mode)
                 
-                if self.deviceMode?.isPrivacyMode == true {
-                    if self.encrypt == nil || self.decrypt == nil {
-                        // Require these to be set before moving forward.
-                        error(FreeTokenError.convertErrorResponse(errorResponse: self.noEncryptOrDecryptDefinedInPrivacyModeError))
-                        return
-                    }
+                if self.deviceMode?.isPrivacyMode == true, self.encryptionManager.isEncryptionEnabled == false {
+                    // Require these to be set before moving forward.
+                    await error(FreeTokenError.noEncryptOrDecryptDefinedInPrivacyMode)
+                    return
                 }
-                if self.deviceMode?.isCompatibilityMode == true {
-                    if self.encrypt != nil || self.decrypt != nil {
-                        error(FreeTokenError.convertErrorResponse(errorResponse: self.encryptOrDecryptDefinedInCompatibilityModeError))
-                        return
-                    }
+                if self.deviceMode?.isCompatibilityMode == true, self.encryptionManager.isEncryptionEnabled == true {
+                    await error(FreeTokenError.encryptOrDecryptDefinedInCompatibilityMode)
+                    return
                 }
                 
                 self.deviceSessionToken = response.token
@@ -231,22 +196,22 @@ public class FreeToken: @unchecked Sendable {
                 self.deviceManager = DeviceManager(memoryRequirement: response.aiModel.clientsConfig["iOS"]!.requiredMemoryBytes)
                 
                 if self.deviceManager?.isAICapable == false, self.deviceMode?.isPrivacyMode == true {
-                    error(FreeTokenError.convertErrorResponse(errorResponse: self.deviceIncapableOfAiInPrivacyModeError))
+                    await error(FreeTokenError.deviceIncapableOfAiInPrivacyMode)
                     return
                 }
                 
                 EmbeddingManager.shared.config(modelConfig: response.embeddingModel)
                 
-                self.documentManager = DocumentManager(chunkSize: response.documentsConfig.documentChunkSize, overlapSize: response.documentsConfig.documentChunkOverlapSize, encrypt: self.encrypt, decrypt: self.decrypt)
+                self.documentManager = DocumentManager(chunkSize: response.documentsConfig.documentChunkSize, overlapSize: response.documentsConfig.documentChunkOverlapSize)
                 
                 FreeToken.shared.logger("Device registered successfully", .info)
                 
                 profiler.end(eventType: Profiler.EventType.registerDeviceSession, isSuccess: true)
-                success()
+                await success()
             case .failure(let errorResponse):
-                FreeToken.shared.logger("Failed to register device: \(errorResponse.message ?? errorResponse.localizedDescription)", .error)
-                profiler.end(eventType: .registerDeviceSession, isSuccess: false, errorMessage: errorResponse.message ?? errorResponse.localizedDescription)
-                error(FreeTokenError.convertErrorResponse(errorResponse: errorResponse))
+                FreeToken.shared.logger("Failed to register device: \(errorResponse.message)", .error)
+                profiler.end(eventType: .registerDeviceSession, isSuccess: false, errorMessage: errorResponse.message)
+                await error(errorResponse)
             }
         }
     }
@@ -263,41 +228,17 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: Void
     public func resetDevice() throws {
-        do {
-            try resetAIModelCache()
-            try resetEmbeddingModelCache()
-        } catch {
-            throw self.deviceResetError
-        }
         deviceDetails = nil
         deviceSessionToken = nil
         aiModelManager = nil
         deviceMode = nil
-        encrypt = nil
-        decrypt = nil
+        encryptionManager.reset()
     }
     
-    /// Removes the AI Model cache from the local device
+    /// Reset Model Caches
     ///
-    /// > Note: This is useful if the user will no longer be using the AI portion of your application
-    /// > or if there are any problems running the AI.  The system does it's best to ensure that all files
-    /// > are correct upon device registration, but if there are any app crashes this would be a good
-    /// > place to begin.
-    ///
-    /// ```
-    /// client.resetAIModelCache()
-    /// ```
-    ///
-    /// - Returns: Void
-    /// - Throws: FreeToken Device Not Registered Error
-    public func resetAIModelCache() throws {
-        guard isDeviceRegistered() else {
-            throw self.deviceNotRegisteredError
-        }
-        
-        guard aiModelManager!.resetCache() else {
-            throw self.cacheResetError
-        }
+    public func resetModelCaches() throws {
+        try resetEmbeddingModelCache()
     }
     
     /// Removes the Embedding Model Cache from the local device
@@ -310,7 +251,11 @@ public class FreeToken: @unchecked Sendable {
     /// - Returns: Void
     /// - Throws: Error if failed to reset the cache
     public func resetEmbeddingModelCache() throws {
-        try EmbeddingManager.shared.resetCache()
+        do {
+            try EmbeddingManager.shared.resetCache()
+        } catch {
+            throw FreeTokenError.deviceReset
+        }
     }
     
     /// Download the AI model for this specific device
@@ -335,9 +280,13 @@ public class FreeToken: @unchecked Sendable {
     ///   - progressPercent: Optional closure that is executed to report the progress of the AI model download.
     ///
     /// - Returns: Void
-    public func downloadAIModel(success successCallback: @escaping @Sendable (Bool) -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) -> Void, progressPercent: Optional<@Sendable (_ progressPercent: Double) -> Void> = nil) async {
+    public func downloadAIModel(
+        success successCallback: @escaping @Sendable (Bool) -> Void,
+        error errorCallback: @escaping @Sendable (FreeTokenError) -> Void,
+        progressPercent: Optional<@Sendable (_ progressPercent: Double) -> Void> = nil
+    ) async {
         guard isDeviceRegistered() else {
-            errorCallback(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCallback(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -346,40 +295,62 @@ public class FreeToken: @unchecked Sendable {
         
         progressPercent?(0.0)
         
-        await EmbeddingManager.shared.downloadModel(progress: progressPercent) {
-            // Success -> Download AI model
-            Task {
-                if await aiModelManager.stateManager.getState() == .downloaded {
-                    FreeToken.shared.logger("Model already downloded", .info)
-                    successCallback(true)
-                    return
-                }
-                
-                if deviceManager.isAICapable == false {
-                    FreeToken.shared.logger("Cannot download AI model as AI is not supported on this device.", .error)
-                    successCallback(false)
-                    return
-                }
-
-            
-                if await aiModelManager.downloadIfNeeded(progress: progressPercent) {
-                    FreeToken.shared.logger("Model downloaded successfully", .info)
-                    successCallback(true)
-                } else {
-                    FreeToken.shared.logger("Model did not download successfully", .error)
-                    errorCallback(FreeTokenError.convertErrorResponse(errorResponse: self.aiModelDownloadError))
+        if await aiModelManager.stateManager.getDownloadState() == .downloaded {
+            FreeToken.shared.logger("Model already downloded", .info)
+            successCallback(true)
+            return
+        }
+        
+        if deviceManager.isAICapable == false {
+            FreeToken.shared.logger("Cannot download AI model as AI is not supported on this device.", .error)
+            successCallback(false)
+            return
+        }
+    
+        do {
+            if try await aiModelManager.downloadIfNeeded(progress: progressPercent) {
+                FreeToken.shared.logger("Model downloaded successfully", .info)
+                successCallback(true)
+            } else {
+                FreeToken.shared.logger("Model did not download successfully", .error)
+                errorCallback(FreeTokenError.aiModelDownload)
+            }
+        } catch {
+            FreeToken.shared.logger("Failed to download AI model: \(error.localizedDescription)", .error)
+            errorCallback(FreeTokenError.aiModelDownload)
+        }
+        
+        Task.detached {
+            @Sendable func attempt(_ remainingTries: Int) async {
+                await withCheckedContinuation { continuation in
+                    Task {
+                        await EmbeddingManager.shared.downloadModel(progress: nil) {
+                            FreeToken.shared.logger("📃 Embedding model downloaded successfully", .info)
+                            continuation.resume()
+                        } failureCallback: { error in
+                            FreeToken.shared.logger("🔴 Failed to download embedding model: \(error)", .error)
+                            if remainingTries > 0 {
+                                FreeToken.shared.logger("↩️ Retrying embedding model download... (\(remainingTries) left)", .info)
+                                Task {
+                                    await attempt(remainingTries - 1)
+                                    continuation.resume() // Resume after the final retry
+                                }
+                            } else {
+                                continuation.resume()
+                            }
+                        }
+                    }
                 }
             }
-        } failureCallback: { error in
-            // Error
-            errorCallback(error)
+
+            await attempt(3)
         }
     }
     
     /// Create Message Thread in FreeToken Cloud
     ///
     /// ```
-    ///     client.createMessageThread(pinnedContext: "Initial context", agentScope: "agent-scope", success: { messageThread in
+    ///     client.createMessageThread(agentScope: "agent-scope", success: { messageThread in
     ///         // Persist the message thread ID in your application
     ///         yourMethodToPersist(messageThreadID: messageThread.id)
     ///     }, error: { error in
@@ -390,48 +361,27 @@ public class FreeToken: @unchecked Sendable {
     /// > Note: This process is the only time you will have access to the Message Thread ID.
     /// > If it's not persisted, it will be lost and you will have no way of adding messages to the thread.
     ///
-    /// > Tip: If you plan on supporting many devices in your application this ID should be
-    /// > stored in a database to ensure accessibility across devices.
-    ///
     /// - Parameters:
-    ///     - pinnedContext: Optional parameter to attach a specific context to the message thread.
-    ///     - agentScope: Optional parameter to attach the message thread to a specific agent.
+    ///     - agentScope: Optional parameter to attach the message thread to a specific agent that matches this scope.
     ///     - success: A closure that is executed when the message thread is successfully created.
     ///     - error: A closure that is executed if there is an error during the creation of the message thread.
     ///
     /// - Returns: Void
-    public func createMessageThread(pinnedContext: Optional<String> = nil, agentScope: Optional<String> = nil, success: @escaping @Sendable (MessageThread) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func createMessageThread(agentScope: Optional<String> = nil, success successCompletion: @escaping @Sendable (MessageThread) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
-        let originalPinnedContext = pinnedContext
-        var pinnedContext = pinnedContext
-        var encryptionEnabled = false
-        
-        if let encrypt = self.encrypt, pinnedContext != nil {
-            pinnedContext = encrypt(pinnedContext!)
-            encryptionEnabled = true
-        }
-        
-        let request = Codings.CreateMessageThreadRequest(agentScope: agentScope, pinnedContext: pinnedContext, encryptionEnabled: encryptionEnabled)
-        
-        let profiler = Profiler()
-        postData(path: "message_threads", data: request, responseType: Codings.ShowMessageThreadResponse.self) { result in
+        // Use Message Manager
+        await messagesManager.createMessageThread(agentScope: agentScope) { result in
             switch result {
-            case .success(var response):
-                if originalPinnedContext != nil {
-                    response = Codings.ShowMessageThreadResponse(id: response.id, pinnedContext: originalPinnedContext, encryptionEnabled: response.encryptionEnabled, messages: response.messages)
-                }
-                
-                profiler.end(eventType: Profiler.EventType.createMessageThread, eventTypeID: response.id, isSuccess: true)
-                FreeToken.shared.logger("Message thread created successfully: \(response.id)", .info)
-                success(MessageThread(from: response))
+            case .success(let messageThread):
+                FreeToken.shared.logger("📝 Message thread created successfully: \(messageThread.id)", .info)
+                await successCompletion(messageThread)
             case .failure(let error):
-                profiler.end(eventType: .createMessageThread, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                FreeToken.shared.logger("Failed to create message thread: \(error)", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                FreeToken.shared.logger("🔴 Failed to create message thread: \(error.message)", .error)
+                await errorCompletion(error)
             }
         }
     }
@@ -452,7 +402,7 @@ public class FreeToken: @unchecked Sendable {
     /// - Returns: Void
     public func deleteMessageThread(id: String, success successCompletion: @escaping @Sendable (_ id: String) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -464,7 +414,7 @@ public class FreeToken: @unchecked Sendable {
                 successCompletion(id)
             case .failure(let error):
                 FreeToken.shared.logger("🔴 Failed to delete message thread: \(error)", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                errorCompletion(error)
             }
         }
     }
@@ -490,36 +440,23 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure for capturing any errors that occur during the call.
     ///
     ///     - Returns: Void
-    public func getMessageThread(id: String, success successCompletion: @escaping @Sendable (MessageThread) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func getMessageThread(id: String, success successCompletion: @escaping @Sendable (MessageThread) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
-        let path = "message_threads/\(id)"
-        fetchResource(path: path, responseType: Codings.ShowMessageThreadResponse.self) { result in
-            switch result {
-            case .success(var response):
-                if response.encryptionEnabled == true, response.pinnedContext != nil {
-                    if let decrypt = self.decrypt {
-                        response = Codings.ShowMessageThreadResponse(id: response.id, pinnedContext: decrypt(response.pinnedContext!), encryptionEnabled: response.encryptionEnabled, messages: response.messages)
-                    } else {
-                        errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.encryptedMessageThreadLoadedWithoutWayToDecryptError))
-                    }
-                }
-                
-                successCompletion(MessageThread(from: response))
-            case .failure(let error):
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
-            }
-            
+        await messagesManager.getMessageThread(id: id) { messageThread, _ in
+            successCompletion(messageThread)
+        } failure: { error in
+            errorCompletion(error)
         }
     }
     
     /// Add a message to a message thread
     ///
     /// ```
-    ///     client.addMessageToThread(messageThreadID: "msgthr-id", role: "user", content: "What is a nova?", success: { message in
+    ///     client.addMessageToThread(id: "msg_thr-id", message: Message(role: .user, content: "Hello!"), success: { message in
     ///         // Message was created successfully
     ///         // Display message in your UI
     ///     }, error: { error in
@@ -533,77 +470,27 @@ public class FreeToken: @unchecked Sendable {
     /// > Note: Messages are automatically indexed for reference in large message threads that will not fit in the AI's context window.
     ///
     /// - Parameters:
-    ///     - messageThreadID: ID of the message thread to add the message
+    ///     - id: ID of the message thread to add the message
     ///     - message: The `Message` object to add to the thread
-    ///     - success: A closure to capture the results of the call to add the message to the thread
-    ///     - toolCalls: This parameter is used when creating Role calls from the AI - it can be used when importing existing threads from other systems.
     ///     - success: A closure to capture the results of the call to add the message to the thread
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func addMessageToThread(messageThreadID: String, message: Message, toolCalls: Optional<String> = nil, success successCompletion: @escaping @Sendable (Message) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func addMessageToThread(id messageThreadID: String, message: Message, success successCompletion: @escaping @Sendable (Message) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
-        let originalContent = message.content
-        let originalToolCalls = toolCalls
-        
-        // Generate token count for message (if it doesn't exist or if possible)
-        let tokenCount: Int?
-        do {
-            // Will throw if the model is not loaded
-            if let completionTokens = message.tokenUsage?.completionTokens {
-                tokenCount = completionTokens
-            } else {
-                tokenCount = try await aiModelManager?.tokenCount(originalContent)
-            }
-        } catch {
-            if deviceMode! == .privacyMode {
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.modelMustBeLoadedBeforeAddingMessageError))
-                return
-            } else {
-                // In compatibility mode, let's leave token count nil (let the cloud handle it)
-                tokenCount = nil
-            }
-        }
-        
-        var content = message.content
-        var toolCalls = toolCalls
-        var encryptionEnabled = false
-        
-        if let encrypt = encrypt {
-            encryptionEnabled = true
-            content = encrypt(content)
-            toolCalls = toolCalls != nil ? encrypt(toolCalls!) : nil
-        }
-        
-        var vectors: [Float]?
-                
-        do {
-            vectors = try EmbeddingManager.shared.generate(text: content)
-        } catch (let error) {
-            errorCompletion(error as! FreeTokenError)
-            return
-        }
-                
-        let request = Codings.CreateMessageRequest(messageThreadID: messageThreadID, role: message.role.rawValue, content: content, toolCalls: toolCalls, embedding: vectors, embeddingModel: EmbeddingManager.shared.embeddingModelName, encryptionEnabled: encryptionEnabled, tokenCount: tokenCount)
         
         let profiler = Profiler()
-        postData(path: "messages", data: request, responseType: Codings.ShowMessageResponse.self) { result in
+        await messagesManager.addMessage(message: message, messageThreadID: messageThreadID) { result in
             switch result {
-            case .success(var response):
-                if response.encryptionEnabled == true {
-                    response = Codings.ShowMessageResponse(id: response.id, role: response.role, content: originalContent, toolCalls: originalToolCalls, encryptionEnabled: response.encryptionEnabled, tokenCount: tokenCount!, createdAt: response.createdAt, updatedAt: response.updatedAt)
-                }
-                
+            case .success(let response):
                 profiler.end(eventType: Profiler.EventType.addMessageToThread, eventTypeID: response.id, isSuccess: true)
-                FreeToken.shared.logger("Added message to thread. Message ID: \(response.id!)", .info)
-                successCompletion(Message(from: response))
+                successCompletion(response)
             case .failure(let error):
-                profiler.end(eventType: .addMessageToThread, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                FreeToken.shared.logger("Message could not be added to thread: \(error)", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                profiler.end(eventType: .addMessageToThread, isSuccess: false, errorMessage: error.message)
+                errorCompletion(error)
             }
         }
     }
@@ -627,32 +514,18 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func getMessage(id: String, success successCompletion: @escaping @Sendable (Message) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func getMessage(id: String, success successCompletion: @escaping @Sendable (Message) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
-        let path = "messages/\(id)"
-        
-        fetchResource(path: path, responseType: Codings.ShowMessageResponse.self) { result in
+        await messagesManager.getMessage(id: id) { result in
             switch result {
-            case .success(var response):
-                if response.encryptionEnabled == true {
-                    if let decrypt = self.decrypt {
-                        let toolCalls = response.toolCalls != nil ? decrypt(response.toolCalls!) : nil
-                        
-                        response = Codings.ShowMessageResponse(id: response.id, role: response.role, content: decrypt(response.content), toolCalls: toolCalls, encryptionEnabled: response.encryptionEnabled, tokenCount: response.tokenCount, createdAt: response.createdAt, updatedAt: response.updatedAt)
-                    } else {
-                        errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.encryptedMessageLoadedInCompatabilityModeError))
-                    }
-                }
-                
-                successCompletion(Message(from: response))
-                return
+            case .success(let message):
+                successCompletion(message)
             case .failure(let error):
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
-                return
+                errorCompletion(error)
             }
         }
     }
@@ -685,15 +558,15 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, maxTokens: Int? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
-        if await aiModelManager?.stateManager.getState() == .downloaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
+        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
             // Generate local completion
-            await generateLocalCompletion(prompt: prompt, maxTokens: maxTokens) { completion in
+            await generateLocalCompletion(prompt: prompt, aiRunConfig: aiRunConfig) { completion in
                 successCompletion(completion)
             } error: { error in
                 errorCompletion(error)
@@ -702,9 +575,9 @@ public class FreeToken: @unchecked Sendable {
         } else {
             // Generate cloud completion
             if self.deviceMode?.isPrivacyMode == false {
-                generateCloudCompletion(prompt: prompt, maxTokens: maxTokens, success: successCompletion, error: errorCompletion)
+                await generateCloudCompletion(prompt: prompt, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
             } else {
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: cloudCompletionPrivacyModeError))
+                errorCompletion(FreeTokenError.cloudCompletionPrivacyMode)
             }
         }
     }
@@ -732,24 +605,29 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, maxTokens: Int? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
+        }
+        
+        var maxTokens: Int? = nil
+        if let value = aiRunConfig?.maxGenerationTokens {
+            maxTokens = value
         }
 
         let request = Codings.CreateCompletionRequest(prompt: prompt, model: modelCode, maxTokens: maxTokens)
         let profiler = Profiler()
-        postData(path: "completions", data: request, responseType: Codings.CreateCompletionResponse.self) { result in
+        await postData(path: "completions", data: request, responseType: Codings.CreateCompletionResponse.self) { result in
             switch result {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.generateCloudCompletion, isSuccess: true)
                 FreeToken.shared.logger("Completion generated succesfully", .info)
                 successCompletion(Completion(from: response))
             case .failure(let error):
-                profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
+                profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: error.message)
                 FreeToken.shared.logger("Completion failed to generate", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                errorCompletion(error)
             }
         }
     }
@@ -775,63 +653,75 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateLocalCompletion(prompt: String, maxTokens: Int? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func generateLocalCompletion(prompt: String, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
-        guard await self.aiModelManager?.stateManager.getState() == .downloaded else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: aiModelManager!.aiModelNotDownloadedError))
+        guard await self.aiModelManager?.stateManager.getDownloadState() == .downloaded else {
+            errorCompletion(FreeTokenError.aiModelNotDownloaded)
             return
         }
 
         let profiler = Profiler()
-        var result: (response: String, usage: TokenUsage)? = nil
         
         let aiModelManager = self.aiModelManager!
-        let prompt = "\(aiModelManager.specialTokens.beginningOfText)\(prompt)"
         
         do {
             let uuid = UUID().uuidString
-            result = try await aiModelManager.runEngine(prompt: prompt, maxTokens: maxTokens, runIdentifier: uuid, noContextCache: true)
-            let completion = Completion(response: result!.response)
+            let message = Message(role: .user, content: "Complete the following: \(prompt)")
+            let response: String
+            let usage: TokenUsage?
+            
+            (response, usage) = try await aiModelManager.sendMessagesToAI(messages: [message], runIdentifier: uuid, noContextCache: true)
+            let completion = Completion(response: response)
 
-            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: result!.usage)
+            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: usage)
             successCompletion(completion)
         } catch {
-            var codingError = error as? Codings.ErrorResponse
-            
-            if codingError == nil {
-                codingError = Codings.ErrorResponse(error: "unknownCompletionError", message: error.localizedDescription, code: nil)
-            }
-            
-            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: codingError!.message ?? error.localizedDescription)
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: codingError!))
+            let error = FreeTokenError.encoding(message: error.localizedDescription)
+            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
+            errorCompletion(error)
         }
     }
     
     /// Generate a chat completion in the cloud
     ///
     ///
-    func generateCloudChatCompletion(messages: [Message], model: String? = nil, maxTokens: Int? = nil, topK: Int? = nil, topP: Float? = nil, temperature: Float? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil, success successCallback: @escaping @Sendable (Message) -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) -> Void) {
-        
-        // Filter out empty assistant message (not required for a cloud completion)
-        let messages = messages.filter { message in
-            !(message.role == .assistant && message.content == "")
+    func generateCloudChatCompletion(messages: [Message], model: String? = nil, aiRunConfig: AIRunConfig? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil, success successCallback: @escaping @Sendable (Message) async -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void) async {
+        guard isDeviceRegistered() else {
+            await errorCallback(FreeTokenError.deviceNotRegistered)
+            return
         }
-        
-        let requestMessages = messages.map { message in
-            return Codings.CodableMessage(role: message.role.rawValue, content: message.content)
+
+        let preparedMessages: [Message]
+        do {
+            let promptTemplateConfig = deviceDetails!.aiModel.config.promptTemplateConfig
+            
+            preparedMessages = try MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig).prepareMessages()
+        } catch {
+            FreeToken.shared.logger("🔴 Error preparing messages for chat completion: \(error.localizedDescription)", .error)
+            await errorCallback(error as! FreeTokenError)
+            return
         }
+        let config = deviceDetails!.aiModel.config.defaultSettings
         
+        // Convert types
+        let requestMessages = preparedMessages.map { Codings.CodableMessage(role: $0.role.rawValue, content: $0.content) }
+        
+        let topK: Int = aiRunConfig?.topK ?? config.topK
+        let topP: Float = aiRunConfig?.topP ?? config.topP
+        let temperature: Float = aiRunConfig?.temperature ?? config.temperature
+        let maxTokens: Int = aiRunConfig?.maxGenerationTokens ?? config.maxTokenCount
+                
         let request: Codings.CreateCloudChatCompletion = Codings.CreateCloudChatCompletion(messages: requestMessages, model: model, topK: topK, topP: topP, temperature: temperature, maxTokens: maxTokens)
         
         let messageChunkPattern = #"(\{\s*"message_chunk"\s*:\s*".*?"\s*\}),"#
         let messageChunkRegex = try! NSRegularExpression(pattern: messageChunkPattern, options: [])
         let profiler = Profiler()
         
-        streamPostData(path: "completions/chat", data: request, responseType: Codings.CloudChatResponse.self) { chunk in
+        await streamPostData(path: "completions/chat", data: request, responseType: Codings.CloudChatResponse.self) { chunk in
             if let chatStatusStream = chatStatusStream {
                 
                 // The entire response will be streamed not just message chunks - so we need to filter it out
@@ -875,9 +765,9 @@ public class FreeToken: @unchecked Sendable {
                     profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: false, errorMessage: errorResponse.message)
                     
                     // Hit an error while processing
-                    let error = Codings.ErrorResponse(error: "cloudChatCompletionFailed", message: errorResponse.message, code: 1021)
+                    let error = FreeTokenError.cloudCompletionFailed(message: errorResponse.message)
                     
-                    errorCallback(FreeTokenError.convertErrorResponse(errorResponse: error))
+                    await errorCallback(error)
                     return
                 }
                 
@@ -889,12 +779,12 @@ public class FreeToken: @unchecked Sendable {
                     chatStatusStream?(nil, .stream_ended)
                     
                     // Call the success callback
-                    successCallback(message)
+                    await successCallback(message)
                 } else {
                     // Error that there wasn't the right response
                     chatStatusStream?(nil, .failed)
                     FreeToken.shared.logger("🔴 Invalid response from cloud chat completion", .error)
-                    errorCallback(FreeTokenError.convertErrorResponse(errorResponse: self.cloudCompletionInvalidResponseError))
+                    await errorCallback(FreeTokenError.cloudCompletionInvalidResponse)
                 }
             case .failure(let error):
                 // Handle the error
@@ -902,7 +792,7 @@ public class FreeToken: @unchecked Sendable {
                 FreeToken.shared.logger("🔴 Failed to generate chat completion: \(error)", .error)
                 
                 // Call the error callback
-                errorCallback(FreeTokenError.convertErrorResponse(errorResponse: error))
+                await errorCallback(error)
             }
         }
 
@@ -933,9 +823,9 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func createDocument(content: String, metadata: Optional<String> = nil, searchScope: String, success successCompletion: @escaping @Sendable (Document) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func createDocument(content: String, metadata: Optional<String> = nil, searchScope: String, success successCompletion: @escaping @Sendable (Document) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -948,25 +838,25 @@ public class FreeToken: @unchecked Sendable {
         }
         
         let chunks = document.chunks.map { chunk in
-            let content = encryptionEnabled ? chunk.encryptedContent : chunk.chunkContent
-            return Codings.CreateDocumentChunkRequest(content: content!, embedding: chunk.embedding!, embeddingModel: chunk.embeddingModelName)
+            let content = encryptionManager.encrypt(chunk.chunkContent)
+            return Codings.CreateDocumentChunkRequest(content: content, embedding: chunk.embedding!, embeddingModel: chunk.embeddingModelName)
         }
         
-        let request = Codings.CreateDocumentRequest(content: document.sendableContent()!, metadata: document.sendableMetadata(), searchScope: searchScope, documentChunks: chunks, encryptionEnabled: encryptionEnabled)
+        let request = Codings.CreateDocumentRequest(content: encryptionManager.encrypt(content), metadata: (metadata != nil ? encryptionManager.encrypt(metadata!) : nil), searchScope: searchScope, documentChunks: chunks, encryptionEnabled: encryptionManager.isEncryptionEnabled)
         
         let wrapper = Codings.CreateDocumentRequestWrapper(document: request)
         
         let profiler = Profiler()
-        postData(path: "documents", data: wrapper, responseType: Codings.ShowDocumentResponse.self) { result in
+        await postData(path: "documents", data: wrapper, responseType: Codings.ShowDocumentResponse.self) { result in
             switch result {
             case .success(let response):
-                profiler.end(eventType: Profiler.EventType.createDocument, isSuccess: true)
-                FreeToken.shared.logger("Document created successfully", .info)
+                profiler.end(eventType: .createDocument, isSuccess: true)
+                FreeToken.shared.logger("📄 Document created successfully", .info)
                 successCompletion(Document(from: response))
             case .failure(let error):
-                profiler.end(eventType: .createDocument, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                FreeToken.shared.logger("Document failed to create with error: \(error)", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                profiler.end(eventType: .createDocument, isSuccess: false, errorMessage: error.message)
+                FreeToken.shared.logger("🔴 Document failed to create with error: \(error)", .error)
+                errorCompletion(error)
             }
         }
     }
@@ -990,24 +880,19 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func getDocument(id: String, success successCompletion: @escaping @Sendable (Document) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func getDocument(id: String, success successCompletion: @escaping @Sendable (Document) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
         let path = "documents/\(id)"
-        fetchResource(path: path, responseType: Codings.ShowDocumentResponse.self) { result in
+        await fetchResource(path: path, responseType: Codings.ShowDocumentResponse.self, useEtagCaching: true) { result in
             switch result {
-            case .success(var response):
-                if response.encryptionEnabled {
-                    let document = self.documentManager!.processEncryptedDocument(encryptedContent: response.content, encryptedMetdata: response.metadata)
-                    response = Codings.ShowDocumentResponse(id: response.id, searchScope: response.searchScope, metadata: document.metadata, content: document.content!, encryptionEnabled: response.encryptionEnabled, createdAt: response.createdAt)
-                }
-                
+            case .success(let response):
                 successCompletion(Document(from: response))
             case .failure(let error):
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                errorCompletion(error)
             }
         }
     }
@@ -1036,9 +921,9 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func searchDocuments(query: String, searchScope: Optional<String> = nil, maxResults: Optional<Int> = nil, success successCompletion: @escaping @Sendable (DocumentSearchResults) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    public func searchDocuments(query: String, searchScope: Optional<String> = nil, maxResults: Optional<Int> = nil, success successCompletion: @escaping @Sendable (DocumentSearchResults) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -1046,8 +931,10 @@ public class FreeToken: @unchecked Sendable {
         var embedding: [Float]
         do {
             embedding = try EmbeddingManager.shared.generate(text: query)
-        } catch (_) {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: EmbeddingManager.embeddingFailedError))
+        } catch (let error) {
+            FreeToken.shared.logger("🔴 Failed to generate embedding for search query: \(error.localizedDescription)", .error)
+            let errorResponse = FreeTokenError.embeddingFailed
+            errorCompletion(errorResponse)
             return
         }
         
@@ -1065,35 +952,23 @@ public class FreeToken: @unchecked Sendable {
         let data = Codings.SearchDocumentsRequest(embedding: embedding, embeddingModel: EmbeddingManager.shared.embeddingModelName, documentScope: searchScope, resultCount: resultCount, useAgentDocumentScope: useAgentDocumentScope)
         
         let profiler = Profiler()
-        postData(path: path, data: data, responseType: Codings.SearchDocumentsResponse.self) { result in
+        await postData(path: path, data: data, responseType: Codings.SearchDocumentsResponse.self) { result in
             switch result {
-            case .success(var response):
-                let documentChunks: [Codings.SearchDocumentsResponse.DocumentChunkResult] = response.documentChunks.map({ documentChunkResult in
-                    if documentChunkResult.encryptionEnabled == true {
-                        let documentChunk = self.documentManager!.processEncryptedDocumentChunk(encryptedContent: documentChunkResult.contentChunk, documentMetadata: documentChunkResult.documentMetadata)
-                        
-                        return Codings.SearchDocumentsResponse.DocumentChunkResult(documentID: documentChunkResult.documentID, documentMetadata: documentChunk.documentMetadata, contentChunk: documentChunk.chunkContent!, encryptionEnabled: documentChunkResult.encryptionEnabled)
-                    } else {
-                        return documentChunkResult
-                    }
-                })
-                
+            case .success(let response):
                 profiler.end(eventType: Profiler.EventType.searchDocuments, isSuccess: true)
-
-                response = Codings.SearchDocumentsResponse(documentChunks: documentChunks)
 
                 successCompletion(DocumentSearchResults(from: response))
             case .failure(let error):
-                profiler.end(eventType: .searchDocuments, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                FreeToken.shared.logger("Document search failed with error \(error.message ?? error.localizedDescription)", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                profiler.end(eventType: .searchDocuments, isSuccess: false, errorMessage: error.message)
+                FreeToken.shared.logger("🔴 Document search failed with error \(error.message)", .error)
+                errorCompletion(error)
             }
         }
     }
     
-    func webSearch(query: String, resultCount: Int? = nil, success successCompletion: @escaping @Sendable ([WebSearchResult]) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
+    func webSearch(query: String, resultCount: Int? = nil, success successCompletion: @escaping @Sendable ([WebSearchResult]) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -1101,16 +976,16 @@ public class FreeToken: @unchecked Sendable {
         let data = Codings.WebSearchRequest(query: query, resultCount: resultCount)
         
         let profiler = Profiler()
-        postData(path: path, data: data, responseType: Codings.WebSearchResults.self) { result in
+        await postData(path: path, data: data, responseType: Codings.WebSearchResults.self) { result in
             switch result {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.webSearch, isSuccess: true)
                 let results = response.results.map { WebSearchResult(from: $0) }
                 successCompletion(results)
             case .failure(let error):
-                profiler.end(eventType: .webSearch, isSuccess: false, errorMessage: error.message ?? error.localizedDescription)
-                FreeToken.shared.logger("Web search failed with error \(error.message ?? error.localizedDescription)", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+                profiler.end(eventType: .webSearch, isSuccess: false, errorMessage: error.message)
+                FreeToken.shared.logger("Web search failed with error \(error.message)", .error)
+                errorCompletion(error)
             }
         }
     }
@@ -1166,307 +1041,62 @@ public class FreeToken: @unchecked Sendable {
         id messageThreadID: String,
         forceCloudRun: Optional<Bool> = nil,
         documentSearchScope: Optional<String> = nil,
+        aiRunConfig: Optional<AIRunConfig> = nil,
         success successCompletion: @escaping @Sendable (Message) -> Void,
         error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void,
         chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil,
-        toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil,
-        toolRunOnly: Bool = true,
-        maxTokens: Int? = nil
+        toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil
     ) async {
-        
-            chatStatusStream?(nil, .starting)
+        chatStatusStream?(nil, .starting)
         guard isDeviceRegistered() else {
             chatStatusStream?(nil, .failed)
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
-        // Determine AI Run Locations:
-        let cloudRun: Bool
+        // Workflow Context
+        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: forceCloudRun, documentSearchScope: documentSearchScope, toolRunOnly: true, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, chatStatusStream: chatStatusStream)
         
-        if forceCloudRun == nil {
-            // Automatically determine if this should be a cloud run or not
-            do {
-                cloudRun = try await shouldCloudRun()
-            } catch {
-                chatStatusStream?(nil, .failed)
-                errorCompletion(error as! FreeTokenError)
-                return
-            }
-        } else {
-            FreeToken.shared.logger("☁️ Force cloud run set to: \(forceCloudRun!)", .info)
-            cloudRun = forceCloudRun!
-            
-            if cloudRun == false, await aiModelManager?.stateManager.getState() != .downloaded {
-                chatStatusStream?(nil, .failed)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: aiModelManager!.aiModelNotDownloadedError))
-                return
-            }
-            
-            if cloudRun == true, deviceMode?.isPrivacyMode == true {
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.cloudRunInPrivacyModeError))
-                return
-            }
-        }
+        // Workflow Steps
+        let workflowSteps: [WorkflowStep.Type] = [
+            DetermineAIRunLocation.self,
+            GetMessageThread.self,
+            RunAIModelInCloud.self,
+            RunAIModelLocally.self,
+            AddMessageToThread.self,
+            RunToolCalls.self
+        ]
         
-        FreeToken.shared.logger("🏁 Running message thread with ID: \(messageThreadID) - Cloud Run: \(cloudRun)", .info)
-            
+        let workflow = WorkflowManager(context: context, steps: workflowSteps)
+        
         let profiler = Profiler()
-        
-        let request = Codings.CreateMessageThreadRunRequest(messageThreadId: messageThreadID, forceCloudRun: cloudRun)
-        postData(path: "message_thread_runs", data: request, responseType: Codings.ShowMessageThreadRunResponse.self) { result in
-            switch result {
-            case .success(let response):
-                FreeToken.shared.logger("📩 Message thread run created successfully", .info)
-                
-                Task {
-                    FreeToken.shared.logger("🏁 Prepping message context for AI", .info)
-                    
-                    var messages: [Message] = []
-                    
-                    // Assemble the system prompt
-                    let systemPromptManager = SystemPromptManager(decrypt: self.decrypt, systemPromptParts: response.systemPromptParts, threadSearchResults: response.threadSearchResults)
-                    
-                    let systemPrompt: Message
-                    
-                    
-                    if toolRunOnly == true {
-                        // The system prompt will only contain tool definitions
-                        systemPrompt = systemPromptManager.generateTool()
-                    } else {
-                        // The system prompt will not have tool definitions
-                        systemPrompt = systemPromptManager.generateWithoutTools()
-                    }
-                    
-                    messages.append(systemPrompt)
-                    
-                    // Add prompt messages to the messages array
-                    let promptMessages = response.promptMessages.map { message in
-                        let content: String
-                        if let decrypt = self.decrypt {
-                            if message.encryptionEnabled == true {
-                                content = decrypt(message.content)
-                            } else {
-                                content = message.content
-                            }
-                        } else {
-                            content = message.content
-                        }
-                        
-                        return Message(role: MessageRole(rawValue: message.role)!, content: content, tokenCount: message.tokenCount)
-                    }
-                    
-                    messages.append(contentsOf: promptMessages)
-                    
-                    let contextWindowManager = ContextWindowManager(modelManager: self.aiModelManager!)
-
-                    // Cloud run & local Run success Handler
-                    let successResult: @Sendable (Message) -> Void = { resultMessage in
-                        FreeToken.shared.logger("🧠 AI Run was successful, adding message to thread", .info)
-                        
-                        // Add the result message to the thread
-                        Task {
-                            await self.addMessageToThread(messageThreadID: messageThreadID, message: resultMessage) { message in
-                                do {
-                                    // If tools are defined on the server (in the system prompt) then try to process them.
-                                    if let toolDefinitions = response.systemPromptParts.toolDefinitions {
-                                        FreeToken.shared.logger("🛠️ Checking for tool calls", .info)
-                                        try self.runToolCall(messageThreadID: messageThreadID, aiMessage: resultMessage, toolNames: toolDefinitions.toolNames, profiler: profiler, isCloudRun: cloudRun, documentSearchScope: documentSearchScope, toolCallback: toolCallback, chatStatusStream: chatStatusStream, success: successCompletion, error: errorCompletion)
-                                    } else {
-                                        // No tools were defined on the server, just call the success callback
-                                        chatStatusStream?(nil, .stream_ended)
-                                        successCompletion(message)
-                                    }
-                                } catch {
-                                    FreeToken.shared.logger("🔴 Failed to process tool calls: \(error)", .error)
-                                    chatStatusStream?(nil, .failed)
-                                }
-                            } error: { error in
-                                errorCompletion(error)
-                                FreeToken.shared.logger("🔴 Failed to add result message to thread: \(error)", .error)
-                            }
-                        }
-                    }
-                    
-                    let errorResult: @Sendable (FreeTokenError) -> Void = { error in
-                        chatStatusStream?(nil, .failed)
-                        errorCompletion(error)
-                    }
-                    
-                    // Run the messages with either the local AI completion or the Cloud AI completion
-                    if cloudRun {
-                        // Run in the cloud
-                        chatStatusStream?(nil, .sending_to_cloud_ai)
-                        
-                        // Run the cloud context window manager (as the local AI will not have a tokenizer)
-                        let contextWindowMessages = try await contextWindowManager.filterMessages(messages: messages)
-                        
-                        FreeToken.shared.logger("🧠 Sending messages to the cloud for chat completion", .info)
-                        // Send messages to the cloud for completion
-                        self.generateCloudChatCompletion(messages: contextWindowMessages, maxTokens: maxTokens, chatStatusStream: chatStatusStream, success: successResult, error: errorResult)
-                    } else {
-                        // Run locally
-                        chatStatusStream?(nil, .sending_to_local_ai)
-                        let tokenString = try await contextWindowManager.generate(messages: messages)
-                        
-                        // Send the token string to the AI for completion
-                        let resultContent: String
-                        let usage: TokenUsage
-                        
-                        do {
-                            (resultContent, usage) = try await self.aiModelManager!.sendPromptToAI(prompt: tokenString,  runIdentifier: messageThreadID, maxTokens: maxTokens) { token in
-                                chatStatusStream?(token, .streaming_tokens)
-                                // TODO: Try to start handling tool calls before the AI completes
-                            }
-                            FreeToken.shared.logger("🧠 Local AI run completed successfully", .info)
-                            let resultMessage = Message(role: .assistant, content: resultContent, tokenUsage: usage)
-                            successResult(resultMessage)
-                        } catch {
-                            let errorResponse = error as! FreeTokenError
-                            FreeToken.shared.logger("🔴 Local AI run failed with error: \(errorResponse.message ?? errorResponse.localizedDescription)", .error)
-                            errorCompletion(error as! FreeTokenError)
-                        }
-                    }
-                }
-                
-            case .failure(let error):
-                FreeToken.shared.logger("Message thread run failed with error \(error.message ?? error.localizedDescription)", .error)
-                chatStatusStream?(nil, .failed)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
-            }
-        }
-    }
-    
-    private func runToolCall(
-            messageThreadID: String,
-            aiMessage resultMessage: Message,
-            toolNames: [String] = [],
-            profiler: Profiler,
-            isCloudRun cloudRun: Bool = false,
-            documentSearchScope: String? = nil,
-            toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil,
-            chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil,
-            success successCompletion: @escaping @Sendable (Message) -> Void,
-            error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void
-    ) throws {
-        let toolCallManager = ToolCallsManager(messageContent: resultMessage.content, availableCloudToolCalls: self.deviceDetails!.availableCloudToolCalls, toolNames: toolNames, documentSearchScope: documentSearchScope)
-        
-        try toolCallManager.process(externalToolCallHandler: toolCallback) { toolCalls in
-            // TODO: Future Feature: Handle Cloud Tool Calls
-            return ""
-        } success: { result in
-            if result != "" {
-                // Tool result was returned
-                // Create a tool message
-                FreeToken.shared.logger("🔧 Tool calls processed successfully", .info)
-                
-                let toolResult: String
-                if self.deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults == true {
-                    toolResult = "{\"toolResults\": \"\(result)\"}"
-                } else {
-                    toolResult = result
-                }
-
-                let toolMessage = Message(role: .tool, content: toolResult)
-                Task {
-                    await self.addMessageToThread(messageThreadID: messageThreadID, message: toolMessage) { toolResultMessage in
-                        // Run message thread again with tool result
-                        Task {
-                            await self.runMessageThread(id: messageThreadID, forceCloudRun: cloudRun, documentSearchScope: documentSearchScope, success: successCompletion, error: errorCompletion, chatStatusStream: chatStatusStream, toolCallback: toolCallback, toolRunOnly: false)
-                        }
-                    } error: { error in
-                        FreeToken.shared.logger("🔴 Failed to add tool result message: \(error)", .error)
-                        errorCompletion(error)
-                    }
-                }
+        await workflow.execute { context in
+            let context = context as! RunMessageThreadContext
+            let profilerEventType: Profiler.EventType
+            if context.cloudRun! {
+                profilerEventType = .runMessageThreadCloud
             } else {
-                // No tool result, just call the success callback
-                if cloudRun == true {
-                    profiler.end(eventType: Profiler.EventType.runMessageThreadCloud, isSuccess: true, tokenStats: resultMessage.tokenUsage)
-                } else {
-                    profiler.end(eventType: Profiler.EventType.runMessageThreadLocal, isSuccess: true, tokenStats: resultMessage.tokenUsage)
-                }
-                
-                FreeToken.shared.logger("✅ Message thread run completed successfully", .info)
-                
-                chatStatusStream?(nil, .stream_ended)
-                successCompletion(resultMessage)
+                profilerEventType = .runMessageThreadLocal
             }
-        }
-    }
-        
-    private func shouldCloudRun() async throws -> Bool {
-        if deviceManager?.isAICapable == true {
-            if await aiModelManager?.stateManager.getState() != .downloaded {
-                if self.deviceMode?.isQuickStartMode == true {
-                    FreeToken.shared.logger("Quick Start Activated!", .info)
-                    // Quick start mode activated
-                    return true
-                } else {
-                    throw FreeTokenError.convertErrorResponse(errorResponse: aiModelManager!.aiModelNotDownloadedError)
-                }
-            } else {
-                // Downloaded
-                FreeToken.shared.logger("🧠 Model downloaded and AI supported - Should run locally", .info)
-                return false
-            }
-        } else {
-            if  self.deviceMode?.isCompatibilityMode == true {
-                // Compatibility Mode activated
-                FreeToken.shared.logger("☁️ Compatibility Mode Activated!", .info)
-                return true
-            } else {
-                if deviceManager?.isAICapable == true {
-                    if aiModelManager != nil {
-                        throw FreeTokenError.convertErrorResponse(errorResponse: aiModelManager!.aiModelNotDownloadedError)
-                    } else {
-                        throw FreeTokenError(domain: "modelNotDownloadedError", code: 900)
-                    }
-                } else {
-                    throw FreeTokenError.convertErrorResponse(errorResponse: aiNotSupportedNoCompatibilityError)
-                }
-            }
-        }
-    }
-    
-    /// Get a Message Thread Run by ID
-    ///
-    /// ```
-    ///     client.getMessageThreadRun(id: "msgthr-id", success: { messageThreadRun in
-    ///         // Check the status
-    ///     }, error: { error in
-    ///         // Handle error - retry?
-    ///     })
-    /// ```
-    ///
-    /// - Parameters:
-    ///     - id: String of the message thread run ID
-    ///     - success: A closure to capture the result of fetching the message thread run
-    ///     - error: A closure to capture any errors that occur during the call
-    ///
-    /// - Returns: Void
-    public func getMessageThreadRun(id: String, success successCompletion: @escaping @Sendable (MessageThreadRun) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) {
-        if !isDeviceRegistered() {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
-            return
-        }
+            profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true)
 
-        let path = "message_thread_runs/\(id)"
-        
-        fetchResource(path: path, responseType: Codings.ShowMessageThreadRunResponse.self) { result in
-            switch result {
-            case .success(let response):
-                FreeToken.shared.logger("Get Message Thread Run was successful by ID \(id)", .info)
-                successCompletion(MessageThreadRun(from: response))
-                return
-            case .failure(let error):
-                FreeToken.shared.logger("Get Message Thread Run failed with error \(error.message ?? error.localizedDescription)", .error)
-                errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
-                return
+            successCompletion(context.resultMessage!)
+        } failure: { error, context in
+            let context = context as! RunMessageThreadContext
+            let profilerEventType: Profiler.EventType
+            if let cloudRun = context.cloudRun {
+                if cloudRun {
+                    profilerEventType = .runMessageThreadCloud
+                } else {
+                    profilerEventType = .runMessageThreadLocal
+                }
+                profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true)
             }
+            
+            errorCompletion(error)
         }
     }
-    
+        
     /// Load the AI Model into the device memory
     ///
     /// ```
@@ -1486,7 +1116,7 @@ public class FreeToken: @unchecked Sendable {
     /// - Returns: A generic enumeration result of Bool, ErrorResponse
     public func loadModel(success successCompletion: @escaping (Bool) -> Void, error errorCompletion: @escaping (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError))
+            errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -1501,7 +1131,7 @@ public class FreeToken: @unchecked Sendable {
         case .success(let isSuccess):
             successCompletion(isSuccess)
         case .failure(let error):
-            errorCompletion(FreeTokenError.convertErrorResponse(errorResponse: error))
+            errorCompletion(error)
         }
     }
     
@@ -1515,8 +1145,8 @@ public class FreeToken: @unchecked Sendable {
     /// > It is useful when the AI model is no longer needed or when you want to switch to a different model.
     ///
     /// - Returns: Void
-    public func unloadModel() {
-        aiModelManager?.unloadModel()
+    public func unloadModel() async {
+        await aiModelManager?.unloadModel()
     }
     
     /// Send one message directly to the AI without going to the cloud
@@ -1544,9 +1174,9 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: FreeToken.Message object
     /// - Throws: FreeTokenError if the device is not registered or if there is an error during the local chat
-    public func localChat(messages: [Message], uniqueID: String? = nil) async throws -> Message {
+    public func localChat(messages: [Message], uniqueID: String? = nil, aiRunConfig: AIRunConfig? = nil) async throws -> Message {
         if !isDeviceRegistered() {
-            throw FreeTokenError.convertErrorResponse(errorResponse: self.deviceNotRegisteredError)
+            throw FreeTokenError.deviceNotRegistered
         }
         
         let runIdentifier: String
@@ -1556,10 +1186,15 @@ public class FreeToken: @unchecked Sendable {
         } else {
             runIdentifier = uniqueID!
         }
-            
         
         do {
-            return try await aiModelManager!.localChat(messages: messages, runIdentifier: runIdentifier)
+            let response: String
+            let usage: TokenUsage?
+            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runIdentifier, aiRunConfig: aiRunConfig)
+            
+            let message = Message(role: .assistant, content: response, tokenUsage: usage)
+            
+            return message
         } catch {
             throw error
         }
@@ -1591,13 +1226,12 @@ public class FreeToken: @unchecked Sendable {
             
             let request = Codings.TelemetryCreateRequest(eventType: eventType, eventData: eventData, version: self.telemetryDataVersion)
             
-            self.postData(path: "telemetries", data: request, responseType: Codings.TelemetryCreateResponse.self) { result in
+            await self.postData(path: "telemetries", data: request, responseType: Codings.TelemetryCreateResponse.self) { result in
                 switch result {
                 case .success(_):
-//                    print("[FreeToken] Created telemetry successfully: \(response.message)")
                     break
                 case .failure(let error):
-                    FreeToken.shared.logger("[FreeToken] Telemetry Creation Error: \(error.message ?? error.localizedDescription)", .error)
+                    FreeToken.shared.logger("[FreeToken] Telemetry Creation Error: \(error.message)", .error)
                 }
             }
         }
@@ -1613,14 +1247,15 @@ public class FreeToken: @unchecked Sendable {
     ///   - queryParameters: A dictionary of query parameters to include in the URL.
     ///   - responseType: The expected type of the response.
     ///   - completion: Completion handler with the decoded response or an error.
-    private func fetchResource<T: Decodable>(
+    internal func fetchResource<T: Decodable>(
         path: String,
         queryParameters: [String: String]? = nil,
         responseType: T.Type,
-        completion: @escaping @Sendable (Result<T, Codings.ErrorResponse>) -> Void
-    ) {
+        useEtagCaching: Bool = false,
+        completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
+    ) async {
         guard isClientConfigured() else {
-            completion(.failure(self.clientNotConfiguredError))
+            await completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
 
@@ -1634,7 +1269,7 @@ public class FreeToken: @unchecked Sendable {
         }
 
         guard let endpoint = urlComponents?.url else {
-            completion(.failure(self.invalidURLError))
+            await completion(.failure(FreeTokenError.invalidURL))
             return
         }
 
@@ -1650,7 +1285,7 @@ public class FreeToken: @unchecked Sendable {
         }
 
         // Send the GET request
-        httpClient.get(from: endpoint, headers: headers, responseType: responseType, completion: completion)
+        await httpClient.get(from: endpoint, headers: headers, responseType: responseType, useETagCaching: useEtagCaching, completion: completion)
     }
 
     /// Posts data to the server.
@@ -1658,14 +1293,14 @@ public class FreeToken: @unchecked Sendable {
     ///   - data: The object to send, encoded as JSON.
     ///   - responseType: The type of the expected response.
     ///   - completion: Completion handler with the decoded response or an error.
-    private func postData<T: Decodable, U: Encodable>(
+    internal func postData<T: Decodable, U: Encodable>(
         path: String,
         data: U,
         responseType: T.Type,
-        completion: @escaping @Sendable (Result<T, Codings.ErrorResponse>) -> Void
-    ) {
+        completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
+    ) async {
         guard isClientConfigured() else {
-            completion(.failure(self.clientNotConfiguredError))
+            await completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
 
@@ -1688,9 +1323,9 @@ public class FreeToken: @unchecked Sendable {
                 headers["Device-Session-Token"] = deviceSessionToken
             }
             
-            httpClient.post(to: endpoint, headers: headers, body: body, responseType: responseType, completion: completion)
+            await httpClient.post(to: endpoint, headers: headers, body: body, responseType: responseType, completion: completion)
         } catch {
-            completion(.failure(error as! Codings.ErrorResponse))
+            await completion(.failure(FreeTokenError.encoding(message: error.localizedDescription)))
         }
     }
     
@@ -1703,11 +1338,11 @@ public class FreeToken: @unchecked Sendable {
         path: String,
         data: U,
         responseType: T.Type,
-        streamCallback: @escaping @Sendable (String) -> Void,
-        completion: @escaping @Sendable (Result<T, Codings.ErrorResponse>) -> Void
-    ) {
+        streamCallback: @escaping @Sendable (String) async -> Void,
+        completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
+    ) async {
         guard isClientConfigured() else {
-            completion(.failure(self.clientNotConfiguredError))
+            await completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
 
@@ -1731,17 +1366,17 @@ public class FreeToken: @unchecked Sendable {
             
             httpClient.streamPost(to: endpoint, headers: headers, body: body, streamCallback: streamCallback, completion: completion)
         } catch {
-            completion(.failure(error as! Codings.ErrorResponse))
+            await completion(.failure(error as! FreeTokenError))
         }
     }
     
     /// Delete a resource
     private func deleteResource(
         path: String,
-        completion: @escaping @Sendable (Result<Void, Codings.ErrorResponse>) -> Void
+        completion: @escaping @Sendable (Result<Void, FreeTokenError>) -> Void
     ) {
         guard isClientConfigured() else {
-            completion(.failure(self.clientNotConfiguredError))
+            completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
 

@@ -61,11 +61,12 @@ extension FreeToken {
             let token: String
             let scope: String
             let mode: String
-            let availableCloudToolCalls: [String]
+            let toolNames: [String]
             let documentsConfig: DocumentsConfigResponse
             let aiModel: AiModelResponse
             let embeddingModel: EmbeddingModelResponse
-            let precache: [DownloadableFile]?
+            let systemInstructions: String
+            let precache: [DownloadableFile]
             let createdAt: Date
             let updatedAt: Date
             
@@ -73,14 +74,20 @@ extension FreeToken {
                 case token
                 case scope
                 case mode
-                case availableCloudToolCalls = "available_cloud_tool_calls"
+                case toolNames = "tool_names"
                 case documentsConfig = "documents_config"
                 case aiModel = "ai_model"
                 case embeddingModel = "embedding_model"
+                case systemInstructions = "system_instructions"
                 case precache = "precache"
                 case createdAt = "created_at"
                 case updatedAt = "updated_at"
             }
+        }
+        
+        struct ToolDefinition: Decodable {
+            let name: String
+            let definition: String
         }
         
         struct DocumentsConfigResponse: Decodable {
@@ -134,28 +141,14 @@ extension FreeToken {
                 }
             }
             
-            struct SpecialTokens: Decodable {
-                let beginningOfText: String
-                let startHeaderId: String
-                let endHeaderId: String
-                let endOfTurnId: String
-                
-                enum CodingKeys: String, CodingKey {
-                    case beginningOfText = "beginning_of_text"
-                    case startHeaderId = "start_header_id"
-                    case endHeaderId = "end_header_id"
-                    case endOfTurnId = "end_of_turn_id"
-                }
-            }
-            
             struct PromptTemplateConfig: Decodable {
                 let toolRole: String
                 let userRole: String
                 let assistantRole: String
                 let systemRole: String
                 let appendSystemToUserPrompt: Bool
-                let messagesAlwaysStartWithUser: Bool
                 let jsonToolResults: Bool
+                let messagesMustAlternate: Bool
                 
                 enum CodingKeys: String, CodingKey {
                     case toolRole = "tool_role"
@@ -163,37 +156,47 @@ extension FreeToken {
                     case assistantRole = "assistant_role"
                     case systemRole = "system_role"
                     case appendSystemToUserPrompt = "append_system_to_user_prompt"
-                    case messagesAlwaysStartWithUser = "messages_always_start_with_user"
                     case jsonToolResults = "json_tool_results"
+                    case messagesMustAlternate = "messages_must_alternate"
                 }
             }
             
             let defaultSettings: ModelOptions
-            let specialTokens: SpecialTokens
             let promptTemplateConfig: PromptTemplateConfig
             
             enum CodingKeys: String, CodingKey {
                 case defaultSettings = "default_settings"
-                case specialTokens = "special_tokens"
                 case promptTemplateConfig = "prompt_template_config"
+            }
+        }
+        
+        struct HuggingfaceModelResponse: Decodable {
+            let id: String
+            let modelFileName: String
+            let mmproj: String?
+            
+            enum CodingKeys: String, CodingKey {
+                case id
+                case modelFileName = "model_file_name"
+                case mmproj
             }
         }
         
         struct AiModelResponse: Decodable {
             let code: String
             let name: String
-            let sizeBytes: Int
-            let files: FileDownloadPartResponse
+            let huggingface: HuggingfaceModelResponse
             let config: AiModelConfigResponse
             let clientsConfig: [String: ShowClientConfig]
+            let trainingCutoffDate: String
             
             enum CodingKeys: String, CodingKey {
                 case code
                 case name
-                case sizeBytes = "size_bytes"
-                case files
+                case huggingface = "huggingface"
                 case config
                 case clientsConfig = "clients_config"
+                case trainingCutoffDate = "training_cutoff_date"
             }
         }
         
@@ -240,12 +243,10 @@ extension FreeToken {
         
         struct CreateMessageThreadRequest: Encodable {
             let agentScope: String?
-            let pinnedContext: String?
             let encryptionEnabled: Bool
             
             enum CodingKeys: String, CodingKey {
                 case agentScope = "agent_scope"
-                case pinnedContext = "pinned_context"
                 case encryptionEnabled = "encryption_enabled"
             }
         }
@@ -255,12 +256,16 @@ extension FreeToken {
             let pinnedContext: String?
             let encryptionEnabled: Bool
             let messages: [ShowMessageResponse]
+            let createdAt: Date
+            let updatedAt: Date
             
             enum CodingKeys: String, CodingKey {
                 case id
                 case pinnedContext = "pinned_context"
                 case encryptionEnabled = "encryption_enabled"
                 case messages
+                case createdAt = "created_at"
+                case updatedAt = "updated_at"
             }
         }
         
@@ -404,78 +409,7 @@ extension FreeToken {
             let id: String
             let status: String
         }
-        
-        struct CreateMessageThreadRunRequest: Encodable {
-            let messageThreadId: String
-            let forceCloudRun: Bool?
-            
-            enum CodingKeys: String, CodingKey {
-                case messageThreadId = "message_thread_id"
-                case forceCloudRun = "force_cloud_run"
-            }
-        }
-        
-        struct ToolDefinitions: Decodable {
-            let prompt: String
-            let tokenCount: Int
-            let toolNames: [String]
-            
-            enum CodingKeys: String, CodingKey {
-                case prompt
-                case tokenCount = "token_count"
-                case toolNames = "tool_names"
-            }
-        }
-        
-        
-        struct SystemPromptParts: Decodable {
-            let instructions: SystemPromptPart
-            let toolDefinitions: ToolDefinitions?
-            let threadSearchResultsContext: SystemPromptPart?
-            let pinnedContext: SystemPromptPart?
-            
-            enum CodingKeys: String, CodingKey {
-                case instructions
-                case toolDefinitions = "tool_definitions"
-                case threadSearchResultsContext = "thread_search_results_context"
-                case pinnedContext = "pinned_context"
-            }
-        }
-        
-        struct SystemPromptPart: Decodable {
-            let content: String
-            let tokenCount: Int
-            
-            enum CodingKeys: String, CodingKey {
-                case content
-                case tokenCount = "token_count"
-            }
-        }
-        
-        struct ShowMessageThreadRunResponse: Decodable, Sendable {
-            let id: String
-            let status: String
-            let createdAt: Date
-            let startedAt: Date?
-            let endedAt: Date?
-            let cloudRun: Bool
-            let promptMessages: [ShowMessageResponse]
-            let systemPromptParts: SystemPromptParts
-            let threadSearchResults: [ShowMessageResponse]
-            
-            enum CodingKeys: String, CodingKey {
-                case id
-                case status
-                case createdAt = "created_at"
-                case startedAt = "started_at"
-                case endedAt = "ended_at"
-                case cloudRun = "cloud_run"
-                case promptMessages = "prompt_messages"
-                case systemPromptParts = "system_prompt_parts"
-                case threadSearchResults = "thread_search_results"
-            }
-        }
-        
+                
         struct MessageContentChunk: Decodable, Sendable {
             let messageChunk: String
             
@@ -506,21 +440,15 @@ extension FreeToken {
             let messageThreadID: String
             let role: String
             let content: String
-            let toolCalls: String?
-            let embedding: [Float]?
-            let embeddingModel: String?
             let encryptionEnabled: Bool
-            let tokenCount: Int?
+            let lastMessageID: String?
             
             enum CodingKeys: String, CodingKey {
                 case messageThreadID = "message_thread_id"
                 case role
                 case content
-                case toolCalls = "tool_calls"
-                case embedding
-                case embeddingModel = "embedding_model"
                 case encryptionEnabled = "encryption_enabled"
-                case tokenCount = "token_count"
+                case lastMessageID = "last_message_id"
             }
         }
         
@@ -528,21 +456,15 @@ extension FreeToken {
             let id: String?
             let role: String
             let content: String
-            let toolCalls: String?
-            let encryptionEnabled: Bool?
-            let tokenCount: Int
-            let createdAt: Date?
-            let updatedAt: Date?
+            let encryptionEnabled: Bool
+            let createdAt: Date
             
             enum CodingKeys: String, CodingKey {
                 case id
                 case role
                 case content
-                case toolCalls = "tool_calls"
                 case encryptionEnabled = "encryption_enabled"
-                case tokenCount = "token_count"
                 case createdAt = "created_at"
-                case updatedAt = "updated_at"
             }
         }
         
@@ -569,10 +491,8 @@ extension FreeToken {
         }
         
         struct TokenUsageRequest: Encodable {
-            let promptTokens: Int
-            let completionTokens: Int
             let totalTokens: Int
-            let decodeTokensPerSecond: Float
+            let tokensPerSecond: Float
         }
         
         struct TelemetryDataRequest: Encodable, Sendable {
@@ -647,16 +567,13 @@ extension FreeToken {
         }
         
         struct TokenUsageResponse: Codable, Sendable {
-            let promptTokens: Int
-            let completionTokens: Int
             let totalTokens: Int
-            let decodeTokensPerSecond: Float
+            let tokensPerSecond: Float
             
             enum CodingKeys: String, CodingKey {
-                case promptTokens = "prompt_tokens"
-                case completionTokens = "completion_tokens"
+
                 case totalTokens = "total_tokens"
-                case decodeTokensPerSecond = "decode_tokens_per_second"
+                case tokensPerSecond = "tokens_per_second"
             }
         }
         
@@ -719,16 +636,25 @@ extension FreeToken {
     public class MessageThread: @unchecked Sendable {
         public let id: String
         public let messages: [Message]
-        public let pinnedContext: String?
+        public let createdAt: Date
+        public let updatedAt: Date
         
-        internal init(from showMessageThreadResponse: Codings.ShowMessageThreadResponse) {
-            self.id = showMessageThreadResponse.id
-            self.pinnedContext = showMessageThreadResponse.pinnedContext
-            let messages: [Message] = showMessageThreadResponse.messages.map { showMessageResponse in
+        internal init(id: String, messages: [Message], createdAt: Date, updatedAt: Date) {
+            self.id = id
+            self.messages = messages
+            self.createdAt = createdAt
+            self.updatedAt = updatedAt
+        }
+        
+        internal init(from messageThreadResponse: Codings.ShowMessageThreadResponse) {
+            self.id = messageThreadResponse.id
+            let messages: [Message] = messageThreadResponse.messages.map { showMessageResponse in
                 Message(from: showMessageResponse)
             }
             
             self.messages = messages
+            self.createdAt = messageThreadResponse.createdAt
+            self.updatedAt = messageThreadResponse.updatedAt
         }
     }
         
@@ -738,12 +664,19 @@ extension FreeToken {
         public let metadata: String?
         public let content: String
         public let createdAt: Date
+        internal let encryptionManager = FreeToken.shared.encryptionManager
         
         internal init(from documentResponse: Codings.ShowDocumentResponse) {
             self.id = documentResponse.id
             self.searchScope = documentResponse.searchScope
-            self.metadata = documentResponse.metadata
-            self.content = documentResponse.content
+            if documentResponse.encryptionEnabled {
+                self.metadata = documentResponse.metadata != nil ? encryptionManager.decrypt(documentResponse.metadata!) : nil
+                self.content = encryptionManager.decrypt(documentResponse.content)
+            } else {
+                self.metadata = documentResponse.metadata
+                self.content = documentResponse.content
+            }
+            
             self.createdAt = documentResponse.createdAt
         }
     }
@@ -762,46 +695,21 @@ extension FreeToken {
         public let documentID: String
         public let documentMetadata: String?
         public let contentChunk: String
+        internal let encryptionManager = FreeToken.shared.encryptionManager
         
         internal init(from documentChunkResponse: Codings.SearchDocumentsResponse.DocumentChunkResult) {
             self.documentID = documentChunkResponse.documentID
-            self.documentMetadata = documentChunkResponse.documentMetadata
-            self.contentChunk = documentChunkResponse.contentChunk
+            
+            if documentChunkResponse.encryptionEnabled {
+                self.documentMetadata = documentChunkResponse.documentMetadata != nil ? encryptionManager.decrypt(documentChunkResponse.documentMetadata!) : nil
+                self.contentChunk = encryptionManager.decrypt(documentChunkResponse.contentChunk)
+            } else {
+                self.documentMetadata = documentChunkResponse.documentMetadata
+                self.contentChunk = documentChunkResponse.contentChunk
+            }
         }
     }
-    
-    public class DocumentIndexingStatus {
-        public let id: String
-        public let status: String
         
-        internal init(from documentIndexingStatus: DocumentIndexingStatus) {
-            self.id = documentIndexingStatus.id
-            self.status = documentIndexingStatus.status
-        }
-    }
-    
-    
-    
-    public class MessageThreadRun {
-        public let id: String
-        public let status: String
-        public let createdAt: Date
-        public let startedAt: Date?
-        public let endedAt: Date?
-        public let cloudRun: Bool
-        public let resultMessage: Message?
-        
-        internal init(from messageThreadRunResponse: Codings.ShowMessageThreadRunResponse) {
-            self.id = messageThreadRunResponse.id
-            self.status = messageThreadRunResponse.status
-            self.createdAt = messageThreadRunResponse.createdAt
-            self.startedAt = messageThreadRunResponse.startedAt
-            self.endedAt = messageThreadRunResponse.endedAt
-            self.cloudRun = messageThreadRunResponse.cloudRun
-            self.resultMessage = nil
-        }
-    }
-    
     public enum MessageRole: String, Codable {
         case user
         case assistant
@@ -814,9 +722,8 @@ extension FreeToken {
         public let role: MessageRole
         public let content: String
         public let createdAt: Date?
-        public let updatedAt: Date?
-        public let tokenCount: Int?
         public let tokenUsage: TokenUsage?
+        internal let encryptionManager = FreeToken.shared.encryptionManager
         
         public init(role: MessageRole, content: String) {
             self.role = role
@@ -825,28 +732,28 @@ extension FreeToken {
             self.tokenUsage = nil
             self.id = nil
             self.createdAt = nil
-            self.updatedAt = nil
-            self.tokenCount = nil
         }
         
-        internal init(role: MessageRole, content: String, tokenUsage: TokenUsage? = nil, tokenCount: Int? = nil) {
+        internal init(role: MessageRole, content: String, tokenUsage: TokenUsage? = nil) {
             self.role = role
             self.content = content
             self.tokenUsage = tokenUsage
-            self.tokenCount = tokenCount
             
             self.id = nil
             self.createdAt = nil
-            self.updatedAt = nil
         }
         
         internal init(from showMessageResponse: Codings.ShowMessageResponse) {
             self.id = showMessageResponse.id
             self.role = MessageRole(rawValue: showMessageResponse.role) ?? .user
-            self.content = showMessageResponse.content
+            
+            if showMessageResponse.encryptionEnabled {
+                self.content = encryptionManager.decrypt(showMessageResponse.content)
+            } else {
+                self.content = showMessageResponse.content
+            }
             self.createdAt = showMessageResponse.createdAt
-            self.updatedAt = showMessageResponse.updatedAt
-            self.tokenCount = showMessageResponse.tokenCount
+
             self.tokenUsage = nil
         }
         
@@ -857,56 +764,27 @@ extension FreeToken {
             
             self.tokenUsage = tokenUsage
             self.createdAt = nil
-            self.updatedAt = nil
-            self.tokenCount = nil
         }
     }
     
     public struct TokenUsage: @unchecked Sendable {
-        let promptTokens: Int
-        let completionTokens: Int
         let totalTokens: Int
         let tokensPerSecond: Float
 
-        internal init(promptTokens: Int, completionTokens: Int, totalTokens: Int, tokensPerSecond: Float) {
-            self.promptTokens = promptTokens
-            self.completionTokens = completionTokens
+        internal init(totalTokens: Int, tokensPerSecond: Float) {
             self.totalTokens = totalTokens
             self.tokensPerSecond = tokensPerSecond
         }
         
         internal init(from tokenUsageReponse: Codings.TokenUsageResponse) {
-            self.promptTokens = tokenUsageReponse.promptTokens
-            self.completionTokens = tokenUsageReponse.completionTokens
             self.totalTokens = tokenUsageReponse.totalTokens
-            self.tokensPerSecond = tokenUsageReponse.decodeTokensPerSecond
+            self.tokensPerSecond = tokenUsageReponse.tokensPerSecond
         }
                 
         func asCodable() -> Codings.TokenUsageRequest {
-            return Codings.TokenUsageRequest(promptTokens: self.promptTokens, completionTokens: self.completionTokens, totalTokens: self.totalTokens, decodeTokensPerSecond: self.tokensPerSecond)
+            return Codings.TokenUsageRequest(totalTokens: self.totalTokens, tokensPerSecond: self.tokensPerSecond)
         }
     }
-    
-    
-    
-    public class FreeTokenError: NSError, @unchecked Sendable {
-        public var message: String?
-        
-        static func convertErrorResponse(errorResponse: Codings.ErrorResponse) -> FreeTokenError {
-            let underlyingError = errorResponse as NSError
-            var customUserInfo: [String: Any] = [:]
-            
-            customUserInfo[NSLocalizedDescriptionKey] = underlyingError.localizedDescription
-            customUserInfo[NSUnderlyingErrorKey] = underlyingError
-            
-            let novaError = FreeTokenError(domain: "com.freetoken.errorresponse", code: errorResponse.code ?? 0, userInfo: customUserInfo)
-            novaError.message = errorResponse.message
-            
-            return novaError
-        }
-        
-    }
-    
     
     public class ToolCall: @unchecked Sendable {
         public let name: String
@@ -920,6 +798,22 @@ extension FreeToken {
         internal init(name: String, arguments: [String: String]) {
             self.name = name
             self.arguments = arguments
+        }
+    }
+    
+    public struct AIRunConfig: Sendable {
+        let maxGenerationTokens: Int?
+        let contentWindowSize: Int?
+        let topK: Int?
+        let topP: Float?
+        let temperature: Float?
+        
+        public init(maxGenerationTokens: Int? = nil, contentWindowSize: Int? = nil, topK: Int? = nil, topP: Float? = nil, temperature: Float? = nil) {
+            self.maxGenerationTokens = maxGenerationTokens
+            self.contentWindowSize = contentWindowSize
+            self.topK = topK
+            self.topP = topP
+            self.temperature = temperature
         }
     }
     

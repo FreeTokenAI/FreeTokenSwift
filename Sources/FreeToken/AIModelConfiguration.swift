@@ -1,5 +1,4 @@
 import Foundation
-import llama
 
 extension FreeToken {
     struct AIModelConfiguration {

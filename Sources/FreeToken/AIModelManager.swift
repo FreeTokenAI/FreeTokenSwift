@@ -5,35 +5,24 @@
 //  Created by Vince Francesi on 11/30/24.
 //
 import Foundation
-
-import Hub
-import Tokenizers
+import LocalLLMClient
+import LocalLLMClientLlama
+import LocalLLMClientUtility
 
 extension FreeToken {
     class AIModelManager: @unchecked Sendable {
-        let modelBasePath: URL
         let modelCode: String
-        let specialTokens: Codings.AiModelConfigResponse.SpecialTokens
-        let modelOptions: Codings.AiModelConfigResponse.ModelOptions
+        let modelConfig: AIModelConfiguration
         let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
+        let huggingFaceConfig: Codings.HuggingfaceModelResponse
         
         private let clientConfig: Codings.ShowClientConfig
         private let clientVersion: String
-        private let modelFiles: [Codings.DownloadableFile]
-        private let verifyFiles: [Codings.FileVerify]
+        private var generationTask: Task<Void, Error>? = nil
+        
         internal let stateManager: AIStateManager = AIStateManager()
-        private var modelPathOverride: Bool = false
-        private var modelSizeBytes: Int = 0
         
-        // Errors
-        private let unsupportedVersionError = Codings.ErrorResponse(error: "unsupportedVersion", message: "The AI model sent by the server is not supported by this client", code: 2000)
-        public let aiModelNotDownloadedError = Codings.ErrorResponse(error: "aiModelNotDownloaded", message: "AI model has not yet been downloded. Try .downloadAIModel() first", code: 2001)
-        public let modelAlreadyLoadingError = Codings.ErrorResponse(error: "aiModelAlreadyLoading", message: "Model already loading. Wait until AI Model is loaded and try again", code: 2002)
-        public let failedToLoadModelError = Codings.ErrorResponse(error: "failedToLoadModel", message: "Failed to load model", code: 2003)
-        static public let aiModelNotLoadedError = Codings.ErrorResponse(error: "aiModelNotLoaded", message: "AI model is not loaded. Try .loadModel() first", code: 2004)
-        
-        enum ModelState: Equatable {
-            case unverified
+        enum DownloadState: Equatable {
             case notDownloaded
             case downloading
             case downloaded
@@ -46,143 +35,231 @@ extension FreeToken {
             case loaded
         }
         
-        actor AIStateManager {
-            @LlamaCppSwiftActor
-            var engine: LlamaCppMultiContextRun?
-            var state: ModelState = .unverified
-            var loadedState: LoadedState = .unloaded
+        actor AITaskQueue {
+            private var isRunning = false
+
+            func enqueue<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+                while isRunning {
+                    try await Task.sleep(nanoseconds: 10_000_000) // 10ms
+                    puts("Waiting for AI task queue to be free...")
+                }
+                isRunning = true
+                defer { isRunning = false }
+                let result = try await operation()
+                
+                return result
+            }
+        }
+        
+        actor AIResults {
+            var startTime: DispatchTime? = nil
+            var endTime: DispatchTime? = nil
+            var tokenCount: Int = 0
+            var responseContent: String = ""
+            var maxTokenCount: Int? = nil
             
-            func setState(_ state: ModelState) {
-                self.state = state
+            func setStartTime(_ time: DispatchTime) {
+                self.startTime = time
+            }
+            
+            func setEndTime(_ time: DispatchTime) {
+                self.endTime = time
+            }
+            
+            func addToTokenCount(_ count: Int) {
+                self.tokenCount += count
+            }
+            
+            func appendResponseContent(_ content: String) {
+                self.responseContent += content
+            }
+            
+            func setMaxTokenCount(_ count: Int) {
+                self.maxTokenCount = count
+            }
+        }
+        
+        actor AIStateManager {
+            var model:  LLMSession.DownloadModel? = nil
+            var cachedSession: SessionCache? = nil
+            var downloadState: DownloadState = .notDownloaded
+            var loadedState: LoadedState = .unloaded
+            var modelInitOptions: ModelInitOptions? = nil
+            
+            
+            struct SessionCache {
+                let runIdentifier: String
+                var session: LLMSession
+            }
+            
+            struct ModelInitOptions {
+                let huggingFaceID: String
+                let modelFileName: String
+                let mmproj: String?
+                let configuration: AIModelConfiguration
+            }
+            
+            func setDownloadState(_ state: DownloadState) {
+                self.downloadState = state
             }
             
             func setLoadedState(_ loadedState: LoadedState) {
                 self.loadedState = loadedState
             }
             
-            func getState() -> ModelState {
-                return state
-            }
-            
-            func getLoadedState() async -> LoadedState {
-                if let engine = await getEngine() {
-                    if await engine.isModelLoaded() {
-                        loadedState = .loaded
-                    } else {
-                        loadedState = .unloaded
-                    }
-                } else {
-                    loadedState = .unloaded
-                }
-                
+            func getLoadedState() -> LoadedState {
                 return loadedState
             }
             
-            
-            @LlamaCppSwiftActor
-            private func getEngine() -> LlamaCppMultiContextRun? {
-                return engine
+            func getDownloadState() -> DownloadState {
+                return downloadState
             }
             
-            @LlamaCppSwiftActor
-            func initializeEngine(modelPath: String, configuration: AIModelConfiguration) async {
-                self.engine = LlamaCppMultiContextRun(modelPath: modelPath, configuration: configuration)
+            func downloadModel(progress: @escaping @Sendable (_ progress: Double) async -> Void) async throws {
+                guard let model = self.model else {
+                    throw FreeTokenError.aiModelNotLoaded
+                }
+                setDownloadState(.downloading)
+                do {
+                    FreeToken.shared.logger("Starting download of AI model files...", .info)
+                    try await model.downloadModel(onProgress: progress)
+                    setDownloadState(.downloaded)
+                } catch {
+                    setDownloadState(.failed(error: error.localizedDescription))
+                    throw FreeTokenError.aiModelNotDownloaded
+                }
             }
             
-            @LlamaCppSwiftActor
-            func unloadEngine() async {
-                self.engine?.cleanup()
-                self.engine = nil
-                await self.setLoadedState(.unloaded)
+            func initializeEngine(
+                huggingFaceID: String,
+                modelFileName: String,
+                mmproj: String? = nil,
+                configuration: AIModelConfiguration
+            ) async throws {
+                self.modelInitOptions = ModelInitOptions(
+                    huggingFaceID: huggingFaceID,
+                    modelFileName: modelFileName,
+                    mmproj: mmproj,
+                    configuration: configuration
+                )
+                
+                let config = configuration
+                
+                self.loadedState = .loading
+                self.model = LLMSession.DownloadModel.llama(id: huggingFaceID, model: modelFileName, mmproj: nil, parameter: .init(
+                    context: config.nCTX,
+                    temperature: config.temperature,
+                    topK: config.topK,
+                    topP: config.topP,
+                    penaltyLastN: Int(config.penaltyLastN),
+                    penaltyRepeat: config.penaltyRepeat
+                ))
+                self.loadedState = .loaded
             }
             
-            @LlamaCppSwiftActor
-            func tokenCount(_ text: String, addBos: Bool = false) async throws -> Int {
-                guard let engine = self.engine else {
-                    throw AIModelManager.aiModelNotLoadedError
+            func generateResponse(
+                for messages: [Message],
+                runIdentifier: String,
+                aiRunConfig: AIRunConfig? = nil,
+                noContextCache: Bool = false
+            ) async throws -> AsyncThrowingStream<String, any Error> {
+                guard model != nil else {
+                    throw FreeTokenError.aiModelNotLoaded
+                }
+                guard let promptMessage = messages.last else {
+                    throw FreeTokenError.noMessagesToSend
                 }
                 
-                if await getLoadedState() != .loaded {
-                    throw AIModelManager.aiModelNotLoadedError
+                let model: LLMSession.DownloadModel
+                let session: LLMSession
+                var isNewSession: Bool = false
+                var shouldOverrideCache: Bool = false
+                                
+                if noContextCache {
+                    isNewSession = true
+                    shouldOverrideCache = false
+                } else if cachedSession == nil || cachedSession?.runIdentifier != runIdentifier {
+                    isNewSession = true
+                    shouldOverrideCache = true
                 }
                 
-                return engine.tokenCount(text, addBos: addBos)
-            }
-            
-            @LlamaCppSwiftActor
-            func generate(for prompt: String, maxTokens: Int? = nil, runIdentifier: String, noContextCache: Bool = false) async throws -> AsyncThrowingStream<String, Error> {
-                guard let engine = self.engine else {
-                    throw AIModelManager.aiModelNotLoadedError
-                }
-                
-                if await getLoadedState() != .loaded {
-                    throw AIModelManager.aiModelNotLoadedError
-                }
-                
-                return engine.generate(prompt: prompt, runIdentifier: runIdentifier, maxTokens: maxTokens, isOneTimeRun: noContextCache)
-            }
-            
-            @LlamaCppSwiftActor
-            func lastRunStats() async -> LastRunStats? {
-                let stats = engine?.lastRunStats
-                
-                if let stats = stats {
-                    return LastRunStats(totalTokens: stats.totalTokens, elapsed: stats.elapsed, tokensPerSecond: stats.tokensPerSecond)
+                if let aiRunConfig = aiRunConfig, (aiRunConfig.temperature != nil || aiRunConfig.topK != nil || aiRunConfig.topP != nil || aiRunConfig.contentWindowSize != nil), let modelInitOptions = modelInitOptions {
+                    isNewSession = true
+                    // AI Run Config provided, initialize a model for the cache.
+                    let config = modelInitOptions.configuration
+                    let nCTX = aiRunConfig.contentWindowSize ?? config.nCTX
+                    let temperature = aiRunConfig.temperature ?? config.temperature
+                    let topK = aiRunConfig.topK ?? config.topK
+                    let topP = aiRunConfig.topP ?? config.topP
+
+                    FreeToken.shared.logger("⚙️ AI Run Config provided - initializing new model and session instances based on the parameters", .info)
+                    
+                    model = LLMSession.DownloadModel.llama(id: modelInitOptions.huggingFaceID, model: modelInitOptions.modelFileName, mmproj: nil, parameter: .init(
+                        context: nCTX,
+                        temperature: temperature,
+                        topK: topK,
+                        topP: topP,
+                        penaltyLastN: Int(config.penaltyLastN),
+                        penaltyRepeat: config.penaltyRepeat
+                    ))
+                    _ = try await model.prewarm()
                 } else {
-                    return nil
-                }
-            }
-            
-            @LlamaCppSwiftActor
-            func stopGeneration() async {
-                guard let engine = self.engine else {
-                    return
+                    // Use preloaded model
+                    model = self.model!
                 }
                 
-                engine.stopGeneration()
+                // Process Messages
+                let messages = messages.dropLast() // Feed this in via the prompt
+                let llmMessages = messages.map { message in
+                    switch message.role {
+                    case .assistant:
+                        return LLMInput.Message.assistant(message.content)
+                    case .user:
+                        return LLMInput.Message.user(message.content)
+                    case .system:
+                        return LLMInput.Message.system(message.content)
+                    case .tool:
+                        return LLMInput.Message(role: .custom("tool"), content: message.content)
+                    }
+                }
+                
+                if isNewSession {
+                    session = LLMSession(model: model, messages: llmMessages)
+                } else {
+                    session = cachedSession!.session
+                    
+                    // Append new messages to the existing session
+                    var index = 0
+                    for message in llmMessages {
+                        if session.messages.endIndex <= index {
+                            session.messages.append(message)
+                        }
+                        index += 1
+                    }
+                }
+                
+                if shouldOverrideCache {
+                    self.cachedSession = SessionCache(runIdentifier: runIdentifier, session: session)
+                }
+                
+                return session.streamResponse(to: promptMessage.content)
             }
             
-            struct LastRunStats {
-                let totalTokens: Int
-                let elapsed: TimeInterval
-                let tokensPerSecond: Double
+            func unloadModel() {
+                self.model = nil
+                self.cachedSession = nil
+                self.downloadState = .notDownloaded
+                self.loadedState = .unloaded
             }
         }
         
-        init(modelConfig: Codings.AiModelResponse, clientVersion: String, overrideModelPath: Optional<URL> = nil) {
+        init(modelConfig: Codings.AiModelResponse, clientVersion: String) {
             self.modelCode = modelConfig.code
-            self.modelFiles = modelConfig.files.toDownload
-            self.verifyFiles = modelConfig.files.toVerify
             self.clientConfig = modelConfig.clientsConfig["iOS"]!
             self.clientVersion = clientVersion
-            self.modelPathOverride = overrideModelPath != nil
-            self.modelSizeBytes = modelConfig.sizeBytes
-            self.specialTokens = modelConfig.config.specialTokens
-            self.modelOptions = modelConfig.config.defaultSettings
+            self.modelConfig = AIModelConfiguration(from: modelConfig.config.defaultSettings)
             self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
-            
-            if overrideModelPath == nil {
-                // Model should be setup for download
-                let fileManager = FileManager.default
-                let cachePath = fileManager.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                self.modelBasePath = URL(fileURLWithPath: "\(cachePath.path)/FreeToken/AIModels/\(clientConfig.modelId)")
-                
-                if fileManager.fileExists(atPath: self.modelBasePath.path) == false {
-                    do {
-                        try fileManager.createDirectory(at: self.modelBasePath, withIntermediateDirectories: true)
-                        FreeToken.shared.logger("Model cache directory created successfully", .info)
-                    } catch {
-                        FreeToken.shared.logger("Failed to create model directory.", .error)
-                        return
-                    }
-                }
-            } else {
-                FreeToken.shared.logger("AI Model path is defined - ignoring all model definitions from cloud", .info)
-                self.modelBasePath = overrideModelPath!
-                Task {
-                    await self.stateManager.setState(.downloaded)
-                }
-            }
+            self.huggingFaceConfig = modelConfig.huggingface
         }
         
         actor ResultsCollector {
@@ -208,18 +285,11 @@ extension FreeToken {
             }
         }
         
-        func downloadIfNeeded(progress: Optional<@Sendable (_ percentage: Double) -> Void> = nil) async -> Bool {
+        func downloadIfNeeded(progress progressCallback: Optional<@Sendable (_ percentage: Double) -> Void> = nil) async throws -> Bool {
             let profiler = Profiler()
-            
-            
-            if await self.stateManager.getState() == .downloading {
+            if await self.stateManager.getDownloadState() == .downloading {
                 FreeToken.shared.logger("Currently downloading AI model - Cannot download more than once", .info)
                 return false
-            }
-            
-            if modelPathOverride {
-                FreeToken.shared.logger("Model files are baked into the app, no downloading required.", .info)
-                return true
             }
             
             switch verifyClientVersionSupported() {
@@ -231,268 +301,144 @@ extension FreeToken {
                 return false
             }
             
-            FreeToken.shared.logger("Starting AI model file downloads...", .info)
-            let downloadPipeline = DownloadPipelineManager(baseDirectory: modelBasePath, downloadFiles: modelFiles, verifyFiles: verifyFiles, progressTracker: progress)
-            
+            FreeToken.shared.logger("🔄 Loading AI model...", .info)
             do {
-                let downloadResult = try await downloadPipeline.run()
-                
-                switch downloadResult {
-                case .success(_):
-                    profiler.end(eventType: .downloadModel, eventTypeID: modelCode, isSuccess: true)
-                    await self.stateManager.setState(.downloaded)
-                    return true
-                case .failure(let error):
-                    profiler.end(eventType: .downloadModel, eventTypeID: modelCode, isSuccess: false, errorMessage: error.localizedDescription)
-                    await self.stateManager.setState(.failed(error: error.localizedDescription))
-                    return false
-                }
+                try await self.stateManager.initializeEngine(huggingFaceID: huggingFaceConfig.id, modelFileName: huggingFaceConfig.modelFileName, mmproj: huggingFaceConfig.mmproj, configuration: modelConfig)
             } catch {
-                FreeToken.shared.logger("Error downloading AI model: \(error.localizedDescription)", .error)
-                await self.stateManager.setState(.failed(error: error.localizedDescription))
-                return false
+                throw FreeTokenError.failedToLoadModel
             }
-        }
-        
-        func resetCache() -> Bool {
-            let fileManager = FileManager.default
             
-            unloadModel()
+            FreeToken.shared.logger("☁️ Starting AI model file downloads...", .info)
             
             do {
-                try fileManager.removeItem(atPath: self.modelBasePath.path)
-                Task {
-                    FreeToken.shared.logger("Successfully reset model cache", .info)
-                    await self.stateManager.setState(.notDownloaded)
+                try await stateManager.downloadModel { progress in
+                    FreeToken.shared.logger("Download progress: \(progress * 100.0)%", .info)
+                    progressCallback?(progress)
                 }
                 return true
             } catch {
-                Task {
-                    FreeToken.shared.logger("Failed to remove AI Model Cache with error: \(error.localizedDescription)", .error)
-                    await self.stateManager.setState(.unverified)
-                }
+                FreeToken.shared.logger("Error downloading AI model: \(error.localizedDescription)", .error)
+                await self.stateManager.setDownloadState(.failed(error: error.localizedDescription))
                 return false
             }
         }
         
-        func loadModel() async -> Result<Bool, Codings.ErrorResponse> {
-            let modelPath = self.modelBasePath
-            
+        func loadModel() async -> Result<Bool, FreeTokenError> {
             if await self.stateManager.getLoadedState() == .loaded {
                 return .success(true)
             }
             
             if await self.stateManager.getLoadedState() == .loading {
-                return .failure(modelAlreadyLoadingError)
+                return .failure(FreeTokenError.modelAlreadyLoading)
             }
             
             await self.stateManager.setLoadedState(.loading)
             
-            guard await self.stateManager.getState() == .downloaded else {
+            guard await self.stateManager.getDownloadState() == .downloaded else {
                 FreeToken.shared.logger("AI model has not been downloaded", .error)
-                return .failure(self.aiModelNotDownloadedError)
+                return .failure(FreeTokenError.aiModelNotDownloaded)
             }
             
             do {
-                // Find the first .gguf file in the modelPath directory
-                let ggufFiles = try FileManager.default.contentsOfDirectory(atPath: modelPath.path).filter { $0.hasSuffix(".gguf") }
-                guard let ggufFile = ggufFiles.first else {
-                    FreeToken.shared.logger("No .gguf file found in model directory", .error)
-                    return .failure(failedToLoadModelError)
-                }
-                
-                let configuration = AIModelConfiguration(from: self.modelOptions)
-                
-                await self.stateManager.initializeEngine(modelPath: "\(modelPath.path)/\(ggufFile)", configuration: configuration)
+                try await self.stateManager.initializeEngine(
+                    huggingFaceID: huggingFaceConfig.id,
+                    modelFileName: huggingFaceConfig.modelFileName,
+                    mmproj: huggingFaceConfig.mmproj,
+                    configuration: modelConfig
+                )
                 return .success(true)
             } catch {
                 FreeToken.shared.logger("Error loading model: \(error.localizedDescription)", .error)
-                return .failure(failedToLoadModelError)
+                return .failure(FreeTokenError.failedToLoadModel)
             }
         }
         
-        func unloadModel() {
-            Task {
-                await self.stateManager.unloadEngine()
-            }
-        }
-        
-        
-        func localChat(messages: [Message], runIdentifier: String) async throws -> Message {
-            guard await self.stateManager.getState() == .downloaded else {
-                throw self.aiModelNotDownloadedError
-            }
-            
-            if await self.stateManager.getLoadedState() != .loaded {
-                _ = await loadModel()
-            }
-            
-            
-            let prompt = generateMessagesPrompt(messages: messages)
-            
-            let response: String
-            let usage: TokenUsage
-            (response, usage) = try await self.runEngine(prompt: prompt, runIdentifier: runIdentifier)
-            
-            return Message(role: .assistant, content: response, tokenUsage: usage)
-        }
-        
-        func tokenCount(_ text: String) async throws -> Int {
-            guard await self.stateManager.getState() == .downloaded else {
-                throw self.aiModelNotDownloadedError
-            }
-            
-            if await self.stateManager.getLoadedState() != .loaded {
-                _ = await loadModel()
-            }
-            
-            return try await self.stateManager.tokenCount(text)
-        }
-        
-        func sendPromptToAI(prompt: String, runIdentifier: String, maxTokens: Int? = nil, tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
-            guard await self.stateManager.getState() == .downloaded else {
-                throw self.aiModelNotDownloadedError
-            }
-            
-            if await self.stateManager.getLoadedState() != .loaded {
-                _ = await loadModel()
-            }
-            
-            return try await self.runEngine(prompt: prompt, maxTokens: maxTokens, runIdentifier: runIdentifier, tokenStream: tokenStream)
-        }
-        
-        func sendMessagesToAI(messages: [Message], runIdentifier: String, tokenStream: Optional<@Sendable (String) -> Void> = nil) async throws -> (response: Message, usage: TokenUsage) {
-            guard await self.stateManager.getState() == .downloaded else {
-                throw self.aiModelNotDownloadedError
-            }
-            
-            if await self.stateManager.getLoadedState() != .loaded {
-                _ = await loadModel()
-            }
-            
-            let response: String
-            let usage: TokenUsage
-
-            let contextWindowManager = ContextWindowManager(modelManager: self)
-            let prompt = try await contextWindowManager.generate(messages: messages)
-            
-            (response, usage) = try await self.runEngine(prompt: prompt, runIdentifier: runIdentifier, tokenStream: tokenStream)
-            
-            return (Message(role: .assistant, content: response), usage)
+        func unloadModel() async {
+            await self.stateManager.unloadModel()
         }
         
         func stopGeneration() async {
-            await self.stateManager.stopGeneration()
+            FreeToken.shared.logger("Stopping AI generation...", .info)
+            generationTask?.cancel()
         }
         
-        func generateMessagesPrompt(messages: [Message]) -> String {
-            let tokens = self.specialTokens
-            var prompt = tokens.beginningOfText
-            
-            for message in messages {
-                let messagePrompt: String
-                (messagePrompt, _) = generateMessagePrompt(message: message)
-                prompt += messagePrompt
-            }
-            
-            // Add the assistant header
-            let (messagePrompt, _) = generateMessagePrompt(message: Message(role: .assistant, content: ""), headerOnly: true)
-            
-            prompt += messagePrompt
-            
-            return prompt
-        }
-        
-        func generateMessagePrompt(message: Message, headerOnly: Bool = false) -> (prompt: String, tokenCount: Int) {
-            let tokens = self.specialTokens
-            var tokenCount = 0
-
-            var prompt = tokens.startHeaderId
-            if tokens.startHeaderId != "" {
-                tokenCount += 1
-            }
-            
-            switch message.role {
-                case .user:
-                prompt += promptTemplateConfig.userRole
-                if promptTemplateConfig.userRole != "" { tokenCount += 1 }
-                case .assistant:
-                prompt += promptTemplateConfig.assistantRole
-                if promptTemplateConfig.assistantRole != "" { tokenCount += 1 }
-                case .tool:
-                prompt += promptTemplateConfig.toolRole
-                if promptTemplateConfig.toolRole != "" { tokenCount += 1 }
-                case .system:
-                prompt += promptTemplateConfig.systemRole
-                if promptTemplateConfig.systemRole != "" { tokenCount += 1 }
-            }
-            
-            prompt += tokens.endHeaderId
-            if tokens.endHeaderId != "" {
-                tokenCount += 1
-            }
-            
-            if headerOnly {
-                return (prompt, tokenCount)
-            }
-            
-            prompt += message.content
-
-            if message.content != "" {
-                let messageTokenCount = message.tokenCount ?? 0
-                tokenCount += messageTokenCount
-                
-                if messageTokenCount == 0 {
-                    FreeToken.shared.logger("✉️ Message has a ZERO token count attribute - this may cause context window calculation problems - message content: \(message.content)", .warning)
-                }
-            }
-
-            prompt += tokens.endOfTurnId
-            if tokens.endOfTurnId != "" {
-                tokenCount += 1
-            }
-            
-            return (prompt, tokenCount)
-        }
-        
-        internal func runEngine(prompt: String, maxTokens: Int? = nil, runIdentifier: String, noContextCache: Bool = false, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage) {
+        func sendMessagesToAI(messages: [Message], runIdentifier: String, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
             if await self.stateManager.getLoadedState() != .loaded {
                 _ = await loadModel()
             }
             
-            var responseContent = ""
-            
-            let tokenCount = try await self.stateManager.tokenCount(prompt)
-            
-            FreeToken.shared.logger("Running AI model with prompt:", .info)
-            FreeToken.shared.logger(prompt, .info)
-
-            FreeToken.shared.logger("Prompt tokens count: \(tokenCount)", .info)
-
-            for try await value in try await self.stateManager.generate(for: prompt, maxTokens: maxTokens, runIdentifier: runIdentifier, noContextCache: noContextCache) {
-                print(value, terminator: "")
-                responseContent += value
-                if let streamHandler = tokenStream {
-                    streamHandler(value)
-                }
+            guard messages.count > 0 else {
+                throw FreeTokenError.noMessagesToSend
             }
             
-            let lastRunStats = await self.stateManager.lastRunStats()
-            let completionTokenCount = try await self.stateManager.tokenCount(responseContent, addBos: false)
-            let tokensPerSecond = lastRunStats?.tokensPerSecond ?? 0.0
+            let preparedMessages: [Message] = try MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig).prepareMessages()
             
-            let tokenUsage = TokenUsage(promptTokens: tokenCount, completionTokens: completionTokenCount, totalTokens: (tokenCount + completionTokenCount), tokensPerSecond: Float(tokensPerSecond))
+            let aiResults = AIResults()
             
-            return (responseContent, tokenUsage)
+            if let maxTokens = aiRunConfig?.maxGenerationTokens {
+                await aiResults.setMaxTokenCount(maxTokens)
+            }
+            
+            let taskQueue = AITaskQueue()
+            
+            // Generate response using the AIStateManager
+            let task = Task {
+                _ = try await taskQueue.enqueue {
+                    do {
+                        let maxTokenCount = await aiResults.maxTokenCount
+                        for try await value in try await self.stateManager.generateResponse(for: preparedMessages, runIdentifier: runIdentifier, aiRunConfig: aiRunConfig, noContextCache: noContextCache) {
+                            if Task.isCancelled { break }
+                            if await aiResults.startTime == nil {
+                                await aiResults.setStartTime(DispatchTime.now())
+                            }
+                            print(value, terminator: "")
+                            await aiResults.appendResponseContent(value)
+                            if let streamHandler = tokenStream {
+                                streamHandler(value)
+                            }
+                            await aiResults.addToTokenCount(1)
+                            let tokenCount = await aiResults.tokenCount
+                            if let maxTokenCount = maxTokenCount, tokenCount >= maxTokenCount {
+                                break
+                            }
+                        }
+                        await aiResults.setEndTime(DispatchTime.now())
+                        
+                    } catch {
+                        FreeToken.shared.logger("Error generating response: \(error.localizedDescription)", .error)
+                        throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+                    }
+                }
+            }
+            self.generationTask = task
+            try await task.value
+            self.generationTask = nil
+            
+            // Calculate duration
+            var usage: TokenUsage? = nil
+            let startTime = await aiResults.startTime
+            let endTime = await aiResults.endTime
+            let tokenCount = await aiResults.tokenCount
+            
+            if let start = startTime, let endTime = endTime {
+                let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+                let tokensPerSecond = Float(Double(await aiResults.tokenCount) / (duration / 1000.0))
+                usage = TokenUsage(totalTokens: tokenCount, tokensPerSecond: tokensPerSecond)
+                FreeToken.shared.logger("🧠 AI response generated \(tokenCount) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
+            }
+            
+            let responseContent = await aiResults.responseContent
+            
+            return (responseContent, usage)
         }
-        
-        private func verifyClientVersionSupported() -> Result<Bool, Codings.ErrorResponse> {
+                
+        private func verifyClientVersionSupported() -> Result<Bool, FreeTokenError> {
             let versionTest = VersionTester(minVersion: clientConfig.min, maxVersion: clientConfig.max)
             
             if versionTest.isVersionSupported(version: clientVersion) {
                 return .success(true)
             } else {
-                return .failure(self.unsupportedVersionError)
+                return .failure(FreeTokenError.unsupportedVersion)
             }
         }
     }
