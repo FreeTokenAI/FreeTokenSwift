@@ -281,7 +281,7 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: Void
     public func downloadAIModel(
-        success successCallback: @escaping @Sendable (Bool) -> Void,
+        success successCallback: @escaping @Sendable (_ isLocalAI: Bool) -> Void,
         error errorCallback: @escaping @Sendable (FreeTokenError) -> Void,
         progressPercent: Optional<@Sendable (_ progressPercent: Double) -> Void> = nil
     ) async {
@@ -307,19 +307,7 @@ public class FreeToken: @unchecked Sendable {
             return
         }
     
-        do {
-            if try await aiModelManager.downloadIfNeeded(progress: progressPercent) {
-                FreeToken.shared.logger("Model downloaded successfully", .info)
-                successCallback(true)
-            } else {
-                FreeToken.shared.logger("Model did not download successfully", .error)
-                errorCallback(FreeTokenError.aiModelDownload)
-            }
-        } catch {
-            FreeToken.shared.logger("Failed to download AI model: \(error.localizedDescription)", .error)
-            errorCallback(FreeTokenError.aiModelDownload)
-        }
-        
+        // Download Embedding Model - Detached from main download.
         Task.detached {
             @Sendable func attempt(_ remainingTries: Int) async {
                 await withCheckedContinuation { continuation in
@@ -344,6 +332,20 @@ public class FreeToken: @unchecked Sendable {
             }
 
             await attempt(3)
+        }
+        
+        // Download the AI model
+        do {
+            if try await aiModelManager.downloadIfNeeded(progress: progressPercent) {
+                FreeToken.shared.logger("Model downloaded successfully", .info)
+                successCallback(true)
+            } else {
+                FreeToken.shared.logger("Model did not download successfully", .error)
+                errorCallback(FreeTokenError.aiModelDownload)
+            }
+        } catch {
+            FreeToken.shared.logger("Failed to download AI model: \(error.localizedDescription)", .error)
+            errorCallback(FreeTokenError.aiModelDownload)
         }
     }
     
@@ -1120,11 +1122,18 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        if deviceManager?.isAICapable == false {
-            FreeToken.shared.logger("Load Model: Device not capable of AI, nothing to do here", .info)
+        guard deviceManager?.isAICapable == true else {
+            FreeToken.shared.logger("💾 Load Model: Device not capable of AI, nothing to do here", .info)
             successCompletion(false)
             return
         }
+        
+        // Check if the AI Model is downloaded
+        guard await aiModelManager?.stateManager.getDownloadState() == .downloaded else {
+            errorCompletion(FreeTokenError.aiModelNotDownloaded)
+            return
+        }
+        
         
         let response = await aiModelManager!.loadModel()
         switch response {
@@ -1231,7 +1240,7 @@ public class FreeToken: @unchecked Sendable {
                 case .success(_):
                     break
                 case .failure(let error):
-                    FreeToken.shared.logger("[FreeToken] Telemetry Creation Error: \(error.message)", .error)
+                    FreeToken.shared.logger("Telemetry Creation Error: \(error.message)", .error)
                 }
             }
         }

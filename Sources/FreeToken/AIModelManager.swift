@@ -121,7 +121,7 @@ extension FreeToken {
                 }
                 setDownloadState(.downloading)
                 do {
-                    FreeToken.shared.logger("Starting download of AI model files...", .info)
+                    FreeToken.shared.logger("☁️ Starting AI model file downloads...", .info)
                     try await model.downloadModel(onProgress: progress)
                     setDownloadState(.downloaded)
                 } catch {
@@ -302,23 +302,27 @@ extension FreeToken {
             }
             
             FreeToken.shared.logger("🔄 Loading AI model...", .info)
-            do {
-                try await self.stateManager.initializeEngine(huggingFaceID: huggingFaceConfig.id, modelFileName: huggingFaceConfig.modelFileName, mmproj: huggingFaceConfig.mmproj, configuration: modelConfig)
-            } catch {
-                throw FreeTokenError.failedToLoadModel
-            }
+            let loadResult = await loadModel()
             
-            FreeToken.shared.logger("☁️ Starting AI model file downloads...", .info)
-            
-            do {
-                try await stateManager.downloadModel { progress in
-                    FreeToken.shared.logger("Download progress: \(progress * 100.0)%", .info)
-                    progressCallback?(progress)
+            switch loadResult {
+            case .success(_):
+                FreeToken.shared.logger("🧠 AI engine initialized successfully", .info)
+                
+                do {
+                    _ = try await stateManager.downloadModel { progress in
+                        FreeToken.shared.logger("☁️ Download progress: \(progress * 100.0)%", .info)
+                        progressCallback?(progress)
+                    }
+                    return true
+                } catch {
+                    FreeToken.shared.logger("🔴 Error downloading AI model: \(error.localizedDescription)", .error)
+                    _ = await self.stateManager.setDownloadState(.failed(error: error.localizedDescription))
+                    return false
                 }
-                return true
-            } catch {
-                FreeToken.shared.logger("Error downloading AI model: \(error.localizedDescription)", .error)
-                await self.stateManager.setDownloadState(.failed(error: error.localizedDescription))
+                
+            case .failure(let error):
+                FreeToken.shared.logger("🔴 Failed to load AI model: \(error.localizedDescription)", .error)
+                profiler.end(eventType: .downloadModel, eventTypeID: modelCode, isSuccess: false, errorMessage: error.localizedDescription)
                 return false
             }
         }
@@ -333,12 +337,7 @@ extension FreeToken {
             }
             
             await self.stateManager.setLoadedState(.loading)
-            
-            guard await self.stateManager.getDownloadState() == .downloaded else {
-                FreeToken.shared.logger("AI model has not been downloaded", .error)
-                return .failure(FreeTokenError.aiModelNotDownloaded)
-            }
-            
+                        
             do {
                 try await self.stateManager.initializeEngine(
                     huggingFaceID: huggingFaceConfig.id,

@@ -21,7 +21,7 @@ let package = Package(
         .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", from: "1.20.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.18"),
         .package(url: "https://github.com/1024jp/GzipSwift", from: "6.0.1"),
-        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", revision: "a843468")
+        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", branch: "release")
     ],
     targets: [
         .target(

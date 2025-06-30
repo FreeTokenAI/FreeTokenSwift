@@ -1,5 +1,5 @@
 {
-  "originHash" : "51eb25f67f017696be3c7eaabaef7fef1801fe708ed528c7d6a77cee5a6edd45",
+  "originHash" : "5599d7366565704f0e2185fc0970732182f5071fec46c47ca2b61225ae196e34",
   "pins" : [
     {
       "identity" : "gzipswift",
@@ -24,8 +24,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/FreeTokenAI/LocalLLMClient",
       "state" : {
-        "branch" : "a843468",
-        "revision" : "a843468292b33cce1ee651e3a344b91dcdaaa00a"
+        "branch" : "release",
+        "revision" : "39f79dcbccadc4c793aa36e7436b6b7744a411b0"
       }
     },
     {
