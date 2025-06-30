@@ -1,5 +1,5 @@
 {
-  "originHash" : "c32db40c22ef693fa07ba0b6409810471eb405f8d83cd65da663f7eb5428835f",
+  "originHash" : "51eb25f67f017696be3c7eaabaef7fef1801fe708ed528c7d6a77cee5a6edd45",
   "pins" : [
     {
       "identity" : "gzipswift",
@@ -22,10 +22,10 @@
     {
       "identity" : "localllmclient",
       "kind" : "remoteSourceControl",
-      "location" : "https://github.com/tattn/LocalLLMClient.git",
+      "location" : "https://github.com/FreeTokenAI/LocalLLMClient",
       "state" : {
-        "branch" : "efbc958",
-        "revision" : "efbc958ab0a2a50b2b24ed4080bedbd12f5ab90f"
+        "branch" : "a843468",
+        "revision" : "a843468292b33cce1ee651e3a344b91dcdaaa00a"
       }
     },
     {
