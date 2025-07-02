@@ -7,6 +7,7 @@
 import Foundation
 import LocalLLMClient
 import LocalLLMClientLlama
+import LocalLLMClientMLX
 import LocalLLMClientUtility
 
 extension FreeToken {
@@ -14,7 +15,7 @@ extension FreeToken {
         let modelCode: String
         let modelConfig: AIModelConfiguration
         let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
-        let huggingFaceConfig: Codings.HuggingfaceModelResponse
+        let availableModelTypes: Codings.AvailableModelTypesResponse
         
         private let clientConfig: Codings.ShowClientConfig
         private let clientVersion: String
@@ -33,6 +34,11 @@ extension FreeToken {
             case unloaded
             case loading
             case loaded
+        }
+        
+        enum ModelType: Equatable {
+            case llamaCpp
+            case mlx
         }
         
         actor AITaskQueue {
@@ -94,9 +100,10 @@ extension FreeToken {
             
             struct ModelInitOptions {
                 let huggingFaceID: String
-                let modelFileName: String
+                let modelFileName: String?
                 let mmproj: String?
                 let configuration: AIModelConfiguration
+                let modelType: ModelType
             }
             
             func setDownloadState(_ state: DownloadState) {
@@ -122,7 +129,7 @@ extension FreeToken {
                 setDownloadState(.downloading)
                 do {
                     FreeToken.shared.logger("☁️ Starting AI model file downloads...", .info)
-                    try await model.downloadModel(onProgress: progress)
+                    _ = try await model.downloadModel(onProgress: progress)
                     setDownloadState(.downloaded)
                 } catch {
                     setDownloadState(.failed(error: error.localizedDescription))
@@ -132,29 +139,49 @@ extension FreeToken {
             
             func initializeEngine(
                 huggingFaceID: String,
-                modelFileName: String,
+                modelFileName: String?,
                 mmproj: String? = nil,
-                configuration: AIModelConfiguration
+                configuration: AIModelConfiguration,
+                modelType: ModelType
             ) async throws {
                 self.modelInitOptions = ModelInitOptions(
                     huggingFaceID: huggingFaceID,
                     modelFileName: modelFileName,
                     mmproj: mmproj,
-                    configuration: configuration
+                    configuration: configuration,
+                    modelType: modelType
                 )
                 
-                let config = configuration
-                
                 self.loadedState = .loading
-                self.model = LLMSession.DownloadModel.llama(id: huggingFaceID, model: modelFileName, mmproj: nil, parameter: .init(
-                    context: config.nCTX,
-                    temperature: config.temperature,
-                    topK: config.topK,
-                    topP: config.topP,
-                    penaltyLastN: Int(config.penaltyLastN),
-                    penaltyRepeat: config.penaltyRepeat
-                ))
+                self.model = try modelFactory(initOptions: self.modelInitOptions!)
                 self.loadedState = .loaded
+            }
+            
+            func modelFactory(initOptions: ModelInitOptions) throws -> LLMSession.DownloadModel {
+                let model: LLMSession.DownloadModel
+                
+                if initOptions.modelType == .llamaCpp {
+                    model = LLMSession.DownloadModel.llama(id: initOptions.huggingFaceID, model: initOptions.modelFileName!, mmproj: initOptions.mmproj, parameter: .init(
+                        context: initOptions.configuration.nCTX,
+                        temperature: initOptions.configuration.temperature,
+                        topK: initOptions.configuration.topK,
+                        topP: initOptions.configuration.topP,
+                        penaltyLastN: Int(initOptions.configuration.penaltyLastN),
+                        penaltyRepeat: initOptions.configuration.penaltyRepeat,
+                        options: .init(verbose: true)
+                    ))
+                } else if initOptions.modelType == .mlx {
+                    model = LLMSession.DownloadModel.mlx(id: initOptions.huggingFaceID, parameter: .init(
+                        temperature: initOptions.configuration.temperature,
+                        topP: initOptions.configuration.topP,
+                        repetitionPenalty: initOptions.configuration.penaltyRepeat,
+                        options: .init(verbose: true)
+                    ))
+                } else {
+                    throw FreeTokenError.unsupportedModelType(message: " Unknown type: \(initOptions.modelType)")
+                }
+                
+                return model
             }
             
             func generateResponse(
@@ -192,17 +219,27 @@ extension FreeToken {
                     let topK = aiRunConfig.topK ?? config.topK
                     let topP = aiRunConfig.topP ?? config.topP
 
+                    let modelInitOptions = ModelInitOptions(huggingFaceID: modelInitOptions.huggingFaceID,
+                                                            modelFileName: modelInitOptions.modelFileName,
+                                                            mmproj: modelInitOptions.mmproj,
+                                                            configuration: AIModelConfiguration(
+                                                                from: Codings.AiModelConfigResponse.ModelOptions(
+                                                                    topK: topK,
+                                                                    topP: topP,
+                                                                    contextWindowSize: nCTX,
+                                                                    temperature: temperature,
+                                                                    maxTokenCount: config.maxTokenCount,
+                                                                    penaltyLastN: config.penaltyLastN,
+                                                                    penaltyRepeat: config.penaltyRepeat,
+                                                                    penaltyFrequency: config.penaltyFrequency,
+                                                                    penaltyPresence: config.penaltyPresence,
+                                                                    stopTokens: config.stopTokens
+                                                                )),
+                                                            modelType: modelInitOptions.modelType)
+                    
                     FreeToken.shared.logger("⚙️ AI Run Config provided - initializing new model and session instances based on the parameters", .info)
                     
-                    model = LLMSession.DownloadModel.llama(id: modelInitOptions.huggingFaceID, model: modelInitOptions.modelFileName, mmproj: nil, parameter: .init(
-                        context: nCTX,
-                        temperature: temperature,
-                        topK: topK,
-                        topP: topP,
-                        penaltyLastN: Int(config.penaltyLastN),
-                        penaltyRepeat: config.penaltyRepeat
-                    ))
-                    _ = try await model.prewarm()
+                    model = try modelFactory(initOptions: modelInitOptions)
                 } else {
                     // Use preloaded model
                     model = self.model!
@@ -259,7 +296,7 @@ extension FreeToken {
             self.clientVersion = clientVersion
             self.modelConfig = AIModelConfiguration(from: modelConfig.config.defaultSettings)
             self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
-            self.huggingFaceConfig = modelConfig.huggingface
+            self.availableModelTypes = modelConfig.modelTypes
         }
         
         actor ResultsCollector {
@@ -339,16 +376,30 @@ extension FreeToken {
             await self.stateManager.setLoadedState(.loading)
                         
             do {
-                try await self.stateManager.initializeEngine(
-                    huggingFaceID: huggingFaceConfig.id,
-                    modelFileName: huggingFaceConfig.modelFileName,
-                    mmproj: huggingFaceConfig.mmproj,
-                    configuration: modelConfig
+                let huggingfaceModel: Codings.HuggingfaceModelResponse
+                let modelType: ModelType
+                
+                (huggingfaceModel, modelType) = modelSelection()
+                
+                _ = try await self.stateManager.initializeEngine(
+                    huggingFaceID: huggingfaceModel.repo,
+                    modelFileName: huggingfaceModel.modelFileName,
+                    mmproj: huggingfaceModel.mmproj,
+                    configuration: modelConfig,
+                    modelType: modelType
                 )
                 return .success(true)
             } catch {
                 FreeToken.shared.logger("Error loading model: \(error.localizedDescription)", .error)
                 return .failure(FreeTokenError.failedToLoadModel)
+            }
+        }
+        
+        func modelSelection() -> (Codings.HuggingfaceModelResponse, ModelType) {
+            if let mlx = availableModelTypes.mlx {
+                return (mlx, .mlx)
+            } else {
+                return (availableModelTypes.llamaCpp, .llamaCpp)
             }
         }
         

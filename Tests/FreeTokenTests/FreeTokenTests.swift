@@ -21,23 +21,26 @@ final class FreeTokenTests: XCTestCase {
         // Register Device
         let semaphore = DispatchSemaphore(value: 0)
         Task {
+//            try await FreeToken.shared.resetModelCaches()
             await FreeToken.shared.registerDeviceSession(scope: "swift-tests") {
                 await FreeToken.shared.downloadAIModel { isLocal in
                     semaphore.signal()
                 } error: { error in
                     XCTFail("Failed to download AI model: \(error.message)")
                 } progressPercent: { progressPercent in
-                    print("Download Progress: \(progressPercent)%")
+                    // Nothing to do here
                 }
             } error: { error in
                 XCTFail("Failed to register device session: \(error.message)")
             }
         }
-        _ = semaphore.wait(timeout: DispatchTime.now() + .seconds(10))
+        semaphore.wait() // Wait until complete
+        print("---------------------------------- STOPPED WAITING ----------------------------------")
     }
 
     override func tearDownWithError() throws {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
+        print("--------------------------------- RESETTING -----------------------------------------")
         try FreeToken.shared.resetDevice()
     }
 
@@ -53,7 +56,7 @@ final class FreeTokenTests: XCTestCase {
             }
         }
 
-        wait(for: [expectation], timeout: 10.0)
+        wait(for: [expectation], timeout: 30.0)
     }
     
     func testCloudCompletion() throws {

@@ -237,8 +237,9 @@ public class FreeToken: @unchecked Sendable {
     
     /// Reset Model Caches
     ///
-    public func resetModelCaches() throws {
+    public func resetModelCaches() async throws {
         try resetEmbeddingModelCache()
+        await deleteAIModelCache()
     }
     
     /// Removes the Embedding Model Cache from the local device
@@ -255,6 +256,25 @@ public class FreeToken: @unchecked Sendable {
             try EmbeddingManager.shared.resetCache()
         } catch {
             throw FreeTokenError.deviceReset
+        }
+    }
+    
+    public func deleteAIModelCache() async {
+        #if os(macOS) || os(Linux)
+            let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".localllmclient")
+        #else
+            let defaultRootDirectory = URL.documentsDirectory.appending(path: ".localllmclient")
+        #endif
+
+        await aiModelManager?.unloadModel()
+        await aiModelManager?.stateManager.setDownloadState(.notDownloaded)
+        
+        // Delete the whole directory
+        do {
+            try FileManager.default.removeItem(at: defaultRootDirectory)
+            FreeToken.shared.logger("❌ AI model cache reset successfully", .info)
+        } catch {
+            FreeToken.shared.logger("Failed to reset LLM model cache: \(error.localizedDescription)", .error)
         }
     }
     
@@ -336,7 +356,8 @@ public class FreeToken: @unchecked Sendable {
         
         // Download the AI model
         do {
-            if try await aiModelManager.downloadIfNeeded(progress: progressPercent) {
+            let result = try await aiModelManager.downloadIfNeeded(progress: progressPercent)
+            if result == true {
                 FreeToken.shared.logger("Model downloaded successfully", .info)
                 successCallback(true)
             } else {

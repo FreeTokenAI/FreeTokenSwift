@@ -171,12 +171,12 @@ extension FreeToken {
         }
         
         struct HuggingfaceModelResponse: Decodable {
-            let id: String
-            let modelFileName: String
+            let repo: String
+            let modelFileName: String?
             let mmproj: String?
             
             enum CodingKeys: String, CodingKey {
-                case id
+                case repo
                 case modelFileName = "model_file_name"
                 case mmproj
             }
@@ -185,7 +185,7 @@ extension FreeToken {
         struct AiModelResponse: Decodable {
             let code: String
             let name: String
-            let huggingface: HuggingfaceModelResponse
+            let modelTypes: AvailableModelTypesResponse
             let config: AiModelConfigResponse
             let clientsConfig: [String: ShowClientConfig]
             let trainingCutoffDate: String
@@ -193,10 +193,20 @@ extension FreeToken {
             enum CodingKeys: String, CodingKey {
                 case code
                 case name
-                case huggingface = "huggingface"
+                case modelTypes = "model_types"
                 case config
                 case clientsConfig = "clients_config"
                 case trainingCutoffDate = "training_cutoff_date"
+            }
+        }
+        
+        struct AvailableModelTypesResponse: Decodable {
+            let llamaCpp: HuggingfaceModelResponse
+            let mlx: HuggingfaceModelResponse?
+            
+            enum CodingKeys: String, CodingKey {
+                case llamaCpp = "llama_cpp"
+                case mlx
             }
         }
         
