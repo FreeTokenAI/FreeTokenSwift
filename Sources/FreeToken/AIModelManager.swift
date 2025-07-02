@@ -5,6 +5,7 @@
 //  Created by Vince Francesi on 11/30/24.
 //
 import Foundation
+import Metal
 import LocalLLMClient
 import LocalLLMClientLlama
 import LocalLLMClientMLX
@@ -16,6 +17,7 @@ extension FreeToken {
         let modelConfig: AIModelConfiguration
         let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
         let availableModelTypes: Codings.AvailableModelTypesResponse
+        let taskQueue: AITaskQueue = AITaskQueue()
         
         private let clientConfig: Codings.ShowClientConfig
         private let clientVersion: String
@@ -47,9 +49,11 @@ extension FreeToken {
             func enqueue<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
                 while isRunning {
                     try await Task.sleep(nanoseconds: 10_000_000) // 10ms
-                    puts("Waiting for AI task queue to be free...")
+                    FreeToken.shared.logger("⏰ Waiting for AI task queue to be free...", .info)
                 }
+                
                 isRunning = true
+                FreeToken.shared.logger("🚀 Executing AI task in queue...", .info)
                 defer { isRunning = false }
                 let result = try await operation()
                 
@@ -104,6 +108,7 @@ extension FreeToken {
                 let mmproj: String?
                 let configuration: AIModelConfiguration
                 let modelType: ModelType
+                let memoryRequirement: Int
             }
             
             func setDownloadState(_ state: DownloadState) {
@@ -142,14 +147,16 @@ extension FreeToken {
                 modelFileName: String?,
                 mmproj: String? = nil,
                 configuration: AIModelConfiguration,
-                modelType: ModelType
+                modelType: ModelType,
+                memoryRequirement: Int
             ) async throws {
                 self.modelInitOptions = ModelInitOptions(
                     huggingFaceID: huggingFaceID,
                     modelFileName: modelFileName,
                     mmproj: mmproj,
                     configuration: configuration,
-                    modelType: modelType
+                    modelType: modelType,
+                    memoryRequirement: memoryRequirement
                 )
                 
                 self.loadedState = .loading
@@ -201,11 +208,19 @@ extension FreeToken {
                 let session: LLMSession
                 var isNewSession: Bool = false
                 var shouldOverrideCache: Bool = false
-                                
+                
                 if noContextCache {
                     isNewSession = true
                     shouldOverrideCache = false
+                    
+                    // Do we have enough RAM to allocate another session?
+                    if self.shouldEvacuateCache(memoryRequirement: modelInitOptions!.memoryRequirement) == true {
+                        self.cachedSession = nil  // Evacuate cache
+                        shouldOverrideCache = true
+                        isNewSession = true
+                    }
                 } else if cachedSession == nil || cachedSession?.runIdentifier != runIdentifier {
+                    cachedSession = nil // Evacuate the cache right now.
                     isNewSession = true
                     shouldOverrideCache = true
                 }
@@ -235,7 +250,8 @@ extension FreeToken {
                                                                     penaltyPresence: config.penaltyPresence,
                                                                     stopTokens: config.stopTokens
                                                                 )),
-                                                            modelType: modelInitOptions.modelType)
+                                                            modelType: modelInitOptions.modelType,
+                                                            memoryRequirement: modelInitOptions.memoryRequirement)
                     
                     FreeToken.shared.logger("⚙️ AI Run Config provided - initializing new model and session instances based on the parameters", .info)
                     
@@ -287,6 +303,36 @@ extension FreeToken {
                 self.cachedSession = nil
                 self.downloadState = .notDownloaded
                 self.loadedState = .unloaded
+            }
+            
+            func shouldEvacuateCache(memoryRequirement: Int) -> Bool {
+                if self.cachedSession == nil {
+                    return false
+                }
+                
+                var vRAM: Int = 0
+                
+                // Test if memory requirement exceeds available memory
+                #if os(macOS)
+                    // CHeck available memory on macOS
+                    if let device = MTLCreateSystemDefaultDevice() {
+                        vRAM = Int(device.recommendedMaxWorkingSetSize)
+                    }
+                #else
+                    // Check if this is iOS
+                    vRAM = os_proc_available_memory()
+                #endif
+                
+                let availableMemory = vRAM - memoryRequirement
+                FreeToken.shared.logger("🖥️ Available memory: \(availableMemory) bytes, Memory requirement: \(memoryRequirement) bytes", .info)
+                
+                if availableMemory < 0 {
+                    FreeToken.shared.logger("⚠️ Memory requirement exceeds available memory - Evacuating AI cache", .warning)
+                    return true
+                } else {
+                    FreeToken.shared.logger("✅ Memory requirement is within available memory limits", .info)
+                    return false
+                }
             }
         }
         
@@ -386,7 +432,8 @@ extension FreeToken {
                     modelFileName: huggingfaceModel.modelFileName,
                     mmproj: huggingfaceModel.mmproj,
                     configuration: modelConfig,
-                    modelType: modelType
+                    modelType: modelType,
+                    memoryRequirement: clientConfig.requiredMemoryBytes
                 )
                 return .success(true)
             } catch {
@@ -429,8 +476,6 @@ extension FreeToken {
                 await aiResults.setMaxTokenCount(maxTokens)
             }
             
-            let taskQueue = AITaskQueue()
-            
             // Generate response using the AIStateManager
             let task = Task {
                 _ = try await taskQueue.enqueue {
@@ -461,7 +506,7 @@ extension FreeToken {
                 }
             }
             self.generationTask = task
-            try await task.value
+            _ = try await task.value
             self.generationTask = nil
             
             // Calculate duration

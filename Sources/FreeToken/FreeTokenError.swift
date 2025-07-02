@@ -45,6 +45,7 @@ extension FreeToken {
         case messagesMustAlternate
         case aiRunFailed(message: String? = nil)
         case unsupportedModelType(message: String? = nil)
+        case failedToRunAIWithError(message: String? = nil)
         
         // MARK: - EmbeddingManager Class Errors:
         case embeddingFailed
@@ -124,6 +125,7 @@ extension FreeToken.FreeTokenError {
         case .messagesMustAlternate: return "messagesMustAlternate"
         case .aiRunFailed(_): return "aiRunFailed"
         case .unsupportedModelType(_): return "unsupportedModelType"
+        case .failedToRunAIWithError(_): return "failedToRunAIWithError"
         
         case .embeddingFailed: return "embeddingFailed"
         case .modelAlreadyDownloading: return "modelDownloadingError"
@@ -202,6 +204,7 @@ extension FreeToken.FreeTokenError {
         case .messagesMustAlternate: return "Messages must alternate between user and assistant."
         case .aiRunFailed(let message): return "AI run failed" + ((message != nil) ? (": \(message!)") : "")
         case .unsupportedModelType(let message): return "Unsupported model type" + ((message != nil) ? (": \(message!)") : "")
+        case .failedToRunAIWithError(let message): return "Failed to run AI with error" + ((message != nil) ? (": \(message!)") : "")
         
         case .embeddingFailed: return "The embedding model failed on the device."
         case .modelAlreadyDownloading: return "The embedding model is downloading. Multiple download calls prohibited."
@@ -283,6 +286,7 @@ extension FreeToken.FreeTokenError {
         case .messagesMustAlternate: return 2006
         case .aiRunFailed(_): return 2007
         case .unsupportedModelType(_): return 2008
+        case .failedToRunAIWithError(_): return 2009
         case .embeddingFailed: return 3000
         case .modelAlreadyDownloading: return 3001
         case .modelDownload: return 3002
