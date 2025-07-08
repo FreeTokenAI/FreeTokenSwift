@@ -125,7 +125,7 @@ extension FreeToken {
                 let penaltyRepeat: Float
                 let penaltyFrequency: Float
                 let penaltyPresence: Float
-                let stopTokens: [String]
+                let batchSize: Int
                 
                 enum CodingKeys: String, CodingKey {
                     case topK = "top_k"
@@ -137,7 +137,7 @@ extension FreeToken {
                     case penaltyRepeat = "penalty_repeat"
                     case penaltyFrequency = "penalty_frequency"
                     case penaltyPresence = "penalty_presence"
-                    case stopTokens = "stop_tokens"
+                    case batchSize = "batch_size"
                 }
             }
             

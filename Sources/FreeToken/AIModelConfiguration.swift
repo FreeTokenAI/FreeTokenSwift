@@ -11,7 +11,7 @@ extension FreeToken {
         let penaltyRepeat: Float
         let penaltyFrequency: Float
         let penaltyPresence: Float
-        let stopTokens: [String]
+        let batchSize: Int
         
         
         internal init(from modelOptions: Codings.AiModelConfigResponse.ModelOptions) {
@@ -24,7 +24,7 @@ extension FreeToken {
             self.penaltyRepeat = modelOptions.penaltyRepeat
             self.penaltyFrequency = modelOptions.penaltyFrequency
             self.penaltyPresence = modelOptions.penaltyPresence
-            self.stopTokens = modelOptions.stopTokens
+            self.batchSize = modelOptions.batchSize
         }
     }
 }

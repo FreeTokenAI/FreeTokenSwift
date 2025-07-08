@@ -170,6 +170,7 @@ extension FreeToken {
                 if initOptions.modelType == .llamaCpp {
                     model = LLMSession.DownloadModel.llama(id: initOptions.huggingFaceID, model: initOptions.modelFileName!, mmproj: initOptions.mmproj, parameter: .init(
                         context: initOptions.configuration.nCTX,
+                        batch: initOptions.configuration.batchSize,
                         temperature: initOptions.configuration.temperature,
                         topK: initOptions.configuration.topK,
                         topP: initOptions.configuration.topP,
@@ -248,7 +249,7 @@ extension FreeToken {
                                                                     penaltyRepeat: config.penaltyRepeat,
                                                                     penaltyFrequency: config.penaltyFrequency,
                                                                     penaltyPresence: config.penaltyPresence,
-                                                                    stopTokens: config.stopTokens
+                                                                    batchSize: config.batchSize
                                                                 )),
                                                             modelType: modelInitOptions.modelType,
                                                             memoryRequirement: modelInitOptions.memoryRequirement)
@@ -338,7 +339,11 @@ extension FreeToken {
         
         init(modelConfig: Codings.AiModelResponse, clientVersion: String) {
             self.modelCode = modelConfig.code
+            #if os(macOS)
+            self.clientConfig = modelConfig.clientsConfig["macOS"]!
+            #else
             self.clientConfig = modelConfig.clientsConfig["iOS"]!
+            #endif
             self.clientVersion = clientVersion
             self.modelConfig = AIModelConfiguration(from: modelConfig.config.defaultSettings)
             self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
