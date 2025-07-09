@@ -500,7 +500,7 @@ extension FreeToken {
             }
         }
         
-        func sendMessagesToAI(messages: [Message], runIdentifier: String, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
+        func sendMessagesToAI(messages: [Message], runIdentifier: String, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
             if await self.stateManager.getLoadedState() != .loaded {
                 _ = await loadModel()
             }
@@ -530,7 +530,7 @@ extension FreeToken {
                             print(value, terminator: "")
                             await aiResults.appendResponseContent(value)
                             if let streamHandler = tokenStream {
-                                streamHandler(value)
+                                await streamHandler(value)
                             }
                             await aiResults.addToTokenCount(1)
                             let tokenCount = await aiResults.tokenCount

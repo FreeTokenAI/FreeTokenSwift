@@ -40,8 +40,8 @@ extension FreeToken {
         }
         
         internal func process(
-            externalToolCallHandler: Optional<@Sendable ([ToolCall]) -> String> = nil,
-            cloudToolCallHandler: @escaping @Sendable ([ToolCall]) -> String,
+            externalToolCallHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil,
+            cloudToolCallHandler: @escaping @Sendable ([ToolCall]) async -> String,
             success successCallback: @escaping @Sendable (_ result: String) async -> Void
         ) async throws {
             try parseToolCalls()
@@ -151,21 +151,21 @@ extension FreeToken {
             }
         }
         
-        private func handleInternalCloudCalls(toolCalls: [ToolCall], cloudToolCallHandler: @escaping @Sendable ([ToolCall]) -> String) async -> String {
+        private func handleInternalCloudCalls(toolCalls: [ToolCall], cloudToolCallHandler: @escaping @Sendable ([ToolCall]) async -> String) async -> String {
             if toolCalls.isEmpty {
                 return ""
             }
-            return cloudToolCallHandler(toolCalls)
+            return await cloudToolCallHandler(toolCalls)
         }
         
-        private func handleExternalCalls(toolCalls: [ToolCall], externalToolCallHandler: Optional<@Sendable ([ToolCall]) -> String> = nil) async -> String {
+        private func handleExternalCalls(toolCalls: [ToolCall], externalToolCallHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil) async -> String {
             if toolCalls.isEmpty || externalToolCallHandler == nil {
                 return ""
             }
-            return externalToolCallHandler!(toolCalls)
+            return await externalToolCallHandler!(toolCalls)
         }
         
-        private func internal_articleLookup(query: String, searchScope: String?, privateDocumentStoreIds: [String]?, success successCallback: @escaping @Sendable (_ result: String) -> Void) async {
+        private func internal_articleLookup(query: String, searchScope: String?, privateDocumentStoreIds: [String]?, success successCallback: @escaping @Sendable (_ result: String) async -> Void) async {
             await FreeToken.shared.searchDocuments(query: query, searchScope: searchScope, privateDocumentStoreIds: privateDocumentStoreIds, maxResults: 3) { searchResults in
                 var result = "Article excerpts to help answer the user's question:"
                 
@@ -183,11 +183,11 @@ extension FreeToken {
                 """)
                 }
                 
-                successCallback(result)
+                await successCallback(result)
             } error: { error in
                 // NoOp
                 FreeToken.shared.logger("Internal article lookup failed to retrieve documents from cloud. Ignoring", .warning)
-                successCallback("")
+                await successCallback("")
             }
         }
         

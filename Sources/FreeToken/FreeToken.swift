@@ -717,7 +717,7 @@ public class FreeToken: @unchecked Sendable {
     /// Generate a chat completion in the cloud
     ///
     ///
-    func generateCloudChatCompletion(messages: [Message], model: String? = nil, aiRunConfig: AIRunConfig? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil, success successCallback: @escaping @Sendable (Message) async -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    func generateCloudChatCompletion(messages: [Message], model: String? = nil, aiRunConfig: AIRunConfig? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void> = nil, success successCallback: @escaping @Sendable (Message) async -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCallback(FreeTokenError.deviceNotRegistered)
             return
@@ -770,11 +770,11 @@ public class FreeToken: @unchecked Sendable {
                             let messageContentChunk = try decoder.decode(Codings.MessageChunkStream.self, from: data)
                             
                             // Check if the chunk is a message chunk
-                            messageContentChunk.messageChunks.forEach { messageChunk in
+                            for messageChunk in messageContentChunk.messageChunks {
                                 // If the content is empty, we skip it
                                 if !messageChunk.messageChunk.isEmpty {
                                     // Send the message chunk to the chat status stream
-                                    chatStatusStream(messageChunk.messageChunk, .streaming_tokens)
+                                    await chatStatusStream(messageChunk.messageChunk, .streaming_tokens)
                                 }
                             }
                         } catch {
@@ -787,7 +787,7 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 if let errorResponse = response.error {
-                    chatStatusStream?(nil, .failed)
+                    await chatStatusStream?(nil, .failed)
                     FreeToken.shared.logger("🔴 Error in cloud chat completion: \(errorResponse.message)", .error)
 
                     profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: false, errorMessage: errorResponse.message)
@@ -804,19 +804,19 @@ public class FreeToken: @unchecked Sendable {
                     let usage = TokenUsage(from: tokenUsage)
                     let message = Message(from: responseMessage, tokenUsage: usage)
                     profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: true, tokenStats: usage)
-                    chatStatusStream?(nil, .stream_ended)
+                    await chatStatusStream?(nil, .stream_ended)
                     
                     // Call the success callback
                     await successCallback(message)
                 } else {
                     // Error that there wasn't the right response
-                    chatStatusStream?(nil, .failed)
+                    await chatStatusStream?(nil, .failed)
                     FreeToken.shared.logger("🔴 Invalid response from cloud chat completion", .error)
                     await errorCallback(FreeTokenError.cloudCompletionInvalidResponse)
                 }
             case .failure(let error):
                 // Handle the error
-                chatStatusStream?(nil, .failed)
+                await chatStatusStream?(nil, .failed)
                 FreeToken.shared.logger("🔴 Failed to generate chat completion: \(error)", .error)
                 
                 // Call the error callback
@@ -951,9 +951,9 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func searchDocuments(query: String, searchScope: Optional<String> = nil, privateDocumentStoreIds: Optional<[String]> = nil, maxResults: Optional<Int> = nil, success successCompletion: @escaping @Sendable (DocumentSearchResults) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func searchDocuments(query: String, searchScope: Optional<String> = nil, privateDocumentStoreIds: Optional<[String]> = nil, maxResults: Optional<Int> = nil, success successCompletion: @escaping @Sendable (DocumentSearchResults) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -964,7 +964,7 @@ public class FreeToken: @unchecked Sendable {
         } catch (let error) {
             FreeToken.shared.logger("🔴 Failed to generate embedding for search query: \(error.localizedDescription)", .error)
             let errorResponse = FreeTokenError.embeddingFailed
-            errorCompletion(errorResponse)
+            await errorCompletion(errorResponse)
             return
         }
         
@@ -987,11 +987,11 @@ public class FreeToken: @unchecked Sendable {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.searchDocuments, isSuccess: true)
 
-                successCompletion(DocumentSearchResults(from: response))
+                await successCompletion(DocumentSearchResults(from: response))
             case .failure(let error):
                 profiler.end(eventType: .searchDocuments, isSuccess: false, errorMessage: error.message)
                 FreeToken.shared.logger("🔴 Document search failed with error \(error.message)", .error)
-                errorCompletion(error)
+                await errorCompletion(error)
             }
         }
     }
@@ -1159,15 +1159,15 @@ public class FreeToken: @unchecked Sendable {
         documentSearchScope: Optional<String> = nil,
         privateDocumentStoreIds: Optional<[String]> = nil,
         aiRunConfig: Optional<AIRunConfig> = nil,
-        success successCompletion: @escaping @Sendable (Message) -> Void,
-        error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void,
-        chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) -> Void> = nil,
-        toolCallback: Optional<@Sendable ([ToolCall]) -> String> = nil
+        success successCompletion: @escaping @Sendable (Message) async -> Void,
+        error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void,
+        chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void> = nil,
+        toolCallback: Optional<@Sendable ([ToolCall]) async -> String> = nil
     ) async {
-        chatStatusStream?(nil, .starting)
+        await chatStatusStream?(nil, .starting)
         guard isDeviceRegistered() else {
-            chatStatusStream?(nil, .failed)
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await chatStatusStream?(nil, .failed)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -1198,7 +1198,7 @@ public class FreeToken: @unchecked Sendable {
             }
             profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true)
 
-            successCompletion(context.resultMessage!)
+            await successCompletion(context.resultMessage!)
         } failure: { error, context in
             let context = context as! RunMessageThreadContext
             let profilerEventType: Profiler.EventType
@@ -1211,7 +1211,7 @@ public class FreeToken: @unchecked Sendable {
                 profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true)
             }
             
-            errorCompletion(error)
+            await errorCompletion(error)
         }
     }
         
