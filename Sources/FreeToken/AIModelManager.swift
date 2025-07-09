@@ -31,13 +31,7 @@ extension FreeToken {
             case downloaded
             case failed(error: String)
         }
-        
-        enum LoadedState: Equatable {
-            case unloaded
-            case loading
-            case loaded
-        }
-        
+                
         enum ModelType: Equatable {
             case llamaCpp
             case mlx
@@ -93,7 +87,7 @@ extension FreeToken {
             var model:  LLMSession.DownloadModel? = nil
             var cachedSession: SessionCache? = nil
             var downloadState: DownloadState = .notDownloaded
-            var loadedState: LoadedState = .unloaded
+            var loadedState: AIModelLoadingState = .unloaded
             var modelInitOptions: ModelInitOptions? = nil
             
             
@@ -115,11 +109,11 @@ extension FreeToken {
                 self.downloadState = state
             }
             
-            func setLoadedState(_ loadedState: LoadedState) {
+            func setLoadedState(_ loadedState: AIModelLoadingState) {
                 self.loadedState = loadedState
             }
             
-            func getLoadedState() -> LoadedState {
+            func getLoadedState() -> AIModelLoadingState {
                 return loadedState
             }
             
@@ -415,17 +409,17 @@ extension FreeToken {
             }
         }
         
-        func loadModel() async -> Result<Bool, FreeTokenError> {
+        func loadModel() async -> Result<AIModelLoadingState, FreeTokenError> {
             if await self.stateManager.getLoadedState() == .loaded {
-                return .success(true)
+                return .success(.loaded)
             }
             
             if await self.stateManager.getLoadedState() == .loading {
-                return .failure(FreeTokenError.modelAlreadyLoading)
+                return .success(.loading) // Already loading, no need to reinitialize
             }
             
             await self.stateManager.setLoadedState(.loading)
-                        
+            
             do {
                 let huggingfaceModel: Codings.HuggingfaceModelResponse
                 let modelType: ModelType
@@ -440,9 +434,15 @@ extension FreeToken {
                     modelType: modelType,
                     memoryRequirement: clientConfig.requiredMemoryBytes
                 )
-                return .success(true)
+                
+                // Perform invisible warm-up to ensure model is ready
+                _ = await performInvisibleWarmup()
+                await self.stateManager.setLoadedState(.loaded)
+                
+                return .success(.loaded)
             } catch {
-                FreeToken.shared.logger("Error loading model: \(error.localizedDescription)", .error)
+                FreeToken.shared.logger("🔴 Error loading model: \(error.localizedDescription)", .error)
+                await self.stateManager.setLoadedState(.failed)
                 return .failure(FreeTokenError.failedToLoadModel)
             }
         }
@@ -462,6 +462,29 @@ extension FreeToken {
         func stopGeneration() async {
             FreeToken.shared.logger("Stopping AI generation...", .info)
             generationTask?.cancel()
+        }
+        
+        private func performInvisibleWarmup() async -> Bool {
+            let warmupConfig = AIRunConfig(
+                maxGenerationTokens: 5,
+                temperature: 0.1
+            )
+            
+            let warmupMessage = [Message(role: .user, content: "What is 2+2?")]
+            
+            do {
+                let _ = try await sendMessagesToAI(
+                    messages: warmupMessage,
+                    runIdentifier: "warmup-\(UUID().uuidString)",
+                    noContextCache: true,
+                    aiRunConfig: warmupConfig
+                )
+                FreeToken.shared.logger("💾 Model warm-up completed successfully", .info)
+                return true
+            } catch {
+                FreeToken.shared.logger("💾 Model warm-up failed: \(error.localizedDescription)", .error)
+                return false
+            }
         }
         
         func sendMessagesToAI(messages: [Message], runIdentifier: String, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {

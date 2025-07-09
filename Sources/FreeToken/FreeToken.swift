@@ -587,7 +587,7 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
+        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, await aiModelManager?.stateManager.getLoadedState() == .loaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
             // Generate local completion
             await generateLocalCompletion(prompt: prompt, aiRunConfig: aiRunConfig) { completion in
                 successCompletion(completion)
@@ -1212,35 +1212,40 @@ public class FreeToken: @unchecked Sendable {
     /// Load the AI Model into the device memory
     ///
     /// ```
-    ///     client.loadModel(success: {
+    ///     client.loadModel(success: { loadedState in
     ///         // Model is loaded and ready for use
+    ///         if loadedState == .loaded {
+    ///             // Use the AI model for local completions
+    ///         }
     ///     }, error: { error in
     ///         // Handle the error - Retry?
     ///     })
     /// ```
     ///
-    /// > Note: You must run ``downloadAIModel(completion:)`` prior to using this method.
+    /// > Note: You must run ``downloadAIModel`` prior to using this method.
+    ///
+    /// > Note: Any success callback means that your system is ready to run AI.
     ///
     ///- Parameters:
     ///     - success: A closure to capture the result of loading the AI model
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: A generic enumeration result of Bool, ErrorResponse
-    public func loadModel(success successCompletion: @escaping (Bool) -> Void, error errorCompletion: @escaping (FreeTokenError) -> Void) async {
+    public func loadModel(success successCompletion: @escaping (_ loadedState: AIModelLoadingState) async -> Void, error errorCompletion: @escaping (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
         guard deviceManager?.isAICapable == true else {
             FreeToken.shared.logger("💾 Load Model: Device not capable of AI, nothing to do here", .info)
-            successCompletion(false)
+            await successCompletion(.notAICapable)
             return
         }
         
         // Check if the AI Model is downloaded
         guard await aiModelManager?.stateManager.getDownloadState() == .downloaded else {
-            errorCompletion(FreeTokenError.aiModelNotDownloaded)
+            await errorCompletion(FreeTokenError.aiModelNotDownloaded)
             return
         }
         
@@ -1248,9 +1253,9 @@ public class FreeToken: @unchecked Sendable {
         let response = await aiModelManager!.loadModel()
         switch response {
         case .success(let isSuccess):
-            successCompletion(isSuccess)
+            await successCompletion(isSuccess)
         case .failure(let error):
-            errorCompletion(error)
+            await errorCompletion(error)
         }
     }
     

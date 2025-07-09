@@ -747,6 +747,14 @@ extension FreeToken {
         case tool
     }
     
+    public enum AIModelLoadingState: String, Equatable, Sendable {
+        case unloaded
+        case loading
+        case loaded
+        case failed
+        case notAICapable
+    }
+    
     public class Message: @unchecked Sendable {
         public let id: String?
         public let role: MessageRole

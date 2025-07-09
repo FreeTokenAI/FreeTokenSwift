@@ -31,6 +31,7 @@ extension FreeToken {
         var tokenUsage: TokenUsage? = nil // Not sure I'll use this, but keeping it for now
         var toolCallRecursiveRuns: Int = 0
         
+        
         init(
             messageThreadID: String,
             forceCloudRun: Bool?,
@@ -60,6 +61,52 @@ extension FreeToken {
             self.aiRunConfig = aiRunConfig
             self.toolCallback = toolCallback
             self.jsonToolResults = jsonToolResults
+        }
+    }
+    
+    // MARK: - Load model if not already loaded
+    final class LoadAIModel: WorkflowStep, @unchecked Sendable {
+        let context: RunMessageThreadContext
+        let aiModelManager: AIModelManager?
+        
+        init(context: any FreeToken.WorkflowContext) {
+            let context = context as! RunMessageThreadContext
+            self.context = context
+            self.aiModelManager = context.aiModelManager
+        }
+        
+        func execute(
+            success: @escaping @Sendable (_ context: any WorkflowContext) async -> Void,
+            failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
+        ) async -> Void {
+            // If we're forcing a cloud run, we don't need to load the model
+            if context.forceCloudRun == true {
+                await success(context)
+                return
+            }
+            
+            // If the model isn't downloaded, just move on.
+            if await context.aiModelManager?.stateManager.getDownloadState() != .downloaded {
+                await success(context)
+                return
+            }
+            
+            if await context.aiModelManager?.stateManager.getLoadedState() == .loaded {
+                FreeToken.shared.logger("🧠 AI model already loaded, skipping load", .info)
+                await success(context)
+                return
+            }
+
+            // Kickoff async model load
+            Task {
+                await FreeToken.shared.loadModel { loadedState in
+                    // Nothing to do here, the model is loaded
+                } error: { error in
+                    // Failed to load the model, nothing to do here
+                }
+            }
+            
+            await success(context) // Continue execution without waiting for the model to load
         }
     }
     
@@ -130,11 +177,18 @@ extension FreeToken {
                     }
                 } else {
                     // Downloaded
+                    
+                    // If not loaded, run in cloud
+                    if await aiModelManager?.stateManager.getLoadedState() != .loaded {
+                        FreeToken.shared.logger("🧠 Model not loaded, running in cloud", .info)
+                        return true
+                    }
+                    
                     FreeToken.shared.logger("🧠 Model downloaded and AI supported - Should run locally", .info)
                     return false
                 }
             } else {
-                if  self.deviceMode?.isCompatibilityMode == true {
+                if self.deviceMode?.isCompatibilityMode == true {
                     // Compatibility Mode activated
                     FreeToken.shared.logger("☁️🧠 Compatibility Mode Activated!", .info)
                     return true

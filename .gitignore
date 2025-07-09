@@ -8,3 +8,4 @@ DerivedData/
 .swiftpm/*
 .netrc
 CLAUDE.md
+.mcp.json
