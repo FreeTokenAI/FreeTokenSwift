@@ -20,6 +20,7 @@ extension FreeToken {
         let deviceMode: DeviceMode?
         let deviceManager: DeviceManager?
         let documentSearchScope: String?
+        let privateDocumentStoreIds: [String]?
         let messagesManager: MessagesManager
         let aiRunConfig: AIRunConfig?
         let jsonToolResults: Bool
@@ -34,6 +35,7 @@ extension FreeToken {
             messageThreadID: String,
             forceCloudRun: Bool?,
             documentSearchScope: String?,
+            privateDocumentStoreIds: [String]?,
             toolRunOnly: Bool = true,
             deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?,
             aiModelManager: AIModelManager?,
@@ -48,6 +50,7 @@ extension FreeToken {
             self.messageThreadID = messageThreadID
             self.forceCloudRun = forceCloudRun
             self.documentSearchScope = documentSearchScope
+            self.privateDocumentStoreIds = privateDocumentStoreIds
             self.deviceDetails = deviceDetails
             self.aiModelManager = aiModelManager
             self.chatStatusStream = chatStatusStream
@@ -307,6 +310,7 @@ extension FreeToken {
         let toolNames: [String]
         let resultMessage: Message
         let documentSearchScope: String?
+        let privateDocumentStoreIds: [String]?
         let externalToolCallback: Optional<@Sendable ([FreeToken.ToolCall]) -> String>
         let messagesManager: MessagesManager
         let messageThread: MessageThread
@@ -318,6 +322,7 @@ extension FreeToken {
             self.deviceDetails = context.deviceDetails!
             self.resultMessage = context.resultMessage!
             self.documentSearchScope = context.documentSearchScope
+            self.privateDocumentStoreIds = context.privateDocumentStoreIds
             self.externalToolCallback = context.toolCallback
             self.messagesManager = context.messagesManager
             self.messageThread = context.messageThread!
@@ -336,7 +341,7 @@ extension FreeToken {
             FreeToken.shared.logger("🛠️ Checking for tool calls", .info)
   
             let cloudCallNames: [String] = [] // This is not implemented yet.
-            let toolCallManager = ToolCallsManager(messageContent: resultMessage.content, availableCloudToolCalls: cloudCallNames, toolNames: toolNames, documentSearchScope: documentSearchScope)
+            let toolCallManager = ToolCallsManager(messageContent: resultMessage.content, availableCloudToolCalls: cloudCallNames, toolNames: toolNames, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds)
             let profiler = Profiler()
             
             do {

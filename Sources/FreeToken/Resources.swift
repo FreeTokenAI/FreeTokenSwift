@@ -327,6 +327,14 @@ extension FreeToken {
             }
         }
         
+        struct CreatePrivateDocumentStoreRequest: Encodable {
+            let name: String
+        }
+        
+        struct CreatePrivateDocumentStoreResponse: Decodable {
+            let id: String
+        }
+
         struct CreateDocumentRequestWrapper: Encodable {
             let document: CreateDocumentRequest
         }
@@ -337,6 +345,7 @@ extension FreeToken {
             let searchScope: String
             let documentChunks: [CreateDocumentChunkRequest]
             let encryptionEnabled: Bool
+            let privateDocumentStoreID: String?
             
             enum CodingKeys: String, CodingKey {
                 case content
@@ -344,6 +353,7 @@ extension FreeToken {
                 case searchScope = "search_scope"
                 case encryptionEnabled = "encryption_enabled"
                 case documentChunks = "document_chunks"
+                case privateDocumentStoreID = "private_document_store_id"
             }
         }
         
@@ -381,6 +391,7 @@ extension FreeToken {
             let embedding: [Float]
             let embeddingModel: String
             let documentScope: String?
+            let privateDocumentStoreIds: [String]?
             let resultCount: Int?
             let useAgentDocumentScope: Bool
             
@@ -388,6 +399,7 @@ extension FreeToken {
                 case embedding = "embedding"
                 case embeddingModel = "embedding_model"
                 case documentScope = "document_scope"
+                case privateDocumentStoreIds = "private_document_store_ids"
                 case resultCount = "result_count"
                 case useAgentDocumentScope = "use_agent_document_scope"
             }
@@ -590,6 +602,14 @@ extension FreeToken {
     }
     
     //MARK: - Public Classes
+    
+    public class PrivateDocumentStore {
+        public let id: String
+        
+        internal init(from response: Codings.CreatePrivateDocumentStoreResponse) {
+            self.id = response.id
+        }
+    }
     
     public class WebSearchResult {
         public let url: URL?

@@ -825,14 +825,14 @@ public class FreeToken: @unchecked Sendable {
     /// Create a document to be searched in your App's vector store
     ///
     /// ```
-    ///     client.createDocument(content: blogPost.body, metadata: ["title": blogPost.title], searchScope: "blog-posts", success: { document in
+    ///     client.createDocument(content: blogPost.body, metadata: "TITLE: My blog post!\nDATE: Jan 1, 2025", searchScope: "blog-posts", success: { document in
     ///         // Created Successfully!
     ///     }, error: { error in
     ///         // Failed to create - retry?
     ///     })
     /// ```
     ///
-    /// > Warning: Any document stored in your app's vector store should be public data. It is not secure or protected from other users access.
+    /// > Warning: Any document stored without a `privateDocumentStoreID` should be considered public data. It is not secure or protected from other users access.
     ///
     /// > Note: It is not recommended that you use the document store as a persistence store in your app. Only use it for context to be provided to an AI.
     ///
@@ -840,13 +840,14 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Parameters:
     ///     - content: content of the document
-    ///     - metadata: User defined metadata to attach to the document
+    ///     - metadata: User defined metadata to attach to the document in String format
     ///     - searchScope: String scope to use when looking up documents in Agents or via the API
+    ///     - privateDocumentStoreID: Optional private document store ID, when added will create the document in the supplied private store (rather than in public space)
     ///     - success: A closure to capture the result of the document being created
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func createDocument(content: String, metadata: Optional<String> = nil, searchScope: String, success successCompletion: @escaping @Sendable (Document) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func createDocument(content: String, metadata: Optional<String> = nil, searchScope: String, privateDocumentStoreID: Optional<String> = nil, success successCompletion: @escaping @Sendable (Document) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -865,7 +866,7 @@ public class FreeToken: @unchecked Sendable {
             return Codings.CreateDocumentChunkRequest(content: content, embedding: chunk.embedding!, embeddingModel: chunk.embeddingModelName)
         }
         
-        let request = Codings.CreateDocumentRequest(content: encryptionManager.encrypt(content), metadata: (metadata != nil ? encryptionManager.encrypt(metadata!) : nil), searchScope: searchScope, documentChunks: chunks, encryptionEnabled: encryptionManager.isEncryptionEnabled)
+        let request = Codings.CreateDocumentRequest(content: encryptionManager.encrypt(content), metadata: (metadata != nil ? encryptionManager.encrypt(metadata!) : nil), searchScope: searchScope, documentChunks: chunks, encryptionEnabled: encryptionManager.isEncryptionEnabled, privateDocumentStoreID: privateDocumentStoreID)
         
         let wrapper = Codings.CreateDocumentRequestWrapper(document: request)
         
@@ -939,12 +940,13 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - query: String to query by vector and keywords
     ///     - searchScope: Find only documents that match this scope
+    ///     - privateDocumentStoreIds: Array of private document store IDs to search within
     ///     - maxResults: Max number of results to return
     ///     - success: A closure to capture the result of searching for documents
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func searchDocuments(query: String, searchScope: Optional<String> = nil, maxResults: Optional<Int> = nil, success successCompletion: @escaping @Sendable (DocumentSearchResults) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func searchDocuments(query: String, searchScope: Optional<String> = nil, privateDocumentStoreIds: Optional<[String]> = nil, maxResults: Optional<Int> = nil, success successCompletion: @escaping @Sendable (DocumentSearchResults) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -972,7 +974,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         let path = "documents/search"
-        let data = Codings.SearchDocumentsRequest(embedding: embedding, embeddingModel: EmbeddingManager.shared.embeddingModelName, documentScope: searchScope, resultCount: resultCount, useAgentDocumentScope: useAgentDocumentScope)
+        let data = Codings.SearchDocumentsRequest(embedding: embedding, embeddingModel: EmbeddingManager.shared.embeddingModelName, documentScope: searchScope, privateDocumentStoreIds: privateDocumentStoreIds, resultCount: resultCount, useAgentDocumentScope: useAgentDocumentScope)
         
         let profiler = Profiler()
         await postData(path: path, data: data, responseType: Codings.SearchDocumentsResponse.self) { result in
@@ -984,6 +986,91 @@ public class FreeToken: @unchecked Sendable {
             case .failure(let error):
                 profiler.end(eventType: .searchDocuments, isSuccess: false, errorMessage: error.message)
                 FreeToken.shared.logger("🔴 Document search failed with error \(error.message)", .error)
+                errorCompletion(error)
+            }
+        }
+    }
+    
+    /// Create a private document store
+    ///
+    /// ```
+    ///     client.createPrivateDocumentStore(name: "My Documents", success: { store in
+    ///         // Store created successfully, use store.id to create documents
+    ///         let storeId = store.id
+    ///     }, error: { error in
+    ///         // Handle creation error
+    ///     })
+    /// ```
+    ///
+    /// > Note: Private document stores are identified by their server-generated ID.
+    /// > The name is used server-side for identification but only the ID is returned.
+    /// > Encryption is handled at the document level when creating individual documents.
+    ///
+    /// - Parameters:
+    ///     - name: Optional name for identifying the store server-side
+    ///     - success: A closure to capture the created private document store
+    ///     - error: A closure to capture any errors that occur during the call
+    ///
+    /// - Returns: Void
+    public func createPrivateDocumentStore(name: String, success successCompletion: @escaping @Sendable (PrivateDocumentStore) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+        guard isDeviceRegistered() else {
+            errorCompletion(FreeTokenError.deviceNotRegistered)
+            return
+        }
+        
+        let path = "private_document_stores"
+        let data = Codings.CreatePrivateDocumentStoreRequest(name: name)
+        
+        let profiler = Profiler()
+        await postData(path: path, data: data, responseType: Codings.CreatePrivateDocumentStoreResponse.self) { result in
+            switch result {
+            case .success(let response):
+                profiler.end(eventType: .createDocument, isSuccess: true)
+                successCompletion(PrivateDocumentStore(from: response))
+            case .failure(let error):
+                profiler.end(eventType: .createDocument, isSuccess: false, errorMessage: error.message)
+                FreeToken.shared.logger("Private document store creation failed with error \(error.message)", .error)
+                errorCompletion(error)
+            }
+        }
+    }
+        
+    /// Delete a private document store
+    ///
+    /// ```
+    ///     client.deletePrivateDocumentStore(id: "store-id", success: {
+    ///         // Store deleted successfully
+    ///     }, error: { error in
+    ///         // Handle deletion error
+    ///     })
+    /// ```
+    ///
+    /// > Warning: This will permanently delete the private document store and all documents within it.
+    /// > This action cannot be undone.
+    ///
+    /// - Parameters:
+    ///     - id: The ID of the private document store to delete
+    ///     - success: A closure called when the store is successfully deleted
+    ///     - error: A closure to capture any errors that occur during the call
+    ///
+    /// - Returns: Void
+    public func deletePrivateDocumentStore(id: String, success successCompletion: @escaping @Sendable () -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+        guard isDeviceRegistered() else {
+            errorCompletion(FreeTokenError.deviceNotRegistered)
+            return
+        }
+        
+        let path = "private_document_stores/\(id)"
+        let profiler = Profiler()
+        deleteResource(path: path) { result in
+            switch result {
+            case .success():
+                profiler.end(eventType: .createDocument, isSuccess: true) // Using createDocument event type for now
+                FreeToken.shared.logger("🗑️ Private document store deleted successfully", .info)
+                successCompletion()
+            case .failure(let error):
+                profiler.end(eventType: .createDocument, isSuccess: false, errorMessage: error.message)
+                FreeToken.shared.logger("🔴 Private document store deletion failed with error \(error.message)", .error)
                 errorCompletion(error)
             }
         }
@@ -1053,6 +1140,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - id: String of the message thread ID
     ///     - forceCloudRun: Optional Boolean to force the AI to run in the cloud rather than on device
     ///     - documentSearchScope: Optional document search scope. Used for context for the AI
+    ///     - privateDocumentStoreIds: Optional array of private document store IDs for RAG context
     ///     - success: A closure to capture the result of the run of the message thread
     ///     - error: A closure to capture any errors that occur during the call
     ///     - chatStatusStream: Optional closure to capture the status of the chat stream
@@ -1064,6 +1152,7 @@ public class FreeToken: @unchecked Sendable {
         id messageThreadID: String,
         forceCloudRun: Optional<Bool> = nil,
         documentSearchScope: Optional<String> = nil,
+        privateDocumentStoreIds: Optional<[String]> = nil,
         aiRunConfig: Optional<AIRunConfig> = nil,
         success successCompletion: @escaping @Sendable (Message) -> Void,
         error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void,
@@ -1078,7 +1167,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Workflow Context
-        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: forceCloudRun, documentSearchScope: documentSearchScope, toolRunOnly: true, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, chatStatusStream: chatStatusStream)
+        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: forceCloudRun, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, toolRunOnly: true, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, chatStatusStream: chatStatusStream)
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [

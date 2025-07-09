@@ -16,6 +16,7 @@ extension FreeToken {
         
         internal func processDocument(content: String, metadata: String? = nil) throws -> Document {
             let document = Document(content: content, metadata: metadata, documentManager: self)
+            _ = try document.chunkDocument()
     
             return document
         }

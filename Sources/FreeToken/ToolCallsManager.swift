@@ -15,13 +15,15 @@ extension FreeToken {
         private let availableCloudToolCalls: [String]
         private let internalLocalToolCalls = ["article_lookup", "web_search"]
         private let documentSearchScope: String?
+        private let privateDocumentStoreIds: [String]?
         
         private var toolCalls: [ToolCall] = []
                 
-        internal init(messageContent: String, availableCloudToolCalls: [String], toolNames: [String], documentSearchScope: String?) {
+        internal init(messageContent: String, availableCloudToolCalls: [String], toolNames: [String], documentSearchScope: String?, privateDocumentStoreIds: [String]?) {
             self.messageContent = messageContent
             self.availableCloudToolCalls = availableCloudToolCalls
             self.documentSearchScope = documentSearchScope
+            self.privateDocumentStoreIds = privateDocumentStoreIds
             self.toolNames = toolNames
         }
         
@@ -129,7 +131,7 @@ extension FreeToken {
             if toolCall.name == "article_lookup", let query = toolCall.arguments["query"] {
                 return await withCheckedContinuation { continuation in
                     Task {
-                        await internal_articleLookup(query: query, searchScope: documentSearchScope) { result in
+                        await internal_articleLookup(query: query, searchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds) { result in
                             continuation.resume(returning: result)
                         }
                     }
@@ -163,8 +165,8 @@ extension FreeToken {
             return externalToolCallHandler!(toolCalls)
         }
         
-        private func internal_articleLookup(query: String, searchScope: String?, success successCallback: @escaping @Sendable (_ result: String) -> Void) async {
-            await FreeToken.shared.searchDocuments(query: query, searchScope: searchScope, maxResults: 3) { searchResults in
+        private func internal_articleLookup(query: String, searchScope: String?, privateDocumentStoreIds: [String]?, success successCallback: @escaping @Sendable (_ result: String) -> Void) async {
+            await FreeToken.shared.searchDocuments(query: query, searchScope: searchScope, privateDocumentStoreIds: privateDocumentStoreIds, maxResults: 3) { searchResults in
                 var result = "Article excerpts to help answer the user's question:"
                 
                 for documentChunk in searchResults.documentChunks {

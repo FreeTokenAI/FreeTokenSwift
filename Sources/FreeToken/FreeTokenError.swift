@@ -27,6 +27,11 @@ extension FreeToken {
         case cloudCompletionFailed(message: String? = nil)
         case encryptedDocumentReceivedWithoutWayToDecrypt
         case encryptedMessageThreadLoadedWithoutWayToDecrypt
+        case privateDocumentStoreNotFound
+        case privateDocumentStoreCreationFailed
+        case privateDocumentStoreDeletionFailed
+        case invalidPrivateDocumentStoreId
+        case privateDocumentCreationFailed
         case noEncryptOrDecryptDefinedInPrivacyMode
         case encryptOrDecryptDefinedInCompatibilityMode
         case deviceIncapableOfAiInPrivacyMode
@@ -108,6 +113,11 @@ extension FreeToken.FreeTokenError {
         case .cloudCompletionFailed(_): return "cloudCompletionFailed"
         case .encryptedDocumentReceivedWithoutWayToDecrypt: return "encryptedDocumentRecievedWithoutWayToDecrypt"
         case .encryptedMessageThreadLoadedWithoutWayToDecrypt: return "encryptedMessageThreadLoadedWithoutWayToDecrypt"
+        case .privateDocumentStoreNotFound: return "privateDocumentStoreNotFound"
+        case .privateDocumentStoreCreationFailed: return "privateDocumentStoreCreationFailed"
+        case .privateDocumentStoreDeletionFailed: return "privateDocumentStoreDeletionFailed"
+        case .invalidPrivateDocumentStoreId: return "invalidPrivateDocumentStoreId"
+        case .privateDocumentCreationFailed: return "privateDocumentCreationFailed"
         case .noEncryptOrDecryptDefinedInPrivacyMode: return "noEncryptOrDecryptDefinedInPrivacyMode"
         case .encryptOrDecryptDefinedInCompatibilityMode: return "encryptOrDecryptDefinedInCompatibilityMode"
         case .deviceIncapableOfAiInPrivacyMode: return "deviceIncapableOfAiInPrivacyMode"
@@ -184,6 +194,11 @@ extension FreeToken.FreeTokenError {
             return response
         case .encryptedDocumentReceivedWithoutWayToDecrypt: return "Recieved an encrypted document from the cloud, but no decryption method defined"
         case .encryptedMessageThreadLoadedWithoutWayToDecrypt: return "Recieved a message thread from the cloud, but no decryption method defined "
+        case .privateDocumentStoreNotFound: return "The specified private document store was not found"
+        case .privateDocumentStoreCreationFailed: return "Failed to create private document store"
+        case .privateDocumentStoreDeletionFailed: return "Failed to delete private document store"
+        case .invalidPrivateDocumentStoreId: return "The private document store ID is invalid"
+        case .privateDocumentCreationFailed: return "Failed to create document in private document store"
         case .noEncryptOrDecryptDefinedInPrivacyMode: return "Encrypt & Decrypt must be added via the configure method in Privacy Mode"
         case .encryptOrDecryptDefinedInCompatibilityMode: return "Encrypt & Decrypt must not be added via configure in Compatibility Mode"
         case .deviceIncapableOfAiInPrivacyMode: return "This device is not capable of AI and the App is configured for Privacy Mode (on-device AI only)"
@@ -269,14 +284,19 @@ extension FreeToken.FreeTokenError {
         case .cloudCompletionPrivacyMode: return 1013
         case .encryptedDocumentReceivedWithoutWayToDecrypt: return 1014
         case .encryptedMessageThreadLoadedWithoutWayToDecrypt: return 1015
-        case .noEncryptOrDecryptDefinedInPrivacyMode: return 1016
-        case .encryptOrDecryptDefinedInCompatibilityMode: return 1017
-        case .deviceIncapableOfAiInPrivacyMode: return 1018
-        case .cloudRunInPrivacyMode: return 1019
-        case .modelMustBeLoadedBeforeAddingMessage: return 1020
-        case .cloudCompletionFailed(_): return 1021
-        case .cloudCompletionInvalidResponse: return 1022
-        case .encoding(_): return 1023
+        case .privateDocumentStoreNotFound: return 1016
+        case .privateDocumentStoreCreationFailed: return 1017
+        case .privateDocumentStoreDeletionFailed: return 1018
+        case .invalidPrivateDocumentStoreId: return 1019
+        case .privateDocumentCreationFailed: return 1020
+        case .noEncryptOrDecryptDefinedInPrivacyMode: return 1021
+        case .encryptOrDecryptDefinedInCompatibilityMode: return 1022
+        case .deviceIncapableOfAiInPrivacyMode: return 1023
+        case .cloudRunInPrivacyMode: return 1024
+        case .modelMustBeLoadedBeforeAddingMessage: return 1025
+        case .cloudCompletionFailed(_): return 1026
+        case .cloudCompletionInvalidResponse: return 1027
+        case .encoding(_): return 1028
         case .unsupportedVersion: return 2000
         case .aiModelNotDownloaded: return 2001
         case .modelAlreadyLoading: return 2002
