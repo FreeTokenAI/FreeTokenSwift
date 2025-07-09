@@ -9,6 +9,7 @@ The FreeToken Swift client provides seamless AI integration for iOS/macOS apps, 
 - **On-device and Cloud AI**: Automatic fallback between local and cloud inference.
 - **Privacy Mode**: End-to-end encryption for sensitive data. All data stored by FreeToken is encrypted by you with your own encryption keys and algorithms.
 - **Document Indexing & Search**: Store and retrieve context for Retrieval-Augmented Generation (RAG).
+- **Private Document Stores**: Secure, isolated document storage with server-generated IDs.
 - **Message Threading**: Multi-turn conversations with persistent threads in the cloud for syncing between clients.
 - **Function/Tool Calling**: Extendable for advanced AI workflows. 
 - **Built in RAG**: Automatically search and retrieve relevant documents for AI context.
@@ -137,7 +138,24 @@ await client.addMessageToThread(
 await client.runMessageThread(
     id: "thread-id",
     success: { response in
-        print("AI response: \(response.resultMessage.content)")
+        print("AI response: \(response.content)")
+    },
+    error: { error in
+        print("Failed to run thread: \(error)")
+    }
+)
+```
+
+#### Run a Thread with Private Document Context
+
+You can provide private document store IDs to include private documents in the AI's context for enhanced RAG capabilities.
+
+```swift
+await client.runMessageThread(
+    id: "thread-id",
+    privateDocumentStoreIds: ["store-id-1", "store-id-2"],
+    success: { response in
+        print("AI response with private context: \(response.content)")
     },
     error: { error in
         print("Failed to run thread: \(error)")
@@ -254,7 +272,7 @@ Store, retrieve, and search documents for use as AI context (RAG, knowledge base
 ```swift
 client.createDocument(
     content: "Document content",
-    metadata: "{\"title\": \"Example Document\", \"author\": \"John Doe\"}",
+    metadata: "TITLE: Example Document\nAUTHOR: John Doe",
     searchScope: "knowledge-base",
     success: { document in
         print("Document created: \(document.id)")
@@ -265,7 +283,26 @@ client.createDocument(
 )
 ```
 
-Note: The document data should be considered _public_ to all agents in the App context and immutable. 
+Note: The document data should be considered _public_ to all agents in the App context and immutable.
+
+#### Create a Document in a Private Store
+
+You can create documents within private document stores for enhanced security and isolation.
+
+```swift
+client.createDocument(
+    content: "Private document content",
+    metadata: "TITLE: Private Document\nCLASSIFICATION: Confidential",
+    searchScope: "private-knowledge",
+    privateDocumentStoreID: "store-id",
+    success: { document in
+        print("Private document created: \(document.id)")
+    },
+    error: { error in
+        print("Failed to create private document: \(error)")
+    }
+)
+``` 
 
 #### Get a Document
 
@@ -295,9 +332,86 @@ client.searchDocuments(
 )
 ```
 
+#### Search Documents Across Public and Private Stores
+
+You can search across both public documents and private document stores simultaneously.
+
+```swift
+client.searchDocuments(
+    query: "machine learning algorithms",
+    searchScope: "public-research",
+    privateDocumentStoreIds: ["store-1", "store-2"],
+    maxResults: 10,
+    success: { results in
+        for chunk in results.documentChunks {
+            print("Found content: \(chunk.contentChunk)")
+        }
+    },
+    error: { error in
+        print("Search failed: \(error)")
+    }
+)
+```
+
 ---
 
-### 7. Privacy Mode
+### 7. Private Document Stores
+
+Private Document Stores provide secure, isolated document storage with server-generated IDs for enhanced security. Unlike public documents, private stores are only accessible by their unique ID and provide complete isolation between different contexts.
+
+#### Create a Private Document Store
+
+```swift
+await client.createPrivateDocumentStore(name: "My Private Documents") { store in
+    // Store the ID securely - this is the only way to access the store
+    let storeId = store.id
+    print("Created private store: \(storeId)")
+} error: { error in
+    print("Failed to create private store: \(error)")
+}
+```
+
+#### Create a Private Document Store (Without Name)
+
+```swift
+await client.createPrivateDocumentStore { store in
+    // Anonymous private store
+    let storeId = store.id
+    print("Created anonymous private store: \(storeId)")
+} error: { error in
+    print("Failed to create private store: \(error)")
+}
+```
+
+#### Delete a Private Document Store
+
+```swift
+await client.deletePrivateDocumentStore(id: "store-id") {
+    print("Private document store deleted successfully")
+} error: { error in
+    print("Failed to delete private store: \(error)")
+}
+```
+
+**Important Security Notes:**
+- Private document store IDs are server-generated for enhanced security
+- Once created, stores can only be accessed via their unique ID
+- There is no API to list private document stores (security by design)
+- Deleting a store permanently removes all documents within it
+- The `name` parameter is optional and used for server-side identification only
+
+#### Integration with RAG and AI Context
+
+Private document stores seamlessly integrate with the AI system for Retrieval-Augmented Generation:
+
+- **Message Threads**: Include private documents in AI conversations
+- **Tool Calls**: The `article_lookup` tool automatically searches private stores when provided
+- **Search Operations**: Search across public and private documents simultaneously
+- **Automatic Context**: Private documents become part of the AI's knowledge base for enhanced responses
+
+---
+
+### 8. Privacy Mode
 
 Enable encryption/decryption for privacy-sensitive data.
 
@@ -318,7 +432,7 @@ Note: In Privacy mode, you _MUST_ define your own encryption and decryption logi
 
 ---
 
-### 8. Web Search
+### 9. Web Search
 
 Perform web searches and retrieve results for use in AI or user-facing features.  This is the same method that is used by the AI to search the web for relevant information when generating completions or responses.
 
@@ -341,7 +455,7 @@ Note: You must setup the web search with an API key in the FreeToken dashboard b
 
 ---
 
-### 9. Model and Cache Management
+### 10. Model and Cache Management
 
 Reset caches or manage model memory.
 
@@ -358,7 +472,7 @@ client.loadModel(success: {
 
 ---
 
-### 10. Stopping Local Generation
+### 11. Stopping Local Generation
 
 Stop any running local AI generation. Useful when your app goes into the background or you want to cancel a long-running operation.
 
