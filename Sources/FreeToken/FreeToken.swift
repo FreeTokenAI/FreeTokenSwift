@@ -27,7 +27,7 @@ public class FreeToken: @unchecked Sendable {
         get {
             if _aiModelManager != nil { return self._aiModelManager } // Memoized
             if isDeviceRegistered() == false { return nil } // Device not registered
-            self._aiModelManager = AIModelManager(modelConfig: deviceDetails!.aiModel, clientVersion: clientVersion)
+            self._aiModelManager = AIModelManager(modelConfig: deviceDetails!.aiModel, clientVersion: clientVersion, deviceMode: deviceMode!)
             return self._aiModelManager
         }
         set(manager) {
@@ -587,7 +587,7 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, await aiModelManager?.stateManager.getLoadedState() == .loaded, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
+        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, await aiModelManager?.stateManager.getLoadedState() == .loaded, deviceManager?.isTooHot() == false, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
             // Generate local completion
             await generateLocalCompletion(prompt: prompt, aiRunConfig: aiRunConfig) { completion in
                 successCompletion(completion)
@@ -703,9 +703,14 @@ public class FreeToken: @unchecked Sendable {
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: usage)
             successCompletion(completion)
         } catch {
-            let error = FreeTokenError.encoding(message: error.localizedDescription)
-            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
-            errorCompletion(error)
+            if error as? FreeTokenError == .aiQueueTimeout, self.deviceMode?.isQuickStartMode == true {
+                // Queue is taking too long, send this to the cloud
+                await generateCloudCompletion(prompt: prompt, modelCode: nil, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+            } else {
+                let error = FreeTokenError.encoding(message: error.localizedDescription)
+                profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
+                errorCompletion(error)
+            }
         }
     }
     
@@ -1171,6 +1176,7 @@ public class FreeToken: @unchecked Sendable {
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
+            LoadAIModel.self,
             DetermineAIRunLocation.self,
             GetMessageThread.self,
             RunAIModelInCloud.self,

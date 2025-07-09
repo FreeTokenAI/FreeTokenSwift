@@ -17,7 +17,7 @@ extension FreeToken {
         let modelConfig: AIModelConfiguration
         let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
         let availableModelTypes: Codings.AvailableModelTypesResponse
-        let taskQueue: AITaskQueue = AITaskQueue()
+        let taskQueue: AITaskQueue
         
         private let clientConfig: Codings.ShowClientConfig
         private let clientVersion: String
@@ -39,11 +39,23 @@ extension FreeToken {
         
         actor AITaskQueue {
             private var isRunning = false
+            private var isTurboMode: Bool = false
 
+            init(isTurboMode: Bool = false) {
+                self.isTurboMode = isTurboMode
+            }
+            
             func enqueue<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+                let startTime = DispatchTime.now()
+                let isTurboMode = self.isTurboMode
+                
                 while isRunning {
                     try await Task.sleep(nanoseconds: 10_000_000) // 10ms
                     FreeToken.shared.logger("⏰ Waiting for AI task queue to be free...", .info)
+                    if isTurboMode, DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds > 30_000_000 { // 30 seconds
+                        FreeToken.shared.logger("⏰ AI task queue timeout reached, aborting operation", .error)
+                        throw FreeTokenError.aiQueueTimeout
+                    }
                 }
                 
                 isRunning = true
@@ -331,7 +343,7 @@ extension FreeToken {
             }
         }
         
-        init(modelConfig: Codings.AiModelResponse, clientVersion: String) {
+        init(modelConfig: Codings.AiModelResponse, clientVersion: String, deviceMode: DeviceMode) {
             self.modelCode = modelConfig.code
             #if os(macOS)
             self.clientConfig = modelConfig.clientsConfig["macOS"]!
@@ -342,6 +354,7 @@ extension FreeToken {
             self.modelConfig = AIModelConfiguration(from: modelConfig.config.defaultSettings)
             self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
             self.availableModelTypes = modelConfig.modelTypes
+            self.taskQueue = AITaskQueue(isTurboMode: deviceMode == .compatibilityQuickStartMode)
         }
         
         actor ResultsCollector {

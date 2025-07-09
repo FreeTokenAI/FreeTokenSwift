@@ -178,10 +178,17 @@ extension FreeToken {
                 } else {
                     // Downloaded
                     
-                    // If not loaded, run in cloud
-                    if await aiModelManager?.stateManager.getLoadedState() != .loaded {
-                        FreeToken.shared.logger("🧠 Model not loaded, running in cloud", .info)
-                        return true
+                    if self.deviceMode?.isQuickStartMode == true {
+                        // If not loaded, run in cloud
+                        if await aiModelManager?.stateManager.getLoadedState() != .loaded {
+                            FreeToken.shared.logger("🧠 Model not loaded yet, running in cloud", .info)
+                            return true
+                        }
+                        
+                        if self.deviceManager?.isTooHot() == true {
+                            FreeToken.shared.logger("😰 Device too hot, running in cloud", .warning)
+                            return true
+                        }
                     }
                     
                     FreeToken.shared.logger("🧠 Model downloaded and AI supported - Should run locally", .info)
