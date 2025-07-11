@@ -285,9 +285,11 @@ extension FreeToken {
                 
                 if isNewSession {
                     session = LLMSession(model: model, messages: llmMessages)
+                    FreeToken.shared.logger("🧠 New AI session created with \(llmMessages.count) messages", .info)
                 } else {
                     session = cachedSession!.session
                     
+                    FreeToken.shared.logger("🧠 Reusing existing AI session with \(session.messages.count) messages", .info)
                     // Append new messages to the existing session
                     var index = 0
                     for message in llmMessages {

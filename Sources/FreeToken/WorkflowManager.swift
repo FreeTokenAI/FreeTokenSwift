@@ -62,7 +62,12 @@ extension FreeToken {
                 // If execute can be made to return a Result or throw, this becomes much simpler
                 await stepInstance.execute(
                     success: { newContext in
-                        await execManager.updateContext(newContext)
+                        if newContext.stopExecution {
+                            FreeToken.shared.logger("🛑 Stopping execution of workflow as requested by step", .info)
+                            await execManager.setShouldContinue(false)
+                        } else {
+                            await execManager.updateContext(newContext)
+                        }
                         semaphore.signal()
                     },
                     failure: { error, failedContext in
@@ -85,7 +90,9 @@ extension FreeToken {
         }
     }
     
-    protocol WorkflowContext: Sendable {}
+    protocol WorkflowContext: Sendable {
+        var stopExecution: Bool { get set }
+    }
     
     protocol WorkflowStep: Sendable {
         init(context: any WorkflowContext)

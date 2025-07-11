@@ -1168,8 +1168,8 @@ public class FreeToken: @unchecked Sendable {
             LoadAIModel.self,
             DetermineAIRunLocation.self,
             GetMessageThread.self,
-            RunAIModelInCloud.self,
-            RunAIModelLocally.self,
+            RunAIModelLocally.self, // Order of these two steps is important!
+            RunAIModelInCloud.self, // <---
             AddMessageToThread.self,
             RunToolCalls.self
         ]

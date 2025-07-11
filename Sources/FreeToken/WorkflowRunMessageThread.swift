@@ -30,6 +30,7 @@ extension FreeToken {
         var messageThread: MessageThread? = nil
         var tokenUsage: TokenUsage? = nil // Not sure I'll use this, but keeping it for now
         var toolCallRecursiveRuns: Int = 0
+        var stopExecution: Bool = false // Special flag to stop execution of the workflow after current step.
         
         
         init(
@@ -98,8 +99,8 @@ extension FreeToken {
             }
 
             // Kickoff async model load
-            Task {
-                await FreeToken.shared.loadModel { loadedState in
+            Task.detached(priority: .background) {
+                _ = await FreeToken.shared.loadModel { loadedState in
                     // Nothing to do here, the model is loaded
                 } error: { error in
                     // Failed to load the model, nothing to do here
@@ -327,14 +328,7 @@ extension FreeToken {
                     // If we're in Quick Start mode, let's failback to cloud
                     FreeToken.shared.logger("🔄 Quick Start mode active, AI Model failed, falling back to cloud run", .warning)
                     context.cloudRun = true
-                    let additionalSteps: [any WorkflowStep.Type] = [
-                        RunAIModelInCloud.self,
-                        AddMessageToThread.self,
-                        RunToolCalls.self
-                    ]
-                    
-                    let workflow = WorkflowManager(context: context, steps: additionalSteps)
-                    _ = await workflow.execute(success: success, failure: failure)
+                    await success(context) // Continue to the next step which will run in the cloud
                 } else {
                     await failure(error, context)
                 }
