@@ -1,5 +1,5 @@
 {
-  "originHash" : "5599d7366565704f0e2185fc0970732182f5071fec46c47ca2b61225ae196e34",
+  "originHash" : "cfda63b34421a4174e329301faa8105f9451f9af46b4a9b1588e05016d620f34",
   "pins" : [
     {
       "identity" : "gzipswift",
@@ -71,6 +71,15 @@
       "state" : {
         "revision" : "671108c96644956dddcd89dd59c203dcdb36cec7",
         "version" : "1.1.4"
+      }
+    },
+    {
+      "identity" : "swift-eventsource",
+      "kind" : "remoteSourceControl",
+      "location" : "https://github.com/LaunchDarkly/swift-eventsource.git",
+      "state" : {
+        "revision" : "57051701c58a93603ffa2051f8e9cf0c8cff7814",
+        "version" : "3.3.0"
       }
     },
     {

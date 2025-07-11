@@ -321,8 +321,23 @@ extension FreeToken {
                 await success(context)
             } catch {
                 let error = error as! FreeTokenError
+                
                 FreeToken.shared.logger("🔴 Local AI run failed with error: \(error.message)", .error)
-                await failure(error, context)
+                if context.deviceMode?.isQuickStartMode == true {
+                    // If we're in Quick Start mode, let's failback to cloud
+                    FreeToken.shared.logger("🔄 Quick Start mode active, AI Model failed, falling back to cloud run", .warning)
+                    context.cloudRun = true
+                    let additionalSteps: [any WorkflowStep.Type] = [
+                        RunAIModelInCloud.self,
+                        AddMessageToThread.self,
+                        RunToolCalls.self
+                    ]
+                    
+                    let workflow = WorkflowManager(context: context, steps: additionalSteps)
+                    _ = await workflow.execute(success: success, failure: failure)
+                } else {
+                    await failure(error, context)
+                }
             }
         }
         

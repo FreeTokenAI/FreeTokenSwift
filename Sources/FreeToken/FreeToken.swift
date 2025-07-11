@@ -3,6 +3,7 @@ import Foundation
 /// FreeToken Client
 public class FreeToken: @unchecked Sendable {
     static public let shared = FreeToken()
+    
 
     public var isConfigured: Bool {
         get {
@@ -499,9 +500,9 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func addMessageToThread(id messageThreadID: String, message: Message, success successCompletion: @escaping @Sendable (Message) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func addMessageToThread(id messageThreadID: String, message: Message, success successCompletion: @escaping @Sendable (Message) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -510,10 +511,10 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.addMessageToThread, eventTypeID: response.id, isSuccess: true)
-                successCompletion(response)
+                await successCompletion(response)
             case .failure(let error):
                 profiler.end(eventType: .addMessageToThread, isSuccess: false, errorMessage: error.message)
-                errorCompletion(error)
+                await errorCompletion(error)
             }
         }
     }
@@ -745,37 +746,23 @@ public class FreeToken: @unchecked Sendable {
                 
         let request: Codings.CreateCloudChatCompletion = Codings.CreateCloudChatCompletion(messages: requestMessages, model: model, topK: topK, topP: topP, temperature: temperature, maxTokens: maxTokens)
         
-        let messageChunkPattern = #"(\{\s*"message_chunk"\s*:\s*".*?"\s*\}),"#
-        let messageChunkRegex = try! NSRegularExpression(pattern: messageChunkPattern, options: [])
         let profiler = Profiler()
         
         await streamPostData(path: "completions/chat", data: request, responseType: Codings.CloudChatResponse.self) { chunk in
             if let chatStatusStream = chatStatusStream {
-                
-                // The entire response will be streamed not just message chunks - so we need to filter it out
-                if chunk.range(of: "message_chunk") != nil, messageChunkRegex.firstMatch(in: chunk, options: [], range: NSRange(location: 0, length: chunk.utf16.count)) != nil {
-                    // Decode the chunk with MessageContentChunk
-                    // If the last character is a comma, remove it
-                    var chunk = chunk
-                    if chunk.last == "," {
-                        chunk.removeLast()
-                    }
-                    
-                    // I'm getting some double chunks back - I could wrap it an []
-                    chunk = "{ \"message_chunks\": [\(chunk)] }"
-                    
+                // With SSE preprocessing, we get clean JSON chunks that can be parsed directly
+                if chunk.range(of: "message_chunk") != nil && !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                     if let data = chunk.data(using: .utf8) {
                         do {
                             let decoder = JSONDecoder()
-                            let messageContentChunk = try decoder.decode(Codings.MessageChunkStream.self, from: data)
+                            // Try to decode as a single message chunk directly
+                            let messageContentChunk = try decoder.decode(Codings.MessageContentChunk.self, from: data)
                             
-                            // Check if the chunk is a message chunk
-                            for messageChunk in messageContentChunk.messageChunks {
-                                // If the content is empty, we skip it
-                                if !messageChunk.messageChunk.isEmpty {
-                                    // Send the message chunk to the chat status stream
-                                    await chatStatusStream(messageChunk.messageChunk, .streaming_tokens)
-                                }
+                            // Process the message chunk
+                            // If the content is empty, we skip it
+                            if !messageContentChunk.messageChunk.isEmpty {
+                                // Send the message chunk to the chat status stream via actor for sequential delivery
+                                await chatStatusStream(messageContentChunk.messageChunk, .streaming_tokens)
                             }
                         } catch {
                             FreeToken.shared.logger("🔴 Error decoding message content chunk: \(chunk) - ERROR: \(error)", .error)
@@ -804,7 +791,9 @@ public class FreeToken: @unchecked Sendable {
                     let usage = TokenUsage(from: tokenUsage)
                     let message = Message(from: responseMessage, tokenUsage: usage)
                     profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: true, tokenStats: usage)
-                    await chatStatusStream?(nil, .stream_ended)
+                    if let chatStatusStream = chatStatusStream {
+                        await chatStatusStream(nil, .stream_ended)
+                    }
                     
                     // Call the success callback
                     await successCallback(message)
@@ -1464,7 +1453,7 @@ public class FreeToken: @unchecked Sendable {
     ///   - data: The object to send, encoded as JSON.
     ///   - responseType: The type of the expected response.
     ///   - completion: Completion handler with the decoded response or an error.
-    private func streamPostData<T: Decodable, U: Encodable>(
+    private func streamPostData<T: Decodable & Sendable, U: Encodable>(
         path: String,
         data: U,
         responseType: T.Type,

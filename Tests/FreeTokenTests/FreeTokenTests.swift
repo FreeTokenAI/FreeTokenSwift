@@ -88,5 +88,142 @@ final class FreeTokenTests: XCTestCase {
 
         wait(for: [expectation], timeout: 10.0)
     }
+    
+    func testCloudChatCompletion() throws {
+        let expectation = self.expectation(description: "Waiting for cloud chat completion")
+
+        Task {
+            let message = FreeToken.Message(role: .user, content: "What is the capital of France?")
+            
+            actor MessageStream {
+                var message = ""
+                
+                func append(_ text: String) {
+                    message += text
+                }
+                func getMessage() -> String {
+                    return message
+                }
+            }
+            
+            let messageStream = MessageStream()
+            
+            await FreeToken.shared.createMessageThread { messageThread in
+                await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                    await FreeToken.shared.runMessageThread(id: messageThread.id, forceCloudRun: true) { resultMessage in
+                        assert(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
+                        let finalMessage = await messageStream.getMessage()
+                        assert(resultMessage.content == finalMessage, "Expected final message to match result message")
+                        expectation.fulfill()
+                    } error: { error in
+                        XCTFail("Failed to run message thread: \(error.message)")
+                        expectation.fulfill()
+                    } chatStatusStream: { token, status in
+                        if let token = token {
+                            print("Received token: \(token)")
+                            await messageStream.append(token)
+                        }
+                    }
+                } error: { error in
+                    XCTFail("Failed to add message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+            
+            expectation.fulfill()
+        }
+
+        wait(for: [expectation], timeout: 10.0)
+    }
+    
+    func testCloudMessageContinuity() throws {
+        let expectation = self.expectation(description: "Waiting for cloud chat completion")
+
+        Task {
+            let message = FreeToken.Message(role: .user, content: "Write a short story about a robot in Paris.")
+            
+            actor MessageStream {
+                var message = ""
+                var streamEnded = false
+                var completionMessage: FreeToken.Message?
+                let completionCallback: @Sendable () -> Void
+                
+                init(completionCallback: @Sendable @escaping () -> Void) {
+                    self.completionCallback = completionCallback
+                }
+                
+                func append(_ text: String) {
+                    message += text
+                }
+                
+                func getMessage() -> String {
+                    return message
+                }
+                
+                func setStreamEnded() {
+                    streamEnded = true
+                    checkForCompletion()
+                }
+                
+                func setCompletionMessage(_ message: FreeToken.Message) {
+                    completionMessage = message
+                    checkForCompletion()
+                }
+                
+                private func checkForCompletion() {
+                    if streamEnded, let resultMessage = completionMessage {
+                        Task {
+                            // Small delay to ensure final tokens are processed
+                            try? await Task.sleep(nanoseconds: 50_000_000) // 50ms
+                            
+                            let finalMessage = getMessage()
+                            let result = resultMessage.content == finalMessage
+                            
+                            if !result {
+                                print("MISMATCH DETECTED:")
+                                print("Expected: \(resultMessage.content)")
+                                print("Got: \(finalMessage)")
+                            }
+                            
+                            assert(result, "Expected final message to match result message")
+                            completionCallback()
+                        }
+                    }
+                }
+            }
+            
+            let messageStream = MessageStream {
+                expectation.fulfill()
+            }
+            
+            await FreeToken.shared.createMessageThread { messageThread in
+                await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                    await FreeToken.shared.runMessageThread(id: messageThread.id, forceCloudRun: true) { resultMessage in
+                        await messageStream.setCompletionMessage(resultMessage)
+                    } error: { error in
+                        XCTFail("Failed to run message thread: \(error.message)")
+                        expectation.fulfill()
+                    } chatStatusStream: { token, status in
+                        if let token = token {
+                            await messageStream.append(token)
+                        } else if status == .stream_ended {
+                            await messageStream.setStreamEnded()
+                        }
+                    }
+                } error: { error in
+                    XCTFail("Failed to add message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 30.0)
+    }
 
 }

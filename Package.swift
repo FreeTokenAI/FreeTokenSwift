@@ -21,7 +21,8 @@ let package = Package(
         .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", from: "1.20.0"),
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.18"),
         .package(url: "https://github.com/1024jp/GzipSwift", from: "6.0.1"),
-        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", branch: "release")
+        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", branch: "release"),
+        .package(url: "https://github.com/LaunchDarkly/swift-eventsource.git", from: "3.3.0")
     ],
     targets: [
         .target(
@@ -32,7 +33,8 @@ let package = Package(
                 .product(name: "Gzip", package: "GzipSwift"),
                 .product(name: "LocalLLMClient", package: "localllmclient"),
                 .product(name: "LocalLLMClientLlama", package: "localllmclient"),
-                .product(name: "LocalLLMClientMLX", package: "localllmclient")
+                .product(name: "LocalLLMClientMLX", package: "localllmclient"),
+                .product(name: "LDSwiftEventSource", package: "swift-eventsource")
             ],
             path: "Sources/FreeToken"
         ),

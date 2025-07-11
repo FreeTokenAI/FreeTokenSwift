@@ -6,6 +6,7 @@
 //
 
 import Foundation
+import LDSwiftEventSource
 
 extension FreeToken {
     class HTTPClient: @unchecked Sendable {
@@ -200,34 +201,6 @@ extension FreeToken {
             semaphore.wait()
         }
         
-        // HTTP Streaming Support
-        internal func streamRequest(
-            to url: URL,
-            method: String = "GET",
-            headers: [String: String] = [:],
-            body: Data? = nil,
-            onDataReceived: @Sendable @escaping (Data) -> Void,
-            onComplete: @escaping @Sendable (Result<Data, FreeTokenError>) -> Void
-        ) {
-            var request = URLRequest(url: url)
-            request.httpMethod = method
-            request.allHTTPHeaderFields = headers
-            request.httpBody = body
-            let semaphore = DispatchSemaphore(value: 0)
-            
-            let sessionDelegate = HTTPStreamDelegate(
-                onDataReceived: onDataReceived,
-                onComplete: { result in
-                    onComplete(result)
-                    semaphore.signal()
-                }
-            )
-            
-            let streamingSession = URLSession(configuration: .default, delegate: sessionDelegate, delegateQueue: nil)
-            let task = streamingSession.dataTask(with: request)
-            task.resume()
-            semaphore.wait()
-        }
         
         // Convenience methods for GET and POST
         internal func get<T: Decodable>(
@@ -293,7 +266,7 @@ extension FreeToken {
             semaphore.wait()
         }
         
-        internal func streamPost<T: Decodable>(
+        internal func streamPost<T: Decodable & Sendable>(
             to url: URL,
             headers: [String: String] = [:],
             body: Data,
@@ -301,122 +274,173 @@ extension FreeToken {
             completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
         ) {
             let semaphore = DispatchSemaphore(value: 0)
-            streamRequest(to: url, method: "POST", headers: headers, body: body) { data in
-                let bodyChunk = String(data: data, encoding: .utf8)!
-                Task {
-                    await streamCallback(bodyChunk)
-                }
-            } onComplete: { result in
-                switch result {
-                case .success(let data):
-                    do {
-                        let decodedResponse = try self.decoder.decode(T.self, from: data)
-                        Task {
-                            await completion(.success(decodedResponse))
-                            semaphore.signal()
-                        }
-                    } catch let DecodingError.keyNotFound(key, context) {
-                        let decodingError = FreeTokenError.decodingError(message: "Missing key: \(key.stringValue), Context: \(context)")
-                        Task {
-                            await completion(.failure(decodingError))
-                            semaphore.signal()
-                        }
-                    } catch let DecodingError.typeMismatch(type, context) {
-                        let decodingError = FreeTokenError.decodingError(
-                            message: "Type mismatch for \(type): \(context)"
-                        )
-                        Task {
-                            await completion(.failure(decodingError))
-                            semaphore.signal()
-                        }
-                    } catch let DecodingError.valueNotFound(type, context) {
-                        let decodingError = FreeTokenError.decodingError(
-                            message: "Missing value for \(type): \(context)"
-                        )
-                        Task {
-                            await completion(.failure(decodingError))
-                            semaphore.signal()
-                        }
-                    } catch let DecodingError.dataCorrupted(context) {
-                        let decodingError = FreeTokenError.decodingError(
-                            message: "Corrupt data: \(context)"
-                        )
-                        Task {
-                            await completion(.failure(decodingError))
-                            semaphore.signal()
-                        }
-                    } catch {
-                        let decodingError = FreeTokenError.decodingError(
-                            message: "Unknown decoding error: \(error)"
-                        )
-                        Task {
-                            await completion(.failure(decodingError))
-                            semaphore.signal()
-                        }
-                    }
-                case .failure(let error):
-                    let error = FreeTokenError.decodingError(message: error.localizedDescription)
-                    Task {
-                        await completion(.failure(error))
+            let sseClient = SSEClient<T>(
+                url: url,
+                headers: headers,
+                body: body,
+                onMessageChunk: streamCallback,
+                onComplete: { @Sendable result in
+                    Task { @Sendable in
+                        await completion(result)
                         semaphore.signal()
                     }
                 }
-            }
+            )
+            
+            sseClient.start()
             semaphore.wait()
         }
     }
     
     
-    class HTTPStreamDelegate: NSObject, URLSessionDataDelegate, @unchecked Sendable {
-        private let onDataReceived: @Sendable (Data) -> Void
-        private let onComplete: @Sendable (Result<Data, FreeTokenError>) -> Void
-        private var httpResponse: HTTPURLResponse?
-        private var accumulatedData: Data = Data()
-
+    class SSEClient<T: Decodable & Sendable>: @unchecked Sendable, EventHandler {
+        private let url: URL
+        private let headers: [String: String]
+        private let body: Data
+        private let onMessageChunk: @Sendable (String) async -> Void
+        private let onComplete: @Sendable (Result<T, FreeTokenError>) async -> Void
+        private var eventSource: EventSource?
+        private var finalResponseData: [String: Any] = [:]
+        private let decoder = JSONDecoder()
+        private let sessionId = UUID().uuidString.prefix(8)
+        
+        // Sequential processing queue for message chunks
+        private let messageProcessingQueue = DispatchQueue(label: "message-chunk-processing", qos: .userInitiated)
+        
         init(
-            onDataReceived: @escaping @Sendable (Data) -> Void,
-            onComplete: @escaping @Sendable (Result<Data, FreeTokenError>) -> Void
+            url: URL,
+            headers: [String: String],
+            body: Data,
+            onMessageChunk: @escaping @Sendable (String) async -> Void,
+            onComplete: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
         ) {
-            self.onDataReceived = onDataReceived
+            self.url = url
+            self.headers = headers
+            self.body = body
+            self.onMessageChunk = onMessageChunk
             self.onComplete = onComplete
-        }
-
-        // Capture the HTTP response
-        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive response: URLResponse, completionHandler: @escaping (URLSession.ResponseDisposition) -> Void) {
-            if let httpResponse = response as? HTTPURLResponse {
-                self.httpResponse = httpResponse
+            
+            decoder.dateDecodingStrategy = .custom { decoder in
+                let container = try decoder.singleValueContainer()
+                let dateString = try container.decode(String.self)
+                let formatter = ISO8601DateFormatter()
+                formatter.formatOptions = [.withInternetDateTime]
+                if let date = formatter.date(from: dateString) {
+                    return date
+                } else {
+                    throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date format: \(dateString)")
+                }
             }
-            // Allow the session to continue receiving data
-            completionHandler(.allow)
         }
-
-        // Handle received data
-        func urlSession(_ session: URLSession, dataTask: URLSessionDataTask, didReceive data: Data) {
-            // Append received data to the accumulatedData property
-            accumulatedData.append(data)
-            // Call the data received closure with the incremental data
-            onDataReceived(data)
+        
+        func start() {
+            FreeToken.shared.logger("🚀[\(sessionId)] Starting SSE connection to \(url)", .info)
+            
+            var config = EventSource.Config(handler: self, url: url)
+            config.method = "POST"
+            config.body = body
+            config.headers = headers
+            
+            eventSource = EventSource(config: config)
+            eventSource?.start()
         }
-
-        // Handle completion and errors
-        func urlSession(_ session: URLSession, task: URLSessionTask, didCompleteWithError error: Error?) {
-            if let error = error {
-                // Handle client-side error
-                let clientError = FreeTokenError.streamError(
-                    message: error.localizedDescription
-                )
-                onComplete(.failure(clientError))
-            } else if let httpResponse = self.httpResponse, !(200...299).contains(httpResponse.statusCode) {
-                // Handle non-200...299 status codes
-                let serverError = FreeTokenError.httpError(
-                    message: "Received HTTP status code \(httpResponse.statusCode)",
-                    code: httpResponse.statusCode
-                )
-                onComplete(.failure(serverError))
-            } else {
-                // Successful completion, return the full accumulated data
-                onComplete(.success(accumulatedData))
+        
+        private func buildFinalResponse() -> Result<T, FreeTokenError> {
+            do {
+                let jsonData = try JSONSerialization.data(withJSONObject: finalResponseData)
+                let decodedResponse = try decoder.decode(T.self, from: jsonData)
+                return .success(decodedResponse)
+            } catch {
+                FreeToken.shared.logger("🔴[\(sessionId)] Failed to build final response: \(error)", .error)
+                let fallbackResponse = ["message": ["role": "assistant", "content": ""]]
+                if let fallbackData = try? JSONSerialization.data(withJSONObject: fallbackResponse),
+                   let fallbackDecoded = try? decoder.decode(T.self, from: fallbackData) {
+                    return .success(fallbackDecoded)
+                }
+                return .failure(FreeTokenError.decodingError(message: "Failed to decode final response: \(error.localizedDescription)"))
             }
+        }
+        
+        // MARK: - EventHandler Protocol
+        func onOpened() {
+            FreeToken.shared.logger("🟢[\(sessionId)] SSE connection opened", .info)
+        }
+        
+        func onClosed() {
+            FreeToken.shared.logger("🔴[\(sessionId)] SSE connection closed", .info)
+        }
+        
+        func onMessage(eventType: String, messageEvent: MessageEvent) {
+            FreeToken.shared.logger("🟠[\(sessionId)] Received event: \(eventType)", .debug)
+            
+            switch eventType {
+            case "message_chunk":
+                FreeToken.shared.logger("🟢[\(sessionId)] Processing message_chunk", .debug)
+                let messageData = messageEvent.data
+                messageProcessingQueue.sync {
+                    // Process synchronously on the queue to maintain strict ordering
+                    let semaphore = DispatchSemaphore(value: 0)
+                    Task {
+                        await onMessageChunk(messageData)
+                        semaphore.signal()
+                    }
+                    semaphore.wait()
+                }
+                
+            case "token_usage":
+                FreeToken.shared.logger("🟢[\(sessionId)] Processing token_usage", .debug)
+                if let jsonData = messageEvent.data.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                    finalResponseData["token_usage"] = json
+                    FreeToken.shared.logger("🟢[\(sessionId)] Token usage stored", .debug)
+                }
+                
+            case "complete":
+                FreeToken.shared.logger("🟢[\(sessionId)] Processing complete event", .debug)
+                if let jsonData = messageEvent.data.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                    finalResponseData["message"] = json
+                    FreeToken.shared.logger("🟢[\(sessionId)] Complete message stored", .debug)
+                }
+                
+                // Build and return final response
+                let result = buildFinalResponse()
+                Task { @Sendable in
+                    await onComplete(result)
+                }
+                eventSource?.stop()
+                
+            case "error":
+                FreeToken.shared.logger("🔴[\(sessionId)] Processing error event", .error)
+                if let jsonData = messageEvent.data.data(using: .utf8),
+                   let json = try? JSONSerialization.jsonObject(with: jsonData) as? [String: Any] {
+                    finalResponseData["error"] = json
+                    FreeToken.shared.logger("🔴[\(sessionId)] Error stored", .error)
+                }
+                
+                // Build and return final response with error
+                let result = buildFinalResponse()
+                Task { @Sendable in
+                    await onComplete(result)
+                }
+                eventSource?.stop()
+                
+            default:
+                FreeToken.shared.logger("🟡[\(sessionId)] Unknown event type: \(eventType)", .warning)
+            }
+        }
+        
+        func onComment(comment: String) {
+            FreeToken.shared.logger("💬[\(sessionId)] SSE comment: \(comment)", .debug)
+        }
+        
+        func onError(error: Error) {
+            FreeToken.shared.logger("🔴[\(sessionId)] SSE error: \(error.localizedDescription)", .error)
+            let streamError = FreeTokenError.streamError(message: error.localizedDescription)
+            Task { @Sendable in
+                await onComplete(.failure(streamError))
+            }
+            eventSource?.stop()
         }
     }
     
