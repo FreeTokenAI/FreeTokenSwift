@@ -67,6 +67,7 @@ extension FreeToken {
             let embeddingModel: EmbeddingModelResponse
             let systemInstructions: String
             let precache: [DownloadableFile]
+            let forceCloudRun: Bool
             let createdAt: Date
             let updatedAt: Date
             
@@ -80,6 +81,7 @@ extension FreeToken {
                 case embeddingModel = "embedding_model"
                 case systemInstructions = "system_instructions"
                 case precache = "precache"
+                case forceCloudRun = "force_cloud_run"
                 case createdAt = "created_at"
                 case updatedAt = "updated_at"
             }
@@ -185,10 +187,11 @@ extension FreeToken {
         struct AiModelResponse: Decodable {
             let code: String
             let name: String
-            let modelTypes: AvailableModelTypesResponse
+            let modelTypes: AvailableModelTypesResponse?
             let config: AiModelConfigResponse
             let clientsConfig: [String: ShowClientConfig]
             let trainingCutoffDate: String
+            let cloudOnly: Bool
             
             enum CodingKeys: String, CodingKey {
                 case code
@@ -197,6 +200,7 @@ extension FreeToken {
                 case config
                 case clientsConfig = "clients_config"
                 case trainingCutoffDate = "training_cutoff_date"
+                case cloudOnly = "cloud_only"
             }
         }
         

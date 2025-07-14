@@ -59,6 +59,23 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 30.0)
     }
     
+    func testGenerateCompletion() throws {
+        let expectation = self.expectation(description: "Waiting for completion")
+
+        Task {
+            await FreeToken.shared.generateCompletion(prompt: "The wheels on the bus go") { completion in
+                print("Completion: \(completion.response)")
+                XCTAssertTrue(completion.response.count > 0, "Expected non-empty completion response")
+                expectation.fulfill()
+            } error: { error in
+                XCTFail(error.message)
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 30.0)
+    }
+    
     func testCloudCompletion() throws {
         let expectation = self.expectation(description: "Waiting for completion")
 

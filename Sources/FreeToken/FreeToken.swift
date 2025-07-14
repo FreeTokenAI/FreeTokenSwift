@@ -28,6 +28,7 @@ public class FreeToken: @unchecked Sendable {
         get {
             if _aiModelManager != nil { return self._aiModelManager } // Memoized
             if isDeviceRegistered() == false { return nil } // Device not registered
+            if deviceDetails!.aiModel.cloudOnly == true { return nil } // Cloud only model
             self._aiModelManager = AIModelManager(modelConfig: deviceDetails!.aiModel, clientVersion: clientVersion, deviceMode: deviceMode!)
             return self._aiModelManager
         }
@@ -311,6 +312,12 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
+        guard self.deviceDetails?.aiModel.cloudOnly == false else {
+            FreeToken.shared.logger("⏭️ AI model is cloud-only skipping download.", .error)
+            successCallback(false)
+            return
+        }
+        
         let aiModelManager = self.aiModelManager!
         let deviceManager = self.deviceManager!
         
@@ -588,6 +595,12 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
+        // Check if server forces cloud execution
+        if deviceDetails?.forceCloudRun == true {
+            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+            return
+        }
+        
         if await aiModelManager?.stateManager.getDownloadState() == .downloaded, await aiModelManager?.stateManager.getLoadedState() == .loaded, deviceManager?.isTooHot() == false, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
             // Generate local completion
             await generateLocalCompletion(prompt: prompt, aiRunConfig: aiRunConfig) { completion in
@@ -680,6 +693,11 @@ public class FreeToken: @unchecked Sendable {
     public func generateLocalCompletion(prompt: String, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.deviceNotRegistered)
+            return
+        }
+        
+        guard self.deviceDetails?.aiModel.cloudOnly == false else {
+            errorCompletion(FreeTokenError.isCloudOnlyModel)
             return
         }
         
@@ -1142,11 +1160,12 @@ public class FreeToken: @unchecked Sendable {
     ///     - forceCloudRun: Optional Boolean to force the AI to run in the cloud rather than on device
     ///     - documentSearchScope: Optional document search scope. Used for context for the AI
     ///     - privateDocumentStoreIds: Optional array of private document store IDs for RAG context
+    ///     - aiRunConfig: Optional AI run configuration to override default AI model settings
+    ///     - modelCode: Optional AI Model Code to use a different model than provided by the device session (will force to cloud)
     ///     - success: A closure to capture the result of the run of the message thread
     ///     - error: A closure to capture any errors that occur during the call
     ///     - chatStatusStream: Optional closure to capture the status of the chat stream
     ///     - toolCallback: Optional closure to handle tool calls
-    ///     - toolRunOnly: Boolean to indicate if this run is only to generate tool calls, not for a user response
     ///
     /// - Returns: Void
     public func runMessageThread(
@@ -1155,6 +1174,7 @@ public class FreeToken: @unchecked Sendable {
         documentSearchScope: Optional<String> = nil,
         privateDocumentStoreIds: Optional<[String]> = nil,
         aiRunConfig: Optional<AIRunConfig> = nil,
+        modelCode: Optional<String> = nil,
         success successCompletion: @escaping @Sendable (Message) async -> Void,
         error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void,
         chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void> = nil,
@@ -1168,7 +1188,20 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Workflow Context
-        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: forceCloudRun, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, toolRunOnly: true, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, chatStatusStream: chatStatusStream)
+        
+        var effectiveForceCloudRun: Bool
+        if let deviceDetails = deviceDetails, deviceDetails.forceCloudRun == true {
+            effectiveForceCloudRun = true
+        } else {
+            effectiveForceCloudRun = forceCloudRun ?? false
+        }
+        
+        if let modelCode = modelCode, modelCode != deviceDetails?.aiModel.code {
+            FreeToken.shared.logger("☁️ Model code does not match session model - forcing run to the cloud ⬆️", .info)
+            effectiveForceCloudRun = true
+        }
+        
+        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: effectiveForceCloudRun, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, toolRunOnly: true, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream)
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
@@ -1245,6 +1278,11 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
+        guard deviceDetails?.aiModel.cloudOnly == false else {
+            await errorCompletion(FreeTokenError.isCloudOnlyModel)
+            return
+        }
+        
         // Check if the AI Model is downloaded
         guard await aiModelManager?.stateManager.getDownloadState() == .downloaded else {
             await errorCompletion(FreeTokenError.aiModelNotDownloaded)
@@ -1301,8 +1339,12 @@ public class FreeToken: @unchecked Sendable {
     /// - Returns: FreeToken.Message object
     /// - Throws: FreeTokenError if the device is not registered or if there is an error during the local chat
     public func localChat(messages: [Message], uniqueID: String? = nil, aiRunConfig: AIRunConfig? = nil) async throws -> Message {
-        if !isDeviceRegistered() {
+        guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
+        }
+        
+        guard deviceDetails?.aiModel.cloudOnly == false else {
+            throw FreeTokenError.isCloudOnlyModel
         }
         
         let runIdentifier: String

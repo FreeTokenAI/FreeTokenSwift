@@ -24,6 +24,7 @@ extension FreeToken {
         let messagesManager: MessagesManager
         let aiRunConfig: AIRunConfig?
         let jsonToolResults: Bool
+        let modelCode: String?
 
         var cloudRun: Bool? = nil
         var resultMessage: Message? = nil
@@ -46,6 +47,7 @@ extension FreeToken {
             messagesManager: MessagesManager,
             jsonToolResults: Bool,
             aiRunConfig: AIRunConfig? = nil,
+            modelCode: String? = nil,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>,
             toolCallback: Optional<@Sendable ([FreeToken.ToolCall]) async -> String> = nil
         ) {
@@ -62,6 +64,7 @@ extension FreeToken {
             self.aiRunConfig = aiRunConfig
             self.toolCallback = toolCallback
             self.jsonToolResults = jsonToolResults
+            self.modelCode = modelCode
         }
     }
     
@@ -261,7 +264,7 @@ extension FreeToken {
             
             await chatStatusStream?(nil, .sending_to_cloud_ai)
             
-            await FreeToken.shared.generateCloudChatCompletion(messages: messageThread.messages, model: nil, aiRunConfig: context.aiRunConfig, chatStatusStream: chatStatusStream) { message in
+            await FreeToken.shared.generateCloudChatCompletion(messages: messageThread.messages, model: context.modelCode, aiRunConfig: context.aiRunConfig, chatStatusStream: chatStatusStream) { message in
                 self.context.resultMessage = message
                 FreeToken.shared.logger("🏁 Cloud AI run completed with message: \(message.content)", .info)
                 await success(self.context)

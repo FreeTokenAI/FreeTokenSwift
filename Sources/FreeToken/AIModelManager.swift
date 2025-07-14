@@ -903,7 +903,7 @@ extension FreeToken {
             self.clientVersion = clientVersion
             self.modelConfig = AIModelConfiguration(from: modelConfig.config.defaultSettings)
             self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
-            self.availableModelTypes = modelConfig.modelTypes
+            self.availableModelTypes = modelConfig.modelTypes!
             self.taskQueue = AITaskQueue(isTurboMode: deviceMode == .compatibilityQuickStartMode)
         }
         

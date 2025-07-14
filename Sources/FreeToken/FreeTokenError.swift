@@ -39,6 +39,7 @@ extension FreeToken {
         case modelMustBeLoadedBeforeAddingMessage
         case cloudCompletionInvalidResponse
         case encoding(message: String? = nil)
+        case isCloudOnlyModel
         
         // MARK: - AIModelManager Class Errors:
         case unsupportedVersion
@@ -126,6 +127,7 @@ extension FreeToken.FreeTokenError {
         case .modelMustBeLoadedBeforeAddingMessage: return "modelMustBeLoadedBeforeAddingMessage"
         case .cloudCompletionInvalidResponse: return "cloudCompletionInvalidResponse"
         case .encoding(_): return "encodingError"
+        case .isCloudOnlyModel: return "isCloudOnlyModel"
 
         case .unsupportedVersion: return "unsupportedVersion"
         case .aiModelNotDownloaded: return "aiModelNotDownloaded"
@@ -211,6 +213,7 @@ extension FreeToken.FreeTokenError {
             var response = "Failed to encode the request to the server"
             response += (message != nil) ? (":\n \(message!)") : ""
             return response
+        case .isCloudOnlyModel: return "This AI model is cloud only and cannot be run on-device"
         
         case .unsupportedVersion: return "The AI model sent by the server is not supported by this client"
         case .aiModelNotDownloaded: return "AI model has not yet been downloded. Try .downloadAIModel() first"
@@ -300,6 +303,7 @@ extension FreeToken.FreeTokenError {
         case .cloudCompletionFailed(_): return 1026
         case .cloudCompletionInvalidResponse: return 1027
         case .encoding(_): return 1028
+        case .isCloudOnlyModel: return 1029
         case .unsupportedVersion: return 2000
         case .aiModelNotDownloaded: return 2001
         case .modelAlreadyLoading: return 2002
