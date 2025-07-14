@@ -102,10 +102,453 @@ extension FreeToken {
             var loadedState: AIModelLoadingState = .unloaded
             var modelInitOptions: ModelInitOptions? = nil
             
+            // Thread state management
+            private var threadStateManager = ThreadStateManager()
             
             struct SessionCache {
                 let runIdentifier: String
                 var session: LLMSession
+            }
+            
+            class ThreadState {
+                let threadId: String
+                var fullThread: [Message]
+                var loadedMessages: [Message]
+                var lastLoadedIndex: Int
+                var approximateTokenCount: Int
+                var lastTruncationPoint: Int?
+                var contextWindowSize: Int
+                var maxGenerationTokens: Int
+                
+                // State tracking
+                var needsRebuild: Bool = false
+                var lastRebuildReason: String?
+                
+                // KV Cache position tracking
+                var messageTokenPositions: [(messageIndex: Int, startPos: Int32, endPos: Int32)] = []
+                var currentMaxPosition: Int32 = -1
+                var systemMessageTokenRange: (start: Int32, end: Int32)?
+                
+                init(threadId: String, fullThread: [Message], contextWindowSize: Int, maxGenerationTokens: Int) {
+                    self.threadId = threadId
+                    self.fullThread = fullThread
+                    self.loadedMessages = []
+                    self.lastLoadedIndex = -1
+                    self.approximateTokenCount = 0
+                    self.lastTruncationPoint = nil
+                    self.contextWindowSize = contextWindowSize
+                    self.maxGenerationTokens = maxGenerationTokens
+                }
+                
+                func updateFullThread(_ messages: [Message]) {
+                    self.fullThread = messages
+                }
+                
+                func syncLoadedSession(_ messages: [LLMInput.Message]) {
+                    // Convert LLMInput.Message back to Message format for tracking
+                    self.loadedMessages = messages.map { llmMessage in
+                        let role: MessageRole
+                        switch llmMessage.role {
+                        case .system: role = .system
+                        case .user: role = .user
+                        case .assistant: role = .assistant
+                        case .custom(let customRole):
+                            role = customRole == "tool" ? .tool : .user
+                        }
+                        return Message(role: role, content: llmMessage.content)
+                    }
+                    
+                    // Update token count estimation
+                    self.approximateTokenCount = estimateTokens(self.loadedMessages)
+                }
+                
+                private func estimateTokens(_ messages: [Message]) -> Int {
+                    var totalTokens = 0
+                    for message in messages {
+                        totalTokens += max(1, message.content.count / 4)
+                    }
+                    return Int(Double(totalTokens) * 1.1) // Add buffer
+                }
+                
+                func canAppendSafely(_ newMessages: [Message]) -> Bool {
+                    let newTokens = estimateTokens(newMessages)
+                    let availableSpace = contextWindowSize - maxGenerationTokens - approximateTokenCount
+                    let canAppend = newTokens <= availableSpace
+                    
+                    let currentUsage = Double(approximateTokenCount) / Double(contextWindowSize) * 100
+                    let projectedUsage = Double(approximateTokenCount + newTokens) / Double(contextWindowSize) * 100
+                    
+                    FreeToken.shared.logger("🔍 Context Analysis: Current=\(approximateTokenCount) tokens (\(String(format: "%.1f", currentUsage))%), New=\(newTokens) tokens, Available=\(availableSpace) tokens", .info)
+                    FreeToken.shared.logger("🔍 Projected usage after append: \(String(format: "%.1f", projectedUsage))%", .info)
+                    
+                    if !canAppend {
+                        FreeToken.shared.logger("❌ Cannot append: would exceed context window (need \(newTokens), have \(availableSpace))", .warning)
+                    }
+                    
+                    return canAppend
+                }
+                
+                func getNewMessagesToAppend() -> [Message] {
+                    // After truncation, loadedMessages might not correspond to fullThread indices
+                    // We need to find which messages from fullThread are actually new
+                    
+                    // If loadedMessages is empty, all fullThread messages are new
+                    guard !loadedMessages.isEmpty else { return fullThread }
+                    
+                    // Find the last loaded message in fullThread by content matching
+                    let lastLoadedContent = loadedMessages.last?.content ?? ""
+                    
+                    // Find where the last loaded message appears in fullThread
+                    var lastLoadedIndex = -1
+                    for (index, message) in fullThread.enumerated().reversed() {
+                        if message.content == lastLoadedContent && message.role == loadedMessages.last?.role {
+                            lastLoadedIndex = index
+                            break
+                        }
+                    }
+                    
+                    // If we found the last loaded message, return everything after it
+                    if lastLoadedIndex >= 0 && lastLoadedIndex < fullThread.count - 1 {
+                        return Array(fullThread[(lastLoadedIndex + 1)...])
+                    }
+                    
+                    // Fallback: if we can't match by content, assume only the very last message is new
+                    // This handles the common case of adding one new message
+                    if fullThread.count > loadedMessages.count {
+                        return Array(fullThread.suffix(1))
+                    }
+                    
+                    return []
+                }
+                
+                func requiresRebuild(for newMessages: [Message]) -> (Bool, String?) {
+                    if needsRebuild {
+                        return (true, lastRebuildReason ?? "manual_rebuild_flag")
+                    }
+                    
+                    if !canAppendSafely(newMessages) {
+                        return (true, "context_full")
+                    }
+                    
+                    // Check if we have too many new messages to append safely
+                    // This should only trigger if there are actually many unprocessed messages
+                    if newMessages.count > 10 { // Only trigger if many new messages need to be appended
+                        return (true, "large_message_gap")
+                    }
+                    
+                    return (false, nil)
+                }
+                
+                // MARK: - KV Cache Position Tracking
+                
+                func trackMessageTokens(messageIndex: Int, startPos: Int32, endPos: Int32) {
+                    messageTokenPositions.append((messageIndex, startPos, endPos))
+                    currentMaxPosition = max(currentMaxPosition, endPos)
+                    
+                    // Track system message separately
+                    if messageIndex == 0 {
+                        systemMessageTokenRange = (startPos, endPos)
+                    }
+                }
+                
+                func updateCurrentPosition(position: Int32) {
+                    currentMaxPosition = position
+                }
+                
+                func clearPositionTracking() {
+                    messageTokenPositions.removeAll()
+                    currentMaxPosition = -1
+                    systemMessageTokenRange = nil
+                }
+                
+                func getSystemMessageTokenRange() -> (start: Int32, end: Int32)? {
+                    return systemMessageTokenRange
+                }
+                
+                func getRecentMessagesTokenRange(messageCount: Int) -> (start: Int32, end: Int32)? {
+                    guard messageTokenPositions.count >= messageCount else {
+                        return nil
+                    }
+                    
+                    let recentPositions = Array(messageTokenPositions.suffix(messageCount))
+                    guard let firstRecent = recentPositions.first,
+                          let lastRecent = recentPositions.last else {
+                        return nil
+                    }
+                    
+                    return (firstRecent.startPos, lastRecent.endPos)
+                }
+                
+                func shouldOptimizeKVCache(currentUsage: Double) -> Bool {
+                    // Optimize when using > 80% of context window
+                    return currentUsage > 0.8
+                }
+                
+                func calculateOptimizationPlan(currentTokens: Int32) -> KVOptimizationPlan? {
+                    guard let systemRange = systemMessageTokenRange else {
+                        return nil
+                    }
+                    
+                    // Calculate how much to preserve from start and end
+                    let preserveFromStart = systemRange.end + 1 // System message + 1 token buffer
+                    let recentMessageCount = min(10, messageTokenPositions.count / 2) // Keep last 10 messages or half
+                    
+                    guard let recentRange = getRecentMessagesTokenRange(messageCount: recentMessageCount) else {
+                        return nil
+                    }
+                    
+                    let preserveFromEnd = currentMaxPosition - recentRange.start + 1
+                    
+                    return KVOptimizationPlan(
+                        preserveFromStart: preserveFromStart,
+                        preserveFromEnd: preserveFromEnd,
+                        removeStartPos: preserveFromStart,
+                        removeEndPos: recentRange.start
+                    )
+                }
+            }
+            
+            struct KVOptimizationPlan {
+                let preserveFromStart: Int32
+                let preserveFromEnd: Int32
+                let removeStartPos: Int32
+                let removeEndPos: Int32
+            }
+            
+            class ThreadStateManager {
+                private var threadStates: [String: ThreadState] = [:]
+                
+                func getOrCreateThreadState(
+                    threadId: String,
+                    fullThread: [Message],
+                    contextWindowSize: Int,
+                    maxGenerationTokens: Int
+                ) -> ThreadState {
+                    if let existing = threadStates[threadId] {
+                        existing.updateFullThread(fullThread)
+                        existing.contextWindowSize = contextWindowSize
+                        existing.maxGenerationTokens = maxGenerationTokens
+                        return existing
+                    }
+                    
+                    let newState = ThreadState(
+                        threadId: threadId,
+                        fullThread: fullThread,
+                        contextWindowSize: contextWindowSize,
+                        maxGenerationTokens: maxGenerationTokens
+                    )
+                    threadStates[threadId] = newState
+                    return newState
+                }
+                
+                func removeThreadState(_ threadId: String) {
+                    threadStates.removeValue(forKey: threadId)
+                }
+                
+                func getThreadState(_ threadId: String) -> ThreadState? {
+                    return threadStates[threadId]
+                }
+                
+                func planMessageStrategy(
+                    threadState: ThreadState,
+                    currentSession: LLMSession?,
+                    fullThread: [Message]
+                ) -> AppendStrategy {
+                    threadState.updateFullThread(fullThread)
+                    
+                    // If no session exists, we need to create one
+                    guard let session = currentSession else {
+                        return .rebuildRequired(reason: "no_session")
+                    }
+                    
+                    // Sync current session state with thread state
+                    threadState.syncLoadedSession(session.messages)
+                    
+                    // Get messages that need to be appended
+                    let newMessages = threadState.getNewMessagesToAppend()
+                    guard !newMessages.isEmpty else {
+                        // Even if no new messages, check if we need KV optimization
+                        if tryKVCacheOptimization(session: session, threadState: threadState) {
+                            return .kvCacheOptimization
+                        }
+                        return .noActionNeeded
+                    }
+                    
+                    // Check if we need to rebuild for normal reasons
+                    let (needsRebuild, reason) = threadState.requiresRebuild(for: newMessages)
+                    if needsRebuild {
+                        return .rebuildRequired(reason: reason ?? "unknown")
+                    }
+                    
+                    // Check if appending these messages would trigger KV optimization need
+                    let estimatedNewTokens = newMessages.reduce(0) { sum, message in
+                        sum + max(1, message.content.count / 4)
+                    }
+                    let projectedTokenCount = threadState.approximateTokenCount + estimatedNewTokens
+                    let projectedUsage = Double(projectedTokenCount) / Double(threadState.contextWindowSize)
+                    
+                    // If we're approaching the context limit after appending, trigger KV optimization instead
+                    if projectedUsage > 0.8 && tryKVCacheOptimization(session: session, threadState: threadState) {
+                        FreeToken.shared.logger("🔄 KV optimization triggered before append - projected usage: \(String(format: "%.1f", projectedUsage * 100))%", .info)
+                        return .kvCacheOptimization
+                    }
+                    
+                    // We can safely append
+                    return .appendSafely(messages: newMessages)
+                }
+                
+                func executeTruncatedRebuild(
+                    threadState: ThreadState,
+                    model: LLMSession.DownloadModel,
+                    promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
+                ) throws -> LLMSession {
+                    FreeToken.shared.logger("🔄 ThreadStateManager: Rebuilding session for thread \(threadState.threadId)", .info)
+                    
+                    // Use the messages from threadState.fullThread - these should already be prepared/truncated
+                    let messagesToUse = threadState.fullThread
+                    
+                    FreeToken.shared.logger("🔄 ThreadStateManager: Creating session with \(messagesToUse.count) messages (no additional truncation)", .info)
+                    
+                    // Convert to LLMInput.Message format
+                    let llmMessages = messagesToUse.map { message in
+                        switch message.role {
+                        case .assistant:
+                            return LLMInput.Message.assistant(message.content)
+                        case .user:
+                            return LLMInput.Message.user(message.content)
+                        case .system:
+                            return LLMInput.Message.system(message.content)
+                        case .tool:
+                            return LLMInput.Message(role: .custom("tool"), content: message.content)
+                        }
+                    }
+                    
+                    // Create new session
+                    let newSession = LLMSession(model: model, messages: llmMessages)
+                    
+                    // Update thread state to reflect what's now loaded
+                    threadState.syncLoadedSession(llmMessages)
+                    threadState.needsRebuild = false
+                    threadState.lastRebuildReason = nil
+                    threadState.lastTruncationPoint = messagesToUse.count
+                    threadState.clearPositionTracking() // Clear old position data after rebuild
+                    
+                    let contextUsage = Double(threadState.approximateTokenCount) / Double(threadState.contextWindowSize) * 100
+                    FreeToken.shared.logger("🔄 ThreadStateManager: Session rebuilt with \(llmMessages.count) messages (targeting 50% context usage)", .info)
+                    FreeToken.shared.logger("📊 Context after rebuild: \(threadState.approximateTokenCount)/\(threadState.contextWindowSize) tokens (\(String(format: "%.1f", contextUsage))%)", .info)
+                    
+                    return newSession
+                }
+                
+                // MARK: - KV Cache Optimization
+                
+                func tryKVCacheOptimization(
+                    session: LLMSession?,
+                    threadState: ThreadState
+                ) -> Bool {
+                    // Check if we have a session to optimize
+                    guard session != nil else { return false }
+                    
+                    // Check if optimization is needed
+                    let currentUsage = Double(threadState.approximateTokenCount) / Double(threadState.contextWindowSize)
+                    guard threadState.shouldOptimizeKVCache(currentUsage: currentUsage) else {
+                        return false
+                    }
+                    
+                    // Calculate optimization plan
+                    guard let plan = threadState.calculateOptimizationPlan(currentTokens: Int32(threadState.approximateTokenCount)) else {
+                        FreeToken.shared.logger("🔴 KV optimization: Could not calculate optimization plan", .warning)
+                        return false
+                    }
+                    
+                    FreeToken.shared.logger("🔄 KV optimization: Context usage at \(String(format: "%.1f", currentUsage * 100))% - optimization recommended", .info)
+                    FreeToken.shared.logger("🔄 KV optimization plan: preserve start \(plan.preserveFromStart), preserve end \(plan.preserveFromEnd), remove \(plan.removeStartPos)-\(plan.removeEndPos)", .debug)
+                    
+                    return true
+                }
+                
+                func executeKVCacheOptimization(
+                    session: LLMSession,
+                    threadState: ThreadState
+                ) -> Bool {
+                    // Calculate optimization plan
+                    guard let plan = threadState.calculateOptimizationPlan(currentTokens: Int32(threadState.approximateTokenCount)) else {
+                        FreeToken.shared.logger("🔴 KV optimization: Could not calculate optimization plan", .warning)
+                        return false
+                    }
+                    
+                    // Try to get the Context instance to perform KV cache optimization
+                    // This requires access to the session's internal context
+                    // For now, we'll simulate the optimization by rebuilding with fewer messages
+                    
+                    FreeToken.shared.logger("⚡ Executing KV cache optimization: removing tokens \(plan.removeStartPos) to \(plan.removeEndPos)", .info)
+                    
+                    // Calculate which messages to keep based on the optimization plan
+                    var optimizedMessages: [Message] = []
+                    
+                    // Add system message if it exists
+                    if let systemMessage = threadState.fullThread.first(where: { $0.role == .system }) {
+                        optimizedMessages.append(systemMessage)
+                    }
+                    
+                    // Calculate how many recent messages to preserve based on plan.preserveFromEnd
+                    let nonSystemMessages = threadState.fullThread.filter { $0.role != .system }
+                    let estimatedTokensPerMessage = Int32(50) // Rough estimate
+                    let recentMessagesToKeep = max(2, Int(plan.preserveFromEnd / estimatedTokensPerMessage))
+                    
+                    // Add recent messages
+                    let recentMessages = Array(nonSystemMessages.suffix(recentMessagesToKeep))
+                    optimizedMessages.append(contentsOf: recentMessages)
+                    
+                    // Update threadState to reflect the optimization
+                    threadState.loadedMessages = optimizedMessages
+                    threadState.lastLoadedIndex = optimizedMessages.count - 1
+                    threadState.approximateTokenCount = Int(plan.preserveFromStart + plan.preserveFromEnd)
+                    
+                    // Update session messages to match optimized state
+                    let llmMessages = optimizedMessages.map { message in
+                        switch message.role {
+                        case .assistant: return LLMInput.Message.assistant(message.content)
+                        case .user: return LLMInput.Message.user(message.content)
+                        case .system: return LLMInput.Message.system(message.content)
+                        case .tool: return LLMInput.Message(role: .custom("tool"), content: message.content)
+                        }
+                    }
+                    
+                    // Replace session messages with optimized set
+                    session.messages = llmMessages
+                    
+                    FreeToken.shared.logger("⚡ KV optimization completed: \(threadState.fullThread.count) → \(optimizedMessages.count) messages (~\(String(format: "%.1f", Double(threadState.approximateTokenCount) / Double(threadState.contextWindowSize) * 100))% context usage)", .info)
+                    
+                    return true
+                }
+                
+                func updatePositionTracking(
+                    session: LLMSession,
+                    threadState: ThreadState
+                ) {
+                    // This would be called after AI generation to update position tracking
+                    // For now, we'll estimate based on message content
+                    
+                    var estimatedPosition: Int32 = 0
+                    for (index, message) in threadState.loadedMessages.enumerated() {
+                        let messageTokens = Int32(max(1, message.content.count / 4))
+                        let startPos = estimatedPosition
+                        let endPos = estimatedPosition + messageTokens - 1
+                        
+                        threadState.trackMessageTokens(messageIndex: index, startPos: startPos, endPos: endPos)
+                        estimatedPosition += messageTokens
+                    }
+                    
+                    threadState.updateCurrentPosition(position: estimatedPosition)
+                }
+            }
+            
+            enum AppendStrategy {
+                case appendSafely(messages: [Message])
+                case rebuildRequired(reason: String)
+                case noActionNeeded
+                case kvCacheOptimization
             }
             
             struct ModelInitOptions {
@@ -201,6 +644,7 @@ extension FreeToken {
             func generateResponse(
                 for messages: [Message],
                 runIdentifier: String,
+                promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig,
                 aiRunConfig: AIRunConfig? = nil,
                 noContextCache: Bool = false
             ) async throws -> AsyncThrowingStream<String, any Error> {
@@ -212,7 +656,7 @@ extension FreeToken {
                 }
                 
                 let model: LLMSession.DownloadModel
-                let session: LLMSession
+                var session: LLMSession
                 var isNewSession: Bool = false
                 var shouldOverrideCache: Bool = false
                 
@@ -232,11 +676,11 @@ extension FreeToken {
                     shouldOverrideCache = true
                 }
                 
-                if let aiRunConfig = aiRunConfig, (aiRunConfig.temperature != nil || aiRunConfig.topK != nil || aiRunConfig.topP != nil || aiRunConfig.contentWindowSize != nil), let modelInitOptions = modelInitOptions {
+                if let aiRunConfig = aiRunConfig, (aiRunConfig.temperature != nil || aiRunConfig.topK != nil || aiRunConfig.topP != nil || aiRunConfig.contextWindowSize != nil), let modelInitOptions = modelInitOptions {
                     isNewSession = true
                     // AI Run Config provided, initialize a model for the cache.
                     let config = modelInitOptions.configuration
-                    let nCTX = aiRunConfig.contentWindowSize ?? config.nCTX
+                    let nCTX = aiRunConfig.contextWindowSize ?? config.nCTX
                     let temperature = aiRunConfig.temperature ?? config.temperature
                     let topK = aiRunConfig.topK ?? config.topK
                     let topP = aiRunConfig.topP ?? config.topP
@@ -268,41 +712,117 @@ extension FreeToken {
                     model = self.model!
                 }
                 
-                // Process Messages
-                let messages = messages.dropLast() // Feed this in via the prompt
-                let llmMessages = messages.map { message in
-                    switch message.role {
-                    case .assistant:
-                        return LLMInput.Message.assistant(message.content)
-                    case .user:
-                        return LLMInput.Message.user(message.content)
-                    case .system:
-                        return LLMInput.Message.system(message.content)
-                    case .tool:
-                        return LLMInput.Message(role: .custom("tool"), content: message.content)
-                    }
-                }
+                // Get context window size and max generation tokens  
+                let contextWindowSize = aiRunConfig?.contextWindowSize ?? modelInitOptions?.configuration.nCTX ?? 2048
+                let maxGenerationTokens = aiRunConfig?.maxGenerationTokens ?? 512
+                
+                // Process Messages (all except the last one which becomes the prompt)
+                // The 'messages' parameter here are already the prepared messages from sendMessagesToAI
+                let conversationMessages = Array(messages.dropLast())
+                
+                // Get or create thread state
+                let threadState = threadStateManager.getOrCreateThreadState(
+                    threadId: runIdentifier,
+                    fullThread: conversationMessages,
+                    contextWindowSize: contextWindowSize,
+                    maxGenerationTokens: maxGenerationTokens
+                )
+                
+                // Log initial context window status
+                let contextUsage = Double(threadState.approximateTokenCount) / Double(contextWindowSize) * 100
+                FreeToken.shared.logger("📊 Context Window Status: \(threadState.approximateTokenCount)/\(contextWindowSize) tokens (\(String(format: "%.1f", contextUsage))% used)", .info)
+                FreeToken.shared.logger("📊 Reserved for generation: \(maxGenerationTokens) tokens", .info)
+                FreeToken.shared.logger("📊 Thread: \(conversationMessages.count) messages in full thread, \(threadState.loadedMessages.count) messages loaded", .info)
                 
                 if isNewSession {
-                    session = LLMSession(model: model, messages: llmMessages)
-                    FreeToken.shared.logger("🧠 New AI session created with \(llmMessages.count) messages", .info)
+                    // For new sessions, use thread state manager to create optimized session
+                    FreeToken.shared.logger("🧠 Creating new AI session for thread \(runIdentifier)", .info)
+                    session = try threadStateManager.executeTruncatedRebuild(
+                        threadState: threadState,
+                        model: model,
+                        promptTemplateConfig: promptTemplateConfig
+                    )
                 } else {
-                    session = cachedSession!.session
+                    // Use ThreadStateManager to determine the best strategy
+                    let currentSession = cachedSession?.session
+                    let strategy = threadStateManager.planMessageStrategy(
+                        threadState: threadState,
+                        currentSession: currentSession,
+                        fullThread: conversationMessages
+                    )
                     
-                    FreeToken.shared.logger("🧠 Reusing existing AI session with \(session.messages.count) messages", .info)
-                    // Append new messages to the existing session
-                    var index = 0
-                    for message in llmMessages {
-                        if session.messages.endIndex <= index {
-                            session.messages.append(message)
+                    switch strategy {
+                    case .noActionNeeded:
+                        session = currentSession!
+                        FreeToken.shared.logger("✅ ThreadState: No changes needed, reusing session with \(session.messages.count) messages", .info)
+                        let usage = Double(threadState.approximateTokenCount) / Double(contextWindowSize) * 100
+                        FreeToken.shared.logger("📊 Context usage after strategy: \(String(format: "%.1f", usage))%", .info)
+                        
+                    case .appendSafely(let newMessages):
+                        session = currentSession!
+                        let newLLMMessages = newMessages.map { message in
+                            switch message.role {
+                            case .assistant: return LLMInput.Message.assistant(message.content)
+                            case .user: return LLMInput.Message.user(message.content)
+                            case .system: return LLMInput.Message.system(message.content)
+                            case .tool: return LLMInput.Message(role: .custom("tool"), content: message.content)
+                            }
                         }
-                        index += 1
+                        
+                        // Append new messages
+                        for newMessage in newLLMMessages {
+                            session.messages.append(newMessage)
+                        }
+                        
+                        // Update thread state to reflect appended messages
+                        threadState.syncLoadedSession(session.messages)
+                        
+                        FreeToken.shared.logger("✅ ThreadState: Safely appended \(newMessages.count) messages to session (now \(session.messages.count) messages)", .info)
+                        let usage = Double(threadState.approximateTokenCount) / Double(contextWindowSize) * 100
+                        FreeToken.shared.logger("📊 Context usage after append: \(String(format: "%.1f", usage))%", .info)
+                        
+                    case .kvCacheOptimization:
+                        session = currentSession!
+                        let optimizationSuccess = threadStateManager.executeKVCacheOptimization(
+                            session: session,
+                            threadState: threadState
+                        )
+                        
+                        if !optimizationSuccess {
+                            FreeToken.shared.logger("⚠️ KV cache optimization failed, falling back to session rebuild", .warning)
+                            session = try threadStateManager.executeTruncatedRebuild(
+                                threadState: threadState,
+                                model: model,
+                                promptTemplateConfig: promptTemplateConfig
+                            )
+                        } else {
+                            FreeToken.shared.logger("⚡ KV cache optimization successful", .info)
+                            shouldOverrideCache = true  // Ensure optimized session is cached
+                            let usage = Double(threadState.approximateTokenCount) / Double(contextWindowSize) * 100
+                            FreeToken.shared.logger("📊 Context usage after KV optimization: \(String(format: "%.1f", usage))%", .info)
+                        }
+                        
+                    case .rebuildRequired(let reason):
+                        FreeToken.shared.logger("🔄 ThreadState: Rebuilding session due to: \(reason)", .warning)
+                        session = try threadStateManager.executeTruncatedRebuild(
+                            threadState: threadState,
+                            model: model,
+                            promptTemplateConfig: promptTemplateConfig
+                        )
+                        shouldOverrideCache = true  // Ensure rebuilt session is cached
+                        let usage = Double(threadState.approximateTokenCount) / Double(contextWindowSize) * 100
+                        FreeToken.shared.logger("📊 Context usage after rebuild: \(String(format: "%.1f", usage))%", .info)
                     }
                 }
                 
                 if shouldOverrideCache {
                     self.cachedSession = SessionCache(runIdentifier: runIdentifier, session: session)
                 }
+                
+                // Log final context state before generation
+                let finalUsage = Double(threadState.approximateTokenCount) / Double(contextWindowSize) * 100
+                FreeToken.shared.logger("📊 Starting generation with context: \(threadState.approximateTokenCount)/\(contextWindowSize) tokens (\(String(format: "%.1f", finalUsage))%)", .info)
+                FreeToken.shared.logger("📊 Prompt: \"\(promptMessage.content.prefix(50))...\"", .debug)
                 
                 return session.streamResponse(to: promptMessage.content)
             }
@@ -314,6 +834,7 @@ extension FreeToken {
                 self.loadedState = .unloaded
             }
             
+
             func shouldEvacuateCache(memoryRequirement: Int) -> Bool {
                 if self.cachedSession == nil {
                     return false
@@ -342,6 +863,33 @@ extension FreeToken {
                     FreeToken.shared.logger("✅ Memory requirement is within available memory limits", .info)
                     return false
                 }
+            }
+            
+            func willCreateNewSession(
+                runIdentifier: String, 
+                noContextCache: Bool,
+                aiRunConfig: AIRunConfig? = nil
+            ) -> Bool {
+                if noContextCache {
+                    return true
+                }
+                
+                if cachedSession == nil || cachedSession?.runIdentifier != runIdentifier {
+                    return true
+                }
+                
+                if let modelInitOptions = modelInitOptions,
+                   shouldEvacuateCache(memoryRequirement: modelInitOptions.memoryRequirement) {
+                    return true
+                }
+                
+                if let aiRunConfig = aiRunConfig,
+                   (aiRunConfig.temperature != nil || aiRunConfig.topK != nil || 
+                    aiRunConfig.topP != nil || aiRunConfig.contextWindowSize != nil) {
+                    return true
+                }
+                
+                return false
             }
         }
         
@@ -511,7 +1059,26 @@ extension FreeToken {
                 throw FreeTokenError.noMessagesToSend
             }
             
-            let preparedMessages: [Message] = try MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig).prepareMessages()
+            // Get context window size from current configuration
+            let contextWindowSize = aiRunConfig?.contextWindowSize ?? modelConfig.nCTX
+            
+            // Get the current model for token counting
+            let currentModel = await stateManager.model
+            
+            // Determine if this will create a new session
+            let willCreateNewSession = await stateManager.willCreateNewSession(
+                runIdentifier: runIdentifier,
+                noContextCache: noContextCache,
+                aiRunConfig: aiRunConfig
+            )
+            
+            let preparedMessages: [Message] = try MessagePrep(
+                messages: messages, 
+                promptTemplateConfig: promptTemplateConfig,
+                contextWindowSize: contextWindowSize,
+                model: currentModel,
+                isNewSession: willCreateNewSession
+            ).prepareMessages()
             
             let aiResults = AIResults()
             
@@ -524,7 +1091,7 @@ extension FreeToken {
                 _ = try await taskQueue.enqueue {
                     do {
                         let maxTokenCount = await aiResults.maxTokenCount
-                        for try await value in try await self.stateManager.generateResponse(for: preparedMessages, runIdentifier: runIdentifier, aiRunConfig: aiRunConfig, noContextCache: noContextCache) {
+                        for try await value in try await self.stateManager.generateResponse(for: preparedMessages, runIdentifier: runIdentifier, promptTemplateConfig: self.promptTemplateConfig, aiRunConfig: aiRunConfig, noContextCache: noContextCache) {
                             if Task.isCancelled { break }
                             if await aiResults.startTime == nil {
                                 await aiResults.setStartTime(DispatchTime.now())

@@ -841,14 +841,14 @@ extension FreeToken {
     
     public struct AIRunConfig: Sendable {
         let maxGenerationTokens: Int?
-        let contentWindowSize: Int?
+        let contextWindowSize: Int?
         let topK: Int?
         let topP: Float?
         let temperature: Float?
         
         public init(maxGenerationTokens: Int? = nil, contentWindowSize: Int? = nil, topK: Int? = nil, topP: Float? = nil, temperature: Float? = nil) {
             self.maxGenerationTokens = maxGenerationTokens
-            self.contentWindowSize = contentWindowSize
+            self.contextWindowSize = contentWindowSize
             self.topK = topK
             self.topP = topP
             self.temperature = temperature

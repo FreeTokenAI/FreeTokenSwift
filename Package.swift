@@ -31,9 +31,9 @@ let package = Package(
                 .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
                 .product(name: "Transformers", package: "swift-transformers"),
                 .product(name: "Gzip", package: "GzipSwift"),
-                .product(name: "LocalLLMClient", package: "localllmclient"),
-                .product(name: "LocalLLMClientLlama", package: "localllmclient"),
-                .product(name: "LocalLLMClientMLX", package: "localllmclient"),
+                .product(name: "LocalLLMClient", package: "LocalLLMClient"),
+                .product(name: "LocalLLMClientLlama", package: "LocalLLMClient"),
+                .product(name: "LocalLLMClientMLX", package: "LocalLLMClient"),
                 .product(name: "LDSwiftEventSource", package: "swift-eventsource")
             ],
             path: "Sources/FreeToken"

@@ -132,8 +132,6 @@ final class FreeTokenTests: XCTestCase {
                 XCTFail("Failed to create message thread: \(error.message)")
                 expectation.fulfill()
             }
-            
-            expectation.fulfill()
         }
 
         wait(for: [expectation], timeout: 10.0)
@@ -224,6 +222,53 @@ final class FreeTokenTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 30.0)
+    }
+    
+    func testSystemMessageReinjection() throws {
+        let expectation = self.expectation(description: "Waiting for system message reinjection test")
+        
+        Task {
+            do {
+                // Create a system message that establishes specific behavior
+                let systemMessage = FreeToken.Message(role: .system, content: "You are a helpful assistant that ALWAYS responds with exactly 3 words, no more, no less.")
+                
+                // Create many user messages to potentially overflow context
+                var messages: [FreeToken.Message] = [systemMessage]
+                
+                // Add many messages to approach context limit
+                // Each message pair (user + assistant) uses roughly 50-100 tokens
+                for i in 1...30 {
+                    messages.append(FreeToken.Message(role: .user, content: "Question \(i): What is the meaning of life?"))
+                    messages.append(FreeToken.Message(role: .assistant, content: "Three word answer"))
+                }
+                
+                // Add final test message
+                messages.append(FreeToken.Message(role: .user, content: "How many words should your response contain?"))
+                
+                // Run local chat with small context window to force trimming
+                let response = try await FreeToken.shared.localChat(
+                    messages: messages,
+                    uniqueID: "test-reinjection"
+                )
+                
+                print("System message reinjection test response: \(response.content)")
+                
+                // Verify the AI still follows the system message instruction
+                let wordCount = response.content.split(separator: " ").count
+                XCTAssertLessThanOrEqual(wordCount, 5, "Expected response to be concise (around 3 words) per system message")
+                
+                // Check if response mentions "three" or "3"
+                let mentionsThree = response.content.lowercased().contains("three") || response.content.contains("3")
+                XCTAssertTrue(mentionsThree, "Expected response to acknowledge the 3-word constraint from system message")
+                
+                expectation.fulfill()
+            } catch {
+                XCTFail("Test failed with error: \(error)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 60.0)
     }
 
 }

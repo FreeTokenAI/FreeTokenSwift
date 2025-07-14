@@ -727,8 +727,15 @@ public class FreeToken: @unchecked Sendable {
         let preparedMessages: [Message]
         do {
             let promptTemplateConfig = deviceDetails!.aiModel.config.promptTemplateConfig
+            let contextWindowSize: Int
             
-            preparedMessages = try MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig).prepareMessages()
+            if let size = aiRunConfig?.contextWindowSize {
+                contextWindowSize = size
+            } else {
+                contextWindowSize = deviceDetails!.aiModel.config.defaultSettings.contextWindowSize
+            }
+            
+            preparedMessages = try MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig, contextWindowSize: contextWindowSize).prepareMessages()
         } catch {
             FreeToken.shared.logger("🔴 Error preparing messages for chat completion: \(error.localizedDescription)", .error)
             await errorCallback(error as! FreeTokenError)
