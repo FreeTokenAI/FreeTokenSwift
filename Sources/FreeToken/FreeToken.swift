@@ -1279,7 +1279,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         guard deviceDetails?.aiModel.cloudOnly == false else {
-            await errorCompletion(FreeTokenError.isCloudOnlyModel)
+            await successCompletion(.cloudOnly)
             return
         }
         

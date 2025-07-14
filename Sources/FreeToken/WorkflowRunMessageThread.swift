@@ -280,7 +280,7 @@ extension FreeToken {
     final class RunAIModelLocally: WorkflowStep, @unchecked Sendable {
         let context: RunMessageThreadContext
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
-        let aiModelManager: AIModelManager
+        let aiModelManager: AIModelManager?
         let aiRunConfig: AIRunConfig?
         let messageThread: MessageThread
         
@@ -288,7 +288,7 @@ extension FreeToken {
             let context = context as! RunMessageThreadContext
             self.context = context
             self.chatStatusStream = context.chatStatusStream
-            self.aiModelManager = context.aiModelManager!
+            self.aiModelManager = context.aiModelManager
             self.aiRunConfig = context.aiRunConfig
             self.messageThread = context.messageThread!
         }
@@ -312,6 +312,8 @@ extension FreeToken {
             
             let profiler = Profiler()
             do {
+                let aiModelManager = context.aiModelManager!
+                
                 FreeToken.shared.logger("🏁 Running message thread locally with ID: \(context.messageThreadID)", .info)
                 (resultText, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: messageThread.id, aiRunConfig: aiRunConfig) { tokens in
                     await self.chatStatusStream?(tokens, .streaming_tokens)

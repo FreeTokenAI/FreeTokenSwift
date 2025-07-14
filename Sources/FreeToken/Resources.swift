@@ -757,6 +757,7 @@ extension FreeToken {
         case loaded
         case failed
         case notAICapable
+        case cloudOnly
     }
     
     public class Message: @unchecked Sendable {
