@@ -4,7 +4,7 @@ import Foundation
 public class FreeToken: @unchecked Sendable {
     static public let shared = FreeToken()
     
-
+    
     public var isConfigured: Bool {
         get {
             return isClientConfigured()
@@ -12,35 +12,33 @@ public class FreeToken: @unchecked Sendable {
     }
     
     let clientVersion = "1.0.0"
-    #if os(iOS)
+#if os(iOS)
     let clientType = "iOS"
-    #elseif os(macOS)
+#elseif os(macOS)
     let clientType = "macOS"
-    #endif
+#endif
     let telemetryDataVersion = 1
     let httpClient = HTTPClient()
     let messagesManager: MessagesManager
+    let aiModelsManager: AIModelsManager = AIModelsManager()
+    
     var baseURL: URL? = nil
     var appToken: String? = nil
     var deviceSessionToken: String? = nil
     var deviceDetails: Codings.ShowDeviceSessionResponse? = nil
     var aiModelManager: AIModelManager? {
         get {
-            if _aiModelManager != nil { return self._aiModelManager } // Memoized
-            if isDeviceRegistered() == false { return nil } // Device not registered
-            if deviceDetails!.aiModel.cloudOnly == true { return nil } // Cloud only model
-            self._aiModelManager = AIModelManager(modelConfig: deviceDetails!.aiModel, clientVersion: clientVersion, deviceMode: deviceMode!)
-            return self._aiModelManager
-        }
-        set(manager) {
-            self._aiModelManager = manager
+            return aiModelsManager.defaultManager
         }
     }
-    
-    private var _aiModelManager: AIModelManager? = nil
+    var deviceManager: DeviceManager? {
+        get {
+            return aiModelsManager.defaultDeviceManager
+        }
+    }
+            
     var documentChunkSize: Int? = nil
     var documentChunkOverlapSize: Int? = nil
-    var deviceManager: DeviceManager? = nil
     var documentManager: DocumentManager? = nil
     
     let encryptionManager = EncryptionManager()
@@ -51,7 +49,7 @@ public class FreeToken: @unchecked Sendable {
         case privacyMode = "privacy"
         case compatibilityMode = "compatibility"
         case compatibilityQuickStartMode = "compatibility_quick_start"
-
+        
         var isCompatibilityMode: Bool {
             switch self {
             case .compatibilityMode, .compatibilityQuickStartMode:
@@ -120,7 +118,7 @@ public class FreeToken: @unchecked Sendable {
         if let baseURL = baseURL {
             self.baseURL = baseURL
         }
-
+        
         FreeTokenLogger.shared.configure(logLevel: logLevel)
         
         return self
@@ -147,7 +145,7 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Throws: An error if the encryption or decryption process fails.
     public func privacyModeEncryption(encrypt encryptCallback: @escaping (_ encrypt: String) -> String, decrypt decryptCallback: @escaping (_ decrypt: String) -> String) throws {
-
+        
         self.encryptionManager.enableEncryption(encryptor: encryptCallback, decryptor: decryptCallback)
     }
     
@@ -171,7 +169,7 @@ public class FreeToken: @unchecked Sendable {
     ///   - error: A closure that is executed if the call failed.
     ///
     /// - Returns: Void
-    public func registerDeviceSession(scope: String, success: @escaping @Sendable () async -> Void, error: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    public func registerDeviceSession(scope: String, success successCallback: @escaping @Sendable () async -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void) async {
         let profiler = Profiler()
         
         // Determine Device Capabilities
@@ -184,36 +182,50 @@ public class FreeToken: @unchecked Sendable {
                 
                 if self.deviceMode?.isPrivacyMode == true, self.encryptionManager.isEncryptionEnabled == false {
                     // Require these to be set before moving forward.
-                    await error(FreeTokenError.noEncryptOrDecryptDefinedInPrivacyMode)
+                    await errorCallback(FreeTokenError.noEncryptOrDecryptDefinedInPrivacyMode)
                     return
                 }
                 if self.deviceMode?.isCompatibilityMode == true, self.encryptionManager.isEncryptionEnabled == true {
-                    await error(FreeTokenError.encryptOrDecryptDefinedInCompatibilityMode)
+                    await errorCallback(FreeTokenError.encryptOrDecryptDefinedInCompatibilityMode)
                     return
                 }
                 
                 self.deviceSessionToken = response.token
                 self.deviceDetails = response
                 
-                self.deviceManager = DeviceManager(memoryRequirement: response.aiModel.clientsConfig["iOS"]!.requiredMemoryBytes)
-                
-                if self.deviceManager?.isAICapable == false, self.deviceMode?.isPrivacyMode == true {
-                    await error(FreeTokenError.deviceIncapableOfAiInPrivacyMode)
-                    return
-                }
-                
                 EmbeddingManager.shared.config(modelConfig: response.embeddingModel)
                 
                 self.documentManager = DocumentManager(chunkSize: response.documentsConfig.documentChunkSize, overlapSize: response.documentsConfig.documentChunkOverlapSize)
                 
-                FreeToken.shared.logger("Device registered successfully", .info)
+                if response.aiModel.cloudOnly == false {
+                    // Initialize the AI Model Manager
+                    do {
+                        _ = try self.aiModelsManager.addManager(modelConfig: response.aiModel, clientVersion: self.clientVersion, deviceMode: self.deviceMode!, isDefault: true)
+                    } catch {
+                        FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager: \(error.localizedDescription)", .error)
+                        await errorCallback(error as! FreeToken.FreeTokenError)
+                        profiler.end(eventType: Profiler.EventType.registerDeviceSession, isSuccess: false, errorMessage: error.localizedDescription)
+                        return
+                    }
+                    
+                    let deviceManager = self.aiModelsManager.getDeviceManager(for: response.aiModel.code)
+                    
+                    if deviceManager?.isAICapable == false, self.deviceMode?.isPrivacyMode == true {
+                        FreeToken.shared.logger("🔴 Device is not capable of running AI models in privacy mode", .error)
+                        await errorCallback(FreeTokenError.deviceIncapableOfAiInPrivacyMode)
+                        return
+                    }
+                } else {
+                    FreeToken.shared.logger("⏭️ AI Model is cloud-only, skipping local model initialization.", .info)
+                }
+                FreeToken.shared.logger("📋 Device registered successfully", .info)
                 
                 profiler.end(eventType: Profiler.EventType.registerDeviceSession, isSuccess: true)
-                await success()
+                await successCallback()
             case .failure(let errorResponse):
                 FreeToken.shared.logger("Failed to register device: \(errorResponse.message)", .error)
                 profiler.end(eventType: .registerDeviceSession, isSuccess: false, errorMessage: errorResponse.message)
-                await error(errorResponse)
+                await errorCallback(errorResponse)
             }
         }
     }
@@ -232,7 +244,7 @@ public class FreeToken: @unchecked Sendable {
     public func resetDevice() throws {
         deviceDetails = nil
         deviceSessionToken = nil
-        aiModelManager = nil
+        aiModelsManager.reset()
         deviceMode = nil
         encryptionManager.reset()
     }
@@ -262,12 +274,12 @@ public class FreeToken: @unchecked Sendable {
     }
     
     public func deleteAIModelCache() async {
-        #if os(macOS) || os(Linux)
-            let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".localllmclient")
-        #else
-            let defaultRootDirectory = URL.documentsDirectory.appending(path: ".localllmclient")
-        #endif
-
+#if os(macOS) || os(Linux)
+        let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".localllmclient")
+#else
+        let defaultRootDirectory = URL.documentsDirectory.appending(path: ".localllmclient")
+#endif
+        
         await aiModelManager?.unloadModel()
         await aiModelManager?.stateManager.setDownloadState(.notDownloaded)
         
@@ -303,38 +315,103 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: Void
     public func downloadAIModel(
-        success successCallback: @escaping @Sendable (_ isLocalAI: Bool) -> Void,
-        error errorCallback: @escaping @Sendable (FreeTokenError) -> Void,
+        modelCode: String? = nil,
+        success successCallback: @escaping @Sendable (_ state: DownloadedState) async -> Void,
+        error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void,
         progressPercent: Optional<@Sendable (_ progressPercent: Double) -> Void> = nil
     ) async {
         guard isDeviceRegistered() else {
-            errorCallback(FreeTokenError.deviceNotRegistered)
+            await errorCallback(FreeTokenError.deviceNotRegistered)
             return
         }
         
-        guard self.deviceDetails?.aiModel.cloudOnly == false else {
-            FreeToken.shared.logger("⏭️ AI model is cloud-only skipping download.", .error)
-            successCallback(false)
-            return
+        var modelCode = modelCode
+        
+        if modelCode == nil {
+            // Use the default model code if nothing is passed in
+            modelCode = deviceDetails?.aiModel.code
         }
         
-        let aiModelManager = self.aiModelManager!
-        let deviceManager = self.deviceManager!
-        
+        let isDefaultModelCode = (modelCode == deviceDetails?.aiModel.code)
         progressPercent?(0.0)
-        
-        if await aiModelManager.stateManager.getDownloadState() == .downloaded {
-            FreeToken.shared.logger("Model already downloded", .info)
-            successCallback(true)
-            return
+
+        // Download a specific model by initializing a new AIModelManager
+        if let modelManager = aiModelsManager.getManager(for: modelCode!), let deviceManager = aiModelsManager.getDeviceManager(for: modelCode!) {
+            if await modelManager.stateManager.getDownloadState() == .downloaded {
+                FreeToken.shared.logger("⏭️ Model \(modelCode!) already downloded, skipping download", .info)
+                progressPercent?(1.0)
+                await successCallback(.downloaded)
+                return
+            }
+            
+            guard deviceManager.isAICapable else {
+                FreeToken.shared.logger("⏭️ Device does not meet AI model requirements for model \(modelCode!), skipping AI model download", .info)
+                await successCallback(.aiNotSupported)
+                return
+            }
+            
+            do {
+                let wasSuccess = try await modelManager.downloadIfNeeded(progress: progressPercent)
+                if wasSuccess {
+                    FreeToken.shared.logger("⬇️ Model \(modelManager.modelCode) downloaded successfully", .info)
+                    await successCallback(.downloaded)
+                } else {
+                    FreeToken.shared.logger("🔴 Model \(modelManager.modelCode) did not download successfully", .error)
+                    await errorCallback(FreeTokenError.aiModelDownload)
+                }
+            } catch {
+                FreeToken.shared.logger("🔴 Failed to download AI model for code \(modelCode!): \(error.localizedDescription)", .error)
+                await errorCallback(error as! FreeTokenError)
+            }
+        } else {
+            // Initialize a new AIModelManager for the specific model code
+            // Get model details by code
+            await getAIModel(modelCode: modelCode!) { aiModel in
+                if aiModel.cloudOnly {
+                    FreeToken.shared.logger("🔴 AI model \(aiModel.code) is cloud-only skipping download.", .error)
+                    await errorCallback(FreeTokenError.isCloudOnlyModel)
+                    return
+                }
+                
+                do {
+                    let modelManager = try self.aiModelsManager.addManager(modelConfig: aiModel.coding, clientVersion: self.clientVersion, deviceMode: self.deviceMode!, isDefault: isDefaultModelCode)
+                    
+                    let deviceManager = self.aiModelsManager.getDeviceManager(for: aiModel.code)! // Should always have a device manager since it was just added
+                    
+                    // Check if the device is capable of running AI models
+                    guard deviceManager.isAICapable else {
+                        FreeToken.shared.logger("⏭️ Device does not meet AI model requirements for model \(aiModel.code), skipping AI model download", .info)
+                        await successCallback(.aiNotSupported)
+                        return
+                    }
+                    
+                    let wasSuccess = try await modelManager.downloadIfNeeded(progress: progressPercent)
+                    
+                    if wasSuccess {
+                        FreeToken.shared.logger("⬇️ Model \(aiModel.code) downloaded successfully", .info)
+                        await successCallback(.downloaded)
+                    } else {
+                        FreeToken.shared.logger("🔴 Model \(aiModel.code) did not download successfully", .error)
+                        await errorCallback(FreeTokenError.aiModelDownload)
+                    }
+                } catch {
+                    // Failed to add AI model manager
+                    FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager for model code \(aiModel.code): \(error.localizedDescription)", .error)
+                    await errorCallback(error as! FreeTokenError)
+                }
+            } error: { error in
+                await errorCallback(error)
+            }
         }
-        
-        if deviceManager.isAICapable == false {
-            FreeToken.shared.logger("Cannot download AI model as AI is not supported on this device.", .error)
-            successCallback(false)
-            return
-        }
+        downloadEmbeddingModel()
+    }
     
+    private func downloadEmbeddingModel() {
+        guard EmbeddingManager.shared.modelState != .ready || EmbeddingManager.shared.modelState != .downloading else {
+            FreeToken.shared.logger("⏭️ Skipping downloading of embedding model as it's in state: \(EmbeddingManager.shared.modelState)", .info)
+            return
+        }
+        
         // Download Embedding Model - Detached from main download.
         Task.detached {
             @Sendable func attempt(_ remainingTries: Int) async {
@@ -358,23 +435,81 @@ public class FreeToken: @unchecked Sendable {
                     }
                 }
             }
-
+            
             await attempt(3)
         }
+    }
+    
+    /// List all available AI models
+    ///
+    /// ```
+    ///    await client.listAIModels(success: { AIModels in
+    ///       // Successfully listed AI models
+    ///     }, error: { error in
+    ///       // Failed to list AI models
+    ///     })
+    /// ```
+    ///
+    /// > Note: This method retrieves all AI models available in the FreeToken, both cloud and local supported models.
+    ///
+    /// > Tip: Use this to retrieve model codes for use in other methods
+    ///
+    /// - Parameters:
+    ///   - success: A closure that is executed when the AI models are successfully listed.
+    ///   - error: A closure that is executed if there is an error during the listing of AI models.
+    /// - Returns: Void
+    public func listAIModels(success successCompletion: @escaping @Sendable (_ aiModels: [AIModel]) async -> Void, error errorCompletion: @escaping @Sendable (_ error: FreeTokenError) async -> Void) async {
+        guard isDeviceRegistered() else {
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
+            return
+        }
         
-        // Download the AI model
-        do {
-            let result = try await aiModelManager.downloadIfNeeded(progress: progressPercent)
-            if result == true {
-                FreeToken.shared.logger("Model downloaded successfully", .info)
-                successCallback(true)
-            } else {
-                FreeToken.shared.logger("Model did not download successfully", .error)
-                errorCallback(FreeTokenError.aiModelDownload)
+        
+        let path = "ai_models"
+        await fetchResource(path: path, responseType: Codings.AIModelsResponse.self) { result in
+            switch result {
+            case .success(let response):
+                let aiModels = response.aiModels.map { AIModel(from: $0) }
+                await successCompletion(aiModels)
+            case .failure(let error):
+                await errorCompletion(error)
             }
-        } catch {
-            FreeToken.shared.logger("Failed to download AI model: \(error.localizedDescription)", .error)
-            errorCallback(FreeTokenError.aiModelDownload)
+        }
+    }
+    
+    /// Get AI Model by Code
+    ///
+    /// ```
+    ///   await client.getAIModel(modelCode: "model-code") { aiModel in
+    ///   // aiModel is an AIModel object
+    ///   }, error: { error in
+    ///   // Failed to get AI model
+    ///   })
+    /// ```
+    ///
+    /// - Parameters:
+    ///  - modelCode: The code of the AI model to retrieve.
+    ///  - success: A closure that is executed when the AI model is successfully retrieved.
+    ///  - error: A closure that is executed if there is an error during the retrieval of the AI model.
+    /// - Returns: Void
+    public func getAIModel(modelCode: String, success successCompletion: @escaping @Sendable (_ aiModel: AIModel) async -> Void, error errorCompletion: @escaping @Sendable (_ error: FreeTokenError) async -> Void) async {
+        guard isDeviceRegistered() else {
+            FreeToken.shared.logger("Device not registered. Cannot fetch AI model.", .error)
+            return
+        }
+        
+        
+        // URL escape the model code to handle special characters
+        let path = "ai_models/\(modelCode.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelCode)"
+        await fetchResource(path: path, responseType: Codings.AiModelResponse.self) { result in
+            switch result {
+            case .success(let response):
+                let aiModel = AIModel(from: response)
+                await successCompletion(aiModel)
+            case .failure(let error):
+                FreeToken.shared.logger("Failed to fetch AI Model: \(error.message)", .error)
+                await errorCompletion(error)
+            }
         }
     }
     
@@ -495,7 +630,7 @@ public class FreeToken: @unchecked Sendable {
     ///     })
     /// ```
     ///
-    /// > Note: Created messages are not immediately sent to the AI. You must call ``runMessageThread(id:documentSearchScope:forceCloudRun:completion:)``
+    /// > Note: Created messages are not immediately sent to the AI. You must call ``runMessageThread``
     /// > to run this on the AI.
     ///
     /// > Note: Messages are automatically indexed for reference in large message threads that will not fit in the AI's context window.
@@ -589,9 +724,9 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -601,20 +736,36 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, await aiModelManager?.stateManager.getLoadedState() == .loaded, deviceManager?.isTooHot() == false, (modelCode == nil || self.deviceDetails?.aiModel.code == modelCode)  {
-            // Generate local completion
-            await generateLocalCompletion(prompt: prompt, aiRunConfig: aiRunConfig) { completion in
-                successCompletion(completion)
-            } error: { error in
-                errorCompletion(error)
+        let aiModelManager: AIModelManager?
+        let deviceManager: DeviceManager?
+        
+        // Try to use the AI Model Manager for the specified model code
+        if let modelCode = modelCode {
+            if let modelManager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = modelManager
+                deviceManager = aiModelsManager.getDeviceManager(for: modelCode)
+            } else {
+                FreeToken.shared.logger("⏭️ Completion called for model code \(modelCode) - model not loaded, running in cloud.", .warning)
+                // Cloud Completion with model code
+                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+                return
             }
+        } else {
+            // Run with Default AI Model Manager
+            aiModelManager = self.aiModelManager
+            deviceManager = self.deviceManager
+        }
+        
+        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, await aiModelManager?.stateManager.getLoadedState() == .loaded, deviceManager?.isTooHot() == false  {
+            // Generate local completion
+            await generateLocalCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
             return
         } else {
             // Generate cloud completion
             if self.deviceMode?.isPrivacyMode == false {
-                await generateCloudCompletion(prompt: prompt, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
             } else {
-                errorCompletion(FreeTokenError.cloudCompletionPrivacyMode)
+                await errorCompletion(FreeTokenError.cloudCompletionPrivacyMode)
             }
         }
     }
@@ -642,9 +793,9 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
@@ -660,11 +811,11 @@ public class FreeToken: @unchecked Sendable {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.generateCloudCompletion, isSuccess: true)
                 FreeToken.shared.logger("Completion generated succesfully", .info)
-                successCompletion(Completion(from: response))
+                await successCompletion(Completion(from: response))
             case .failure(let error):
                 profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: error.message)
                 FreeToken.shared.logger("Completion failed to generate", .error)
-                errorCompletion(error)
+                await errorCompletion(error)
             }
         }
     }
@@ -685,30 +836,54 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Parameters:
     ///     - prompt: Prompt to have the AI complete
+    ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface
     ///     - maxTokens: Optional maximum number of tokens to generate in the completion
     ///     - success: A closure that is called after the successful call to the AI
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateLocalCompletion(prompt: String, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func generateLocalCompletion(prompt: String, modelCode: String? = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
         guard self.deviceDetails?.aiModel.cloudOnly == false else {
-            errorCompletion(FreeTokenError.isCloudOnlyModel)
+            await errorCompletion(FreeTokenError.isCloudOnlyModel)
             return
         }
         
-        guard await self.aiModelManager?.stateManager.getDownloadState() == .downloaded else {
-            errorCompletion(FreeTokenError.aiModelNotDownloaded)
+        let aiModelManager: AIModelManager
+        
+        if let modelCode = modelCode {
+            if let modelManager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = modelManager
+            } else {
+                // Model not loaded
+                await errorCompletion(FreeTokenError.aiModelNotDownloaded)
+                return
+            }
+        } else {
+            // Use the default AI Model Manager
+            aiModelManager = self.aiModelManager!
+        }
+        
+        guard await aiModelManager.stateManager.getDownloadState() == .downloaded else {
+            await errorCompletion(FreeTokenError.aiModelNotDownloaded)
+            return
+        }
+        
+        guard await aiModelManager.stateManager.getLoadedState() == .loaded else {
+            await errorCompletion(FreeTokenError.aiModelNotLoaded)
+            return
+        }
+        
+        guard deviceManager?.isTooHot() == false else {
+            await errorCompletion(FreeTokenError.isTooHot)
             return
         }
 
         let profiler = Profiler()
-        
-        let aiModelManager = self.aiModelManager!
         
         do {
             let uuid = UUID().uuidString
@@ -720,15 +895,15 @@ public class FreeToken: @unchecked Sendable {
             let completion = Completion(response: response)
 
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: usage)
-            successCompletion(completion)
+            await successCompletion(completion)
         } catch {
             if error as? FreeTokenError == .aiQueueTimeout, self.deviceMode?.isQuickStartMode == true {
                 // Queue is taking too long, send this to the cloud
-                await generateCloudCompletion(prompt: prompt, modelCode: nil, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
             } else {
                 let error = FreeTokenError.encoding(message: error.localizedDescription)
                 profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
-                errorCompletion(error)
+                await errorCompletion(error)
             }
         }
     }
@@ -1187,20 +1362,33 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        // Workflow Context
+        let effectiveForceCloudRun: Bool
         
-        var effectiveForceCloudRun: Bool
         if let deviceDetails = deviceDetails, deviceDetails.forceCloudRun == true {
             effectiveForceCloudRun = true
         } else {
             effectiveForceCloudRun = forceCloudRun ?? false
         }
         
-        if let modelCode = modelCode, modelCode != deviceDetails?.aiModel.code {
-            FreeToken.shared.logger("☁️ Model code does not match session model - forcing run to the cloud ⬆️", .info)
-            effectiveForceCloudRun = true
+        var aiModelManager: AIModelManager? = nil
+        
+        if effectiveForceCloudRun == false {
+            if let modelCode = modelCode {
+                if let manager = aiModelsManager.getManager(for: modelCode) {
+                    // Found a manager!
+                    aiModelManager = manager
+                } else {
+                    // Return an error since the model code is not loaded
+                    await errorCompletion(FreeTokenError.aiModelNotDownloaded)
+                    return
+                }
+            } else {
+                // No model code provided - use default AIModelManager
+                aiModelManager = self.aiModelManager
+            }
         }
         
+        // Workflow Context
         let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: effectiveForceCloudRun, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, toolRunOnly: true, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream)
         
         // Workflow Steps
@@ -1237,7 +1425,10 @@ public class FreeToken: @unchecked Sendable {
                 } else {
                     profilerEventType = .runMessageThreadLocal
                 }
-                profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true)
+                profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true, errorMessage: error.message)
+            } else {
+                // Couldn't determine run location - use local as default
+                profiler.end(eventType: .runMessageThreadLocal, eventTypeID: context.messageThreadID, isSuccess: false, errorMessage: error.message)
             }
             
             await errorCompletion(error)
@@ -1259,14 +1450,15 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Note: You must run ``downloadAIModel`` prior to using this method.
     ///
-    /// > Note: Any success callback means that your system is ready to run AI.
+    /// > Note: Any success callback means that your system is ready to run AI (regardless of passed state as it may be cloud-only).
     ///
     ///- Parameters:
-    ///     - success: A closure to capture the result of loading the AI model
-    ///     - error: A closure to capture any errors that occur during the call
+    ///    - modelCode: Optional AI Model Code to load a specific model, if not provided the default AI Model will be loaded
+    ///    - success: A closure to capture the result of loading the AI model
+    ///    - error: A closure to capture any errors that occur during the call
     ///
-    /// - Returns: A generic enumeration result of Bool, ErrorResponse
-    public func loadModel(success successCompletion: @escaping (_ loadedState: AIModelLoadingState) async -> Void, error errorCompletion: @escaping (FreeTokenError) async -> Void) async {
+    /// - Returns: Void
+    public func loadModel(modelCode: String? = nil, success successCompletion: @escaping (_ loadedState: AIModelLoadingState) async -> Void, error errorCompletion: @escaping (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -1278,9 +1470,24 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        guard deviceDetails?.aiModel.cloudOnly == false else {
-            await successCompletion(.cloudOnly)
-            return
+        // Get the AI Model Manager
+        let aiModelManager: AIModelManager?
+        if let modelCode = modelCode {
+            if let manager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = manager
+            } else {
+                // Model not downloaded
+                await errorCompletion(FreeTokenError.aiModelNotDownloaded)
+                return
+            }
+        } else {
+            // Use the default AI Model Manager
+            aiModelManager = self.aiModelManager
+            
+            guard deviceDetails?.aiModel.cloudOnly == false else {
+                await successCompletion(.cloudOnly)
+                return
+            }
         }
         
         // Check if the AI Model is downloaded
@@ -1338,15 +1545,27 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: FreeToken.Message object
     /// - Throws: FreeTokenError if the device is not registered or if there is an error during the local chat
-    public func localChat(messages: [Message], uniqueID: String? = nil, aiRunConfig: AIRunConfig? = nil) async throws -> Message {
+    public func localChat(modelCode: String? = nil, messages: [Message], uniqueID: String? = nil, aiRunConfig: AIRunConfig? = nil) async throws -> Message {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
         }
         
-        guard deviceDetails?.aiModel.cloudOnly == false else {
-            throw FreeTokenError.isCloudOnlyModel
+        let aiModelManager: AIModelManager?
+        if let modelCode = modelCode {
+            if let manager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = manager
+            } else {
+                throw FreeTokenError.aiModelNotDownloaded
+            }
+        } else {
+            // Use the default AI Model Manager
+            aiModelManager = self.aiModelManager
+            
+            guard deviceDetails?.aiModel.cloudOnly == false else {
+                throw FreeTokenError.isCloudOnlyModel
+            }
         }
-        
+                
         let runIdentifier: String
         
         if uniqueID == nil {

@@ -214,6 +214,14 @@ extension FreeToken {
             }
         }
         
+        struct AIModelsResponse: Decodable {
+            let aiModels: [AiModelResponse]
+            
+            enum CodingKeys: String, CodingKey {
+                case aiModels = "ai_models"
+            }
+        }
+
         struct FileVerify: Decodable {
             let file: String
             let md5: String
@@ -858,6 +866,28 @@ extension FreeToken {
             self.topP = topP
             self.temperature = temperature
         }
+    }
+    
+    public struct AIModel: Sendable {
+        public let code: String
+        public let name: String
+        public let trainingCutoffDate: String
+        public let cloudOnly: Bool
+        internal let coding: Codings.AiModelResponse
+        
+        init(from: Codings.AiModelResponse) {
+            self.code = from.code
+            self.name = from.name
+            self.trainingCutoffDate = from.trainingCutoffDate
+            self.cloudOnly = from.cloudOnly
+            self.coding = from
+        }
+    }
+    
+    public enum DownloadedState: String, Equatable {
+        case aiNotSupported = "AI not supported, skipping download"
+        case cloudOnly = "Cloud only model, skipping download"
+        case downloaded = "AI model downloaded"
     }
     
 }

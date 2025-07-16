@@ -40,6 +40,7 @@ extension FreeToken {
         case cloudCompletionInvalidResponse
         case encoding(message: String? = nil)
         case isCloudOnlyModel
+        case isTooHot
         
         // MARK: - AIModelManager Class Errors:
         case unsupportedVersion
@@ -88,6 +89,10 @@ extension FreeToken {
         // MARK: - ToolCallsManager Errors:
         case unhandledInternalToolCall
         
+        // MARK: - AIModelsManager Errors:
+        case cannotInitializeSecondDefaultAIModel
+        case modelManagerAlreadyInitialized(code: String)
+        
         // MARK: - Custom Error:
         case error(message: String, code: Int? = nil)
     }
@@ -128,6 +133,7 @@ extension FreeToken.FreeTokenError {
         case .cloudCompletionInvalidResponse: return "cloudCompletionInvalidResponse"
         case .encoding(_): return "encodingError"
         case .isCloudOnlyModel: return "isCloudOnlyModel"
+        case .isTooHot: return "isTooHot"
 
         case .unsupportedVersion: return "unsupportedVersion"
         case .aiModelNotDownloaded: return "aiModelNotDownloaded"
@@ -170,6 +176,9 @@ extension FreeToken.FreeTokenError {
         case .clientNotInitialized: return "clientNotInitialized"
             
         case .unhandledInternalToolCall: return "unhandledInternalToolCall"
+            
+        case .cannotInitializeSecondDefaultAIModel: return "cannotInitializeSecondDefaultAIModel"
+        case .modelManagerAlreadyInitialized: return "modelManagerAlreadyInitialized"
         
         case .error(_, _):
             return "error"
@@ -214,6 +223,7 @@ extension FreeToken.FreeTokenError {
             response += (message != nil) ? (":\n \(message!)") : ""
             return response
         case .isCloudOnlyModel: return "This AI model is cloud only and cannot be run on-device"
+        case .isTooHot: return "The device is too hot to run AI processing"
         
         case .unsupportedVersion: return "The AI model sent by the server is not supported by this client"
         case .aiModelNotDownloaded: return "AI model has not yet been downloded. Try .downloadAIModel() first"
@@ -267,6 +277,10 @@ extension FreeToken.FreeTokenError {
             
         case .unhandledInternalToolCall: return "An internal tool call was not handled by the client code"
             
+        case .cannotInitializeSecondDefaultAIModel: return "Cannot initialize a second default AI model, only one is allowed"
+        case .modelManagerAlreadyInitialized(let code):
+            return "AIModelManager for code \(code) is already initialized, cannot initialize again"
+            
         case .error(let message, _):
             return message
         }
@@ -304,6 +318,7 @@ extension FreeToken.FreeTokenError {
         case .cloudCompletionInvalidResponse: return 1027
         case .encoding(_): return 1028
         case .isCloudOnlyModel: return 1029
+        case .isTooHot: return 1030
         case .unsupportedVersion: return 2000
         case .aiModelNotDownloaded: return 2001
         case .modelAlreadyLoading: return 2002
@@ -339,6 +354,8 @@ extension FreeToken.FreeTokenError {
         case .decodingFailed(_): return 10002
         case .clientNotInitialized: return 11000
         case .unhandledInternalToolCall: return 4000
+        case .cannotInitializeSecondDefaultAIModel: return 5000
+        case .modelManagerAlreadyInitialized(_): return 5001
             
         case .error(_, let code):
             return code

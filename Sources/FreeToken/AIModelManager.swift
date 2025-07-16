@@ -833,7 +833,6 @@ extension FreeToken {
                 self.downloadState = .notDownloaded
                 self.loadedState = .unloaded
             }
-            
 
             func shouldEvacuateCache(memoryRequirement: Int) -> Bool {
                 if self.cachedSession == nil {
@@ -1058,6 +1057,9 @@ extension FreeToken {
             guard messages.count > 0 else {
                 throw FreeTokenError.noMessagesToSend
             }
+            
+            // Make sure we're not going to blow out the memory! 
+            _ = await FreeToken.shared.aiModelsManager.unloadAllOtherModels(except: modelCode)
             
             // Get context window size from current configuration
             let contextWindowSize = aiRunConfig?.contextWindowSize ?? modelConfig.nCTX

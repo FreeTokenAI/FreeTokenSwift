@@ -76,6 +76,119 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 30.0)
     }
     
+    func testLocalCompltionWithModelCode() throws {
+        let expectation = self.expectation(description: "Waiting for local completion with model code")
+
+        Task {
+            let modelCode = "llama3.2_3b_instruct"
+            
+            await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
+                await FreeToken.shared.generateLocalCompletion(prompt: "The wheels on the bus go", modelCode: modelCode) { completion in
+                    print("Completion: \(completion.response)")
+                    XCTAssertTrue(completion.response.count > 0, "Expected non-empty completion response")
+                    expectation.fulfill()
+                } error: { error in
+                    XCTFail(error.message)
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail(error.message)
+                expectation.fulfill()
+            } progressPercent: { progressPercent in
+                print("Downloading model \(modelCode): \(progressPercent)%")
+            }
+        }
+
+        wait(for: [expectation], timeout: 180.0) // Has to be long because it's downloading the model
+    }
+    
+    func testLocalChatWithModelCode() throws {
+        let expectation = self.expectation(description: "Waiting for local chat with model code")
+        
+        Task {
+            let modelCode = "llama3.2_3b_instruct"
+            
+            await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
+                let messages = [FreeToken.Message(role: .user, content: "What is the capital of France?")]
+                
+                do {
+                    let response = try await FreeToken.shared.localChat(modelCode: modelCode, messages: messages)
+                    
+                    XCTAssertTrue(response.content.contains("Paris"), "Expected response to contain 'Paris'")
+                    expectation.fulfill()
+                } catch {
+                    XCTFail("Failed to get local chat response: \(error)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail(error.message)
+                expectation.fulfill()
+            } progressPercent: { progressPercent in
+                print("Downloading model \(modelCode): \(progressPercent)%")
+            }
+        }
+        
+        wait(for: [expectation], timeout: 180.0) // Has to be long because it's downloading the model
+    }
+    
+    func testRunMessageThreadWithModelCode() throws {
+        let expectation = self.expectation(description: "Waiting for run message thread with model code")
+
+        Task {
+            let modelCode = "llama3.2_3b_instruct"
+            
+            await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
+                let message = FreeToken.Message(role: .user, content: "What is the capital of France?")
+                
+                actor MessageStream {
+                    var message = ""
+                    
+                    func append(_ text: String) {
+                        message += text
+                    }
+                    func getMessage() -> String {
+                        return message
+                    }
+                }
+                
+                let messageStream = MessageStream()
+                
+                await FreeToken.shared.createMessageThread { messageThread in
+                    await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, modelCode: modelCode) { resultMessage in
+                            XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
+                            let finalMessage = await messageStream.getMessage()
+                            XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
+                            expectation.fulfill()
+                        } error: { error in
+                            XCTFail("Failed to run message thread: \(error.message)")
+                            expectation.fulfill()
+                        } chatStatusStream: { token, status in
+                            if let token = token {
+                                print("Received token: \(token)")
+                                await messageStream.append(token)
+                            }
+                        }
+                    } error: { error in
+                        XCTFail("Failed to add message to thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                } error: { error in
+                    XCTFail("Failed to create message thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail(error.message)
+                expectation.fulfill()
+            } progressPercent: { progressPercent in
+                print("Downloading model \(modelCode): \(progressPercent)%")
+            }
+        }
+
+        wait(for: [expectation], timeout: 180.0) // Has to be long because it's downloading the model
+    }
+
+    
     func testCloudCompletion() throws {
         let expectation = self.expectation(description: "Waiting for completion")
 
