@@ -203,7 +203,7 @@ extension FreeToken {
                         if let userIndex = messages.firstIndex(where: { $0.role == .user }) {
                             let currentContent = messages[userIndex].content
                             let newContent = "Today's Date: \(Date().formatted(.dateTime))\n\n\(systemContent)\n\n\(currentContent)"
-                            let updatedMessage = Message(role: .user, content: newContent)
+                            let updatedMessage = Message(role: .user, content: newContent, attachments: messages[userIndex].attachments)
                             messages[userIndex] = updatedMessage
                         }
                     }
@@ -273,7 +273,7 @@ extension FreeToken {
                     // Find the index of the first user message
                     if let userIndex = messages.firstIndex(where: { $0.role == .user }) {
                         // Create a new user message with system content prepended
-                        let newUserMessage = Message(role: .user, content: "Today's Date: \(Date().formatted(.dateTime) )\n\n\(systemMessage.content)\n\n\(messages[userIndex].content)")
+                        let newUserMessage = Message(role: .user, content: "Today's Date: \(Date().formatted(.dateTime) )\n\n\(systemMessage.content)\n\n\(messages[userIndex].content)", attachments: messages[userIndex].attachments)
                         // Replace the user message with the new one
                         messages[userIndex] = newUserMessage
                     }
@@ -284,7 +284,7 @@ extension FreeToken {
                     let systemMessage = messages[systemIndex]
                     // Update the content of the system message with the current date
                     let newContent = "Today's Date: \(Date().formatted(.dateTime))\n\n\(systemMessage.content)"
-                    let newSystemMessage = Message(role: .system, content: newContent)
+                    let newSystemMessage = Message(role: .system, content: newContent, attachments: systemMessage.attachments)
                     // Replace the system message with the new one
                     messages[systemIndex] = newSystemMessage
                 }
@@ -295,13 +295,13 @@ extension FreeToken {
             messages = messages.map { message in
                 switch message.role {
                 case .system:
-                    return Message(role: MessageRole(rawValue: promptTemplateConfig.systemRole)!, content: message.content)
+                    return Message(role: MessageRole(rawValue: promptTemplateConfig.systemRole)!, content: message.content, attachments: message.attachments)
                 case .user:
-                    return Message(role: MessageRole(rawValue: promptTemplateConfig.userRole)!, content: message.content)
+                    return Message(role: MessageRole(rawValue: promptTemplateConfig.userRole)!, content: message.content, attachments: message.attachments)
                 case .assistant:
-                    return Message(role: MessageRole(rawValue: promptTemplateConfig.assistantRole)!, content: message.content)
+                    return Message(role: MessageRole(rawValue: promptTemplateConfig.assistantRole)!, content: message.content, attachments: message.attachments)
                 case .tool:
-                    return Message(role: MessageRole(rawValue: promptTemplateConfig.toolRole)!, content: message.content)
+                    return Message(role: MessageRole(rawValue: promptTemplateConfig.toolRole)!, content: message.content, attachments: message.attachments)
                 }
             }
         }

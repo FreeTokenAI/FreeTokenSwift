@@ -463,10 +463,20 @@ extension FreeToken {
         struct CodableMessage: Codable {
             let role: String
             let content: String
+            var attachments: [CodableAttachment]? = nil
             
             enum CodingKeys: String, CodingKey {
                 case role
                 case content
+                case attachments
+            }
+        }
+        
+        struct CodableAttachment: Codable {
+            let imageUrl: String
+            
+            enum CodingKeys: String, CodingKey {
+                case imageUrl = "image_url"
             }
         }
         
@@ -476,6 +486,7 @@ extension FreeToken {
             let content: String
             let encryptionEnabled: Bool
             let lastMessageID: String?
+            let encryptedImages: [EncryptedImageData]?
             
             enum CodingKeys: String, CodingKey {
                 case messageThreadID = "message_thread_id"
@@ -483,6 +494,19 @@ extension FreeToken {
                 case content
                 case encryptionEnabled = "encryption_enabled"
                 case lastMessageID = "last_message_id"
+                case encryptedImages = "encrypted_images"
+            }
+        }
+        
+        struct EncryptedImageData: Encodable {
+            let data: String // Base64 encoded encrypted image data
+            let filename: String?
+            let contentType: String
+            
+            enum CodingKeys: String, CodingKey {
+                case data
+                case filename
+                case contentType = "content_type"
             }
         }
         
@@ -492,6 +516,7 @@ extension FreeToken {
             let content: String
             let encryptionEnabled: Bool
             let createdAt: Date
+            let images: [ImageAttachmentResponse]?
             
             enum CodingKeys: String, CodingKey {
                 case id
@@ -499,6 +524,27 @@ extension FreeToken {
                 case content
                 case encryptionEnabled = "encryption_enabled"
                 case createdAt = "created_at"
+                case images
+            }
+        }
+        
+        struct ImageAttachmentResponse: Decodable, Sendable {
+            let id: String
+            let filename: String?
+            let contentType: String
+            let byteSize: Int
+            let url: String?
+            let data: String? // Base64 encoded data for encrypted images
+            let encrypted: Bool
+            
+            enum CodingKeys: String, CodingKey {
+                case id
+                case filename
+                case contentType = "content_type"
+                case byteSize = "byte_size"
+                case url
+                case data
+                case encrypted
             }
         }
         
@@ -688,15 +734,35 @@ extension FreeToken {
             self.updatedAt = updatedAt
         }
         
-        internal init(from messageThreadResponse: Codings.ShowMessageThreadResponse) {
-            self.id = messageThreadResponse.id
-            let messages: [Message] = messageThreadResponse.messages.map { showMessageResponse in
-                Message(from: showMessageResponse)
+        
+        internal static func fromServerResponse(_ messageThreadResponse: Codings.ShowMessageThreadResponse) async throws -> MessageThread {
+            // Fetch all message images concurrently
+            let messages = try await withThrowingTaskGroup(of: Message.self) { group in
+                for showMessageResponse in messageThreadResponse.messages {
+                    group.addTask {
+                        return try await Message.fromServerResponse(showMessageResponse)
+                    }
+                }
+                
+                var fetchedMessages: [Message] = []
+                for try await message in group {
+                    fetchedMessages.append(message)
+                }
+                
+                // Sort messages to maintain original order (since tasks complete in arbitrary order)
+                return fetchedMessages.sorted { msg1, msg2 in
+                    guard let id1 = msg1.id, let id2 = msg2.id else { return false }
+                    return messageThreadResponse.messages.firstIndex { $0.id == id1 } ?? 0 < 
+                           messageThreadResponse.messages.firstIndex { $0.id == id2 } ?? 0
+                }
             }
             
-            self.messages = messages
-            self.createdAt = messageThreadResponse.createdAt
-            self.updatedAt = messageThreadResponse.updatedAt
+            return MessageThread(
+                id: messageThreadResponse.id,
+                messages: messages,
+                createdAt: messageThreadResponse.createdAt,
+                updatedAt: messageThreadResponse.updatedAt
+            )
         }
     }
         
@@ -768,53 +834,298 @@ extension FreeToken {
         case cloudOnly
     }
     
+    public class MessageAttachment: @unchecked Sendable {
+        public let id: String?
+        public let type: AttachmentType
+        public let data: Data
+        public let filename: String?
+        public let contentType: String
+        public let encryptedMetadata: String?
+        
+        public enum AttachmentType: String, CaseIterable {
+            case image
+        }
+        
+        public init(type: AttachmentType, data: Data, filename: String? = nil, contentType: String) {
+            self.id = nil
+            self.type = type
+            self.data = data
+            self.filename = filename
+            self.contentType = contentType
+            self.encryptedMetadata = nil
+        }
+        
+        internal init(id: String?, type: AttachmentType, data: Data, filename: String?, contentType: String, encryptedMetadata: String?) {
+            self.id = id
+            self.type = type
+            self.data = data
+            self.filename = filename
+            self.contentType = contentType
+            self.encryptedMetadata = encryptedMetadata
+        }
+        
+        public static func image(_ imageData: Data, filename: String? = nil, contentType: String = "image/png") -> MessageAttachment {
+            return MessageAttachment(type: .image, data: imageData, filename: filename, contentType: contentType)
+        }
+    }
+    
     public class Message: @unchecked Sendable {
         public let id: String?
         public let role: MessageRole
         public let content: String
+        public let attachments: [MessageAttachment]?
         public let createdAt: Date?
         public let tokenUsage: TokenUsage?
         internal let encryptionManager = FreeToken.shared.encryptionManager
         
-        public init(role: MessageRole, content: String) {
+        public init(role: MessageRole, content: String, attachments: [MessageAttachment]? = nil) {
             self.role = role
             self.content = content
+            self.attachments = attachments
             
             self.tokenUsage = nil
             self.id = nil
             self.createdAt = nil
         }
         
-        internal init(role: MessageRole, content: String, tokenUsage: TokenUsage? = nil) {
+        internal init(role: MessageRole, content: String, attachments: [MessageAttachment]? = nil, tokenUsage: TokenUsage? = nil) {
             self.role = role
             self.content = content
+            self.attachments = attachments
             self.tokenUsage = tokenUsage
             
             self.id = nil
             self.createdAt = nil
         }
         
-        internal init(from showMessageResponse: Codings.ShowMessageResponse) {
-            self.id = showMessageResponse.id
-            self.role = MessageRole(rawValue: showMessageResponse.role) ?? .user
+        internal init(id: String?, role: MessageRole, content: String, attachments: [MessageAttachment]? = nil, createdAt: Date?, tokenUsage: TokenUsage? = nil) {
+            self.id = id
+            self.role = role
+            self.content = content
+            self.attachments = attachments
+            self.createdAt = createdAt
+            self.tokenUsage = tokenUsage
+        }
+        
+        
+        /// Creates a Message from server response, fetching any image URLs asynchronously
+        internal static func fromServerResponse(_ showMessageResponse: Codings.ShowMessageResponse) async throws -> Message {
+            let encryptionManager = FreeToken.shared.encryptionManager
             
-            if showMessageResponse.encryptionEnabled {
-                self.content = encryptionManager.decrypt(showMessageResponse.content)
+            FreeToken.shared.logger("🔍 SERVER RESPONSE DEBUG: Processing message with \(showMessageResponse.images?.count ?? 0) images", .info)
+            
+            // Process attachments, fetching URLs if needed
+            let processedAttachments: [MessageAttachment]?
+            if let images = showMessageResponse.images {
+                // Pre-process encrypted images - no longer need to decrypt here since we'll fetch from URLs
+                let imageProcessingData: [(imageResponse: Codings.ImageAttachmentResponse, decryptedData: Data?)] = images.map { imageResponse in
+                    // All images (encrypted and unencrypted) will be fetched from URLs
+                    return (imageResponse, nil)
+                }
+                
+                processedAttachments = try await withThrowingTaskGroup(of: MessageAttachment?.self) { group in
+                    for (imageResponse, _) in imageProcessingData {
+                        group.addTask { @Sendable in
+                            if let urlString = imageResponse.url, let url = URL(string: urlString) {
+                                // Fetch image from URL (both encrypted and unencrypted)
+                                do {
+                                    let (data, response) = try await URLSession.shared.data(from: url)
+                                    
+                                    // Validate response
+                                    guard let httpResponse = response as? HTTPURLResponse,
+                                          (200...299).contains(httpResponse.statusCode) else {
+                                        FreeToken.shared.logger("Failed to fetch image from URL: \(urlString)", .error)
+                                        return nil
+                                    }
+                                    
+                                    // If encrypted, decrypt the data
+                                    let finalImageData: Data
+                                    if imageResponse.encrypted {
+                                        // Convert downloaded data to string, decrypt it, then convert back to image data
+                                        guard let encryptedString = String(data: data, encoding: .utf8) else {
+                                            FreeToken.shared.logger("Failed to convert encrypted data to string", .error)
+                                            return nil
+                                        }
+                                        
+                                        let decryptedBase64 = FreeToken.shared.encryptionManager.decrypt(encryptedString)
+                                        guard let imageData = Data(base64Encoded: decryptedBase64) else {
+                                            FreeToken.shared.logger("Failed to decode decrypted base64 data", .error)
+                                            return nil
+                                        }
+                                        finalImageData = imageData
+                                    } else {
+                                        finalImageData = data
+                                    }
+                                    
+                                    return MessageAttachment(
+                                        id: imageResponse.id,
+                                        type: .image,
+                                        data: finalImageData,
+                                        filename: imageResponse.filename,
+                                        contentType: imageResponse.contentType,
+                                        encryptedMetadata: imageResponse.encrypted ? "encrypted" : nil
+                                    )
+                                } catch {
+                                    FreeToken.shared.logger("Error fetching image from URL \(urlString): \(error)", .error)
+                                    return nil
+                                }
+                            }
+                            return nil
+                        }
+                    }
+                    
+                    // Collect results
+                    var attachments: [MessageAttachment] = []
+                    for try await attachment in group {
+                        if let attachment = attachment {
+                            attachments.append(attachment)
+                        }
+                    }
+                    return attachments.isEmpty ? nil : attachments
+                }
             } else {
-                self.content = showMessageResponse.content
+                processedAttachments = nil
             }
-            self.createdAt = showMessageResponse.createdAt
-
-            self.tokenUsage = nil
+            
+            // Create and return the message with all properties
+            return Message(
+                id: showMessageResponse.id,
+                role: MessageRole(rawValue: showMessageResponse.role) ?? .user,
+                content: showMessageResponse.encryptionEnabled ? 
+                    encryptionManager.decrypt(showMessageResponse.content) : 
+                    showMessageResponse.content,
+                attachments: processedAttachments,
+                createdAt: showMessageResponse.createdAt,
+                tokenUsage: nil
+            )
         }
         
-        internal init(from codableMessage: Codings.CodableMessage, tokenUsage: TokenUsage? = nil) {
-            self.id = nil
-            self.role = MessageRole(rawValue: codableMessage.role) ?? .user
-            self.content = codableMessage.content
+        /// Creates a Message from cloud completion response, fetching any image URLs asynchronously
+        internal static func fromCloudResponse(_ codableMessage: Codings.CodableMessage, tokenUsage: TokenUsage? = nil) async throws -> Message {
+            FreeToken.shared.logger("🔍 CLOUD RESPONSE DEBUG: Processing message with \(codableMessage.attachments?.count ?? 0) attachments", .info)
             
-            self.tokenUsage = tokenUsage
-            self.createdAt = nil
+            // Process attachments, fetching URLs if needed
+            let processedAttachments: [MessageAttachment]?
+            if let attachments = codableMessage.attachments {
+                processedAttachments = try await withThrowingTaskGroup(of: MessageAttachment?.self) { group in
+                    for attachment in attachments {
+                        group.addTask {
+                            guard let url = URL(string: attachment.imageUrl) else {
+                                FreeToken.shared.logger("🔴 Invalid image URL: \(attachment.imageUrl)", .error)
+                                return nil
+                            }
+                            
+                            do {
+                                let (data, response) = try await URLSession.shared.data(from: url)
+                                
+                                // Validate response
+                                guard let httpResponse = response as? HTTPURLResponse,
+                                      (200...299).contains(httpResponse.statusCode) else {
+                                    FreeToken.shared.logger("🔴 Failed to fetch image from URL: \(attachment.imageUrl)", .error)
+                                    return nil
+                                }
+                                
+                                FreeToken.shared.logger("✅ Successfully fetched image from URL: \(attachment.imageUrl)", .info)
+                                
+                                return MessageAttachment(
+                                    id: nil,
+                                    type: .image,
+                                    data: data,
+                                    filename: "cloud_image.png",
+                                    contentType: "image/png",
+                                    encryptedMetadata: nil
+                                )
+                            } catch {
+                                FreeToken.shared.logger("🔴 Error fetching image from URL \(attachment.imageUrl): \(error)", .error)
+                                return nil
+                            }
+                        }
+                    }
+                    
+                    var fetchedAttachments: [MessageAttachment] = []
+                    for try await attachment in group {
+                        if let attachment = attachment {
+                            fetchedAttachments.append(attachment)
+                        }
+                    }
+                    
+                    return fetchedAttachments.isEmpty ? nil : fetchedAttachments
+                }
+            } else {
+                processedAttachments = nil
+            }
+            
+            // Create and return the message
+            return Message(
+                id: nil,
+                role: MessageRole(rawValue: codableMessage.role) ?? .user,
+                content: codableMessage.content,
+                attachments: processedAttachments,
+                createdAt: nil,
+                tokenUsage: tokenUsage
+            )
+        }
+        
+        // MARK: - Encryption/Decryption Methods
+        
+        /// Converts message to encrypted request format for server
+        internal func toEncryptedRequest(messageThreadID: String, lastMessageID: String?, encryptionManager: EncryptionManager) -> Codings.CreateMessageRequest {
+            let encryptedContent = encryptionManager.encrypt(self.content)
+            
+            var encryptedImages: [Codings.EncryptedImageData]? = nil
+            if let attachments = self.attachments {
+                let imageAttachments = attachments.filter { $0.type == .image }
+                if !imageAttachments.isEmpty {
+                    encryptedImages = imageAttachments.map { attachment in
+                        let base64String = attachment.data.base64EncodedString()
+                        let encryptedBase64 = encryptionManager.encrypt(base64String)
+                        return Codings.EncryptedImageData(
+                            data: encryptedBase64,
+                            filename: attachment.filename,
+                            contentType: attachment.contentType
+                        )
+                    }
+                }
+            }
+            
+            return Codings.CreateMessageRequest(
+                messageThreadID: messageThreadID,
+                role: self.role.rawValue,
+                content: encryptedContent,
+                encryptionEnabled: true,
+                lastMessageID: lastMessageID,
+                encryptedImages: encryptedImages
+            )
+        }
+        
+        /// Converts message to unencrypted request format for server (JSON data for multipart)
+        internal func toUnencryptedMultipartData(messageThreadID: String, lastMessageID: String?) -> ([String: Any], [MessageAttachment]) {
+            var jsonData: [String: Any] = [
+                "message_thread_id": messageThreadID,
+                "role": self.role.rawValue,
+                "content": self.content,
+                "encryption_enabled": false
+            ]
+            
+            if let lastMessageID = lastMessageID {
+                jsonData["last_message_id"] = lastMessageID
+            }
+            
+            let imageAttachments = self.attachments?.filter { $0.type == .image } ?? []
+            
+            return (jsonData, imageAttachments)
+        }
+        
+        /// Converts message to unencrypted request format for server (regular JSON)
+        internal func toUnencryptedRequest(messageThreadID: String, lastMessageID: String?) -> Codings.CreateMessageRequest {
+            return Codings.CreateMessageRequest(
+                messageThreadID: messageThreadID,
+                role: self.role.rawValue,
+                content: self.content,
+                encryptionEnabled: false,
+                lastMessageID: lastMessageID,
+                encryptedImages: nil
+            )
         }
     }
     

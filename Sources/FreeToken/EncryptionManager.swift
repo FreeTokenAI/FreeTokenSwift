@@ -5,6 +5,8 @@
 //  Created by Vince Francesi on 6/20/25.
 //
 
+import Foundation
+
 extension FreeToken {
     class EncryptionManager {
         var encryptor: Optional<(_ toEncrypt: String) -> String> = nil

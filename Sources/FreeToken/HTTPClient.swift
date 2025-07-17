@@ -225,6 +225,92 @@ extension FreeToken {
             sendRequest(to: url, method: "POST", headers: headers, body: body, responseType: responseType, completion: completion)
         }
         
+        internal func postMultipart<T: Decodable>(
+            to url: URL,
+            headers: [String: String] = [:],
+            jsonData: [String: Any],
+            attachments: [MessageAttachment],
+            responseType: T.Type,
+            completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
+        ) async {
+            // Debug logging for multipart upload
+            FreeToken.shared.logger("🔍 HTTP DEBUG: Posting multipart data with \(attachments.count) attachments", .info)
+            for (index, attachment) in attachments.enumerated() {
+                FreeToken.shared.logger("🔍 HTTP DEBUG: Attachment \(index): \(attachment.data.count) bytes, type: \(attachment.contentType)", .info)
+            }
+            var request = URLRequest(url: url)
+            request.httpMethod = "POST"
+            
+            // Set up headers
+            for (key, value) in headers {
+                request.setValue(value, forHTTPHeaderField: key)
+            }
+            
+            // Create multipart form data
+            let boundary = "Boundary-\(UUID().uuidString)"
+            request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            
+            var body = Data()
+            
+            // Add JSON fields to multipart body
+            for (key, value) in jsonData {
+                body.appendMultipartField(boundary: boundary, name: key, value: value)
+            }
+            
+            // Add image attachments
+            for (index, attachment) in attachments.enumerated() where attachment.type == .image {
+                let filename = attachment.filename ?? "image_\(index).png"
+                FreeToken.shared.logger("🔍 MULTIPART DEBUG: Adding image \(index) to multipart body: name=images[], filename=\(filename), size=\(attachment.data.count) bytes, mimeType=\(attachment.contentType)", .info)
+                body.appendMultipartFile(
+                    boundary: boundary,
+                    name: "images[]",
+                    filename: filename,
+                    data: attachment.data,
+                    mimeType: attachment.contentType
+                )
+            }
+            
+            FreeToken.shared.logger("🔍 MULTIPART DEBUG: Final multipart body size: \(body.count) bytes", .info)
+            
+            body.appendMultipartEnd(boundary: boundary)
+            request.httpBody = body
+            
+            // Use URLSession to send the request
+            do {
+                let (data, response) = try await session.data(for: request)
+                
+                guard let httpResponse = response as? HTTPURLResponse,
+                      (200...299).contains(httpResponse.statusCode) else {
+                    let serverError = FreeTokenError.httpError(
+                        message: "HTTP error \((response as? HTTPURLResponse)?.statusCode ?? 0)",
+                        code: (response as? HTTPURLResponse)?.statusCode
+                    )
+                    await completion(.failure(serverError))
+                    return
+                }
+                
+                let decoder = JSONDecoder()
+                decoder.dateDecodingStrategy = .custom { decoder in
+                    let container = try decoder.singleValueContainer()
+                    let dateString = try container.decode(String.self)
+                    let formatter = ISO8601DateFormatter()
+                    formatter.formatOptions = [.withInternetDateTime]
+                    if let date = formatter.date(from: dateString) {
+                        return date
+                    } else {
+                        throw DecodingError.dataCorruptedError(in: container, debugDescription: "Invalid date format: \(dateString)")
+                    }
+                }
+                
+                let decodedResponse = try decoder.decode(responseType, from: data)
+                await completion(.success(decodedResponse))
+                
+            } catch {
+                let clientError = FreeTokenError.clientError(message: error.localizedDescription)
+                await completion(.failure(clientError))
+            }
+        }
+        
         internal func delete(
             from url: URL,
             headers: [String: String] = [:],
@@ -291,8 +377,38 @@ extension FreeToken {
             semaphore.wait()
         }
     }
+}
+
+// MARK: - Data Extension for Multipart Form Data
+extension Data {
+    mutating func appendMultipartField(boundary: String, name: String, value: Any) {
+        append("--\(boundary)\r\n".data(using: .utf8)!)
+        append("Content-Disposition: form-data; name=\"\(name)\"\r\n\r\n".data(using: .utf8)!)
+        
+        if let stringValue = value as? String {
+            append(stringValue.data(using: .utf8)!)
+        } else if let intValue = value as? Int {
+            append("\(intValue)".data(using: .utf8)!)
+        } else if let boolValue = value as? Bool {
+            append(boolValue ? "true".data(using: .utf8)! : "false".data(using: .utf8)!)
+        }
+        append("\r\n".data(using: .utf8)!)
+    }
     
+    mutating func appendMultipartFile(boundary: String, name: String, filename: String, data: Data, mimeType: String) {
+        append("--\(boundary)\r\n".data(using: .utf8)!)
+        append("Content-Disposition: form-data; name=\"\(name)\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
+        append("Content-Type: \(mimeType)\r\n\r\n".data(using: .utf8)!)
+        append(data)
+        append("\r\n".data(using: .utf8)!)
+    }
     
+    mutating func appendMultipartEnd(boundary: String) {
+        append("--\(boundary)--\r\n".data(using: .utf8)!)
+    }
+}
+
+extension FreeToken {
     class SSEClient<T: Decodable & Sendable>: @unchecked Sendable, EventHandler {
         private let url: URL
         private let headers: [String: String]

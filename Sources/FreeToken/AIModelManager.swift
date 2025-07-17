@@ -11,6 +11,12 @@ import LocalLLMClientLlama
 import LocalLLMClientMLX
 import LocalLLMClientUtility
 
+#if canImport(UIKit)
+import UIKit
+#elseif canImport(AppKit)
+import AppKit
+#endif
+
 extension FreeToken {
     class AIModelManager: @unchecked Sendable {
         let modelCode: String
@@ -36,6 +42,17 @@ extension FreeToken {
             case llamaCpp
             case mlx
         }
+        
+        
+        // Check if any message contains image attachments
+        private func hasImageAttachments(_ messages: [Message]) -> Bool {
+            return messages.contains { message in
+                message.attachments?.contains { $0.type == .image } == true
+            }
+        }
+        
+        // Note: Vision support checking is handled via error catching during inference
+        // since LLMSession doesn't expose a public supportsVision property
         
         actor AITaskQueue {
             private var isRunning = false
@@ -105,7 +122,7 @@ extension FreeToken {
             // Thread state management
             private var threadStateManager = ThreadStateManager()
             
-            struct SessionCache {
+            struct SessionCache: @unchecked Sendable {
                 let runIdentifier: String
                 var session: LLMSession
             }
@@ -409,17 +426,43 @@ extension FreeToken {
                     
                     FreeToken.shared.logger("🔄 ThreadStateManager: Creating session with \(messagesToUse.count) messages (no additional truncation)", .info)
                     
-                    // Convert to LLMInput.Message format
+                    // Convert to LLMInput.Message format with attachments
                     let llmMessages = messagesToUse.map { message in
+                        let attachments = message.attachments?.compactMap { attachment -> LLMAttachment? in
+                            guard attachment.type == .image else { return nil }
+                            
+                            FreeToken.shared.logger("🖼️ [Session Init] Converting image attachment: \(attachment.data.count) bytes, type: \(attachment.contentType)", .debug)
+                            
+                            #if canImport(UIKit)
+                            if let image = UIImage(data: attachment.data) {
+                                FreeToken.shared.logger("🖼️ [Session Init] Successfully created UIImage: \(image.size)", .debug)
+                                return LLMAttachment.image(image)
+                            }
+                            #elseif canImport(AppKit)
+                            if let image = NSImage(data: attachment.data) {
+                                FreeToken.shared.logger("🖼️ [Session Init] Successfully created NSImage: \(image.size)", .debug)
+                                return LLMAttachment.image(image)
+                            }
+                            #endif
+                            
+                            if let inputImage = LLMInputImage(data: attachment.data) {
+                                FreeToken.shared.logger("🖼️ [Session Init] Successfully created LLMInputImage", .debug)
+                                return LLMAttachment.image(inputImage)
+                            }
+                            
+                            FreeToken.shared.logger("🖼️ [Session Init] Failed to create any image type from attachment data", .error)
+                            return nil
+                        } ?? []
+                        
                         switch message.role {
                         case .assistant:
-                            return LLMInput.Message.assistant(message.content)
+                            return LLMInput.Message.assistant(message.content, attachments: attachments)
                         case .user:
-                            return LLMInput.Message.user(message.content)
+                            return LLMInput.Message.user(message.content, attachments: attachments)
                         case .system:
                             return LLMInput.Message.system(message.content)
                         case .tool:
-                            return LLMInput.Message(role: .custom("tool"), content: message.content)
+                            return LLMInput.Message(role: .custom("tool"), content: message.content, attachments: attachments)
                         }
                     }
                     
@@ -507,11 +550,35 @@ extension FreeToken {
                     
                     // Update session messages to match optimized state
                     let llmMessages = optimizedMessages.map { message in
+                        let attachments = message.attachments?.compactMap { attachment -> LLMAttachment? in
+                            guard attachment.type == .image else { return nil }
+                            
+                            #if canImport(UIKit)
+                            if let image = UIImage(data: attachment.data) {
+                                return LLMAttachment.image(image)
+                            }
+                            #elseif canImport(AppKit)
+                            if let image = NSImage(data: attachment.data) {
+                                return LLMAttachment.image(image)
+                            }
+                            #endif
+                            
+                            if let inputImage = LLMInputImage(data: attachment.data) {
+                                return LLMAttachment.image(inputImage)
+                            }
+                            
+                            return nil
+                        } ?? []
+                        
                         switch message.role {
-                        case .assistant: return LLMInput.Message.assistant(message.content)
-                        case .user: return LLMInput.Message.user(message.content)
-                        case .system: return LLMInput.Message.system(message.content)
-                        case .tool: return LLMInput.Message(role: .custom("tool"), content: message.content)
+                        case .assistant:
+                            return LLMInput.Message.assistant(message.content, attachments: attachments)
+                        case .user:
+                            return LLMInput.Message.user(message.content, attachments: attachments)
+                        case .system:
+                            return LLMInput.Message.system(message.content)
+                        case .tool:
+                            return LLMInput.Message(role: .custom("tool"), content: message.content, attachments: attachments)
                         }
                     }
                     
@@ -761,11 +828,41 @@ extension FreeToken {
                     case .appendSafely(let newMessages):
                         session = currentSession!
                         let newLLMMessages = newMessages.map { message in
+                            let attachments = message.attachments?.compactMap { attachment -> LLMAttachment? in
+                                guard attachment.type == .image else { return nil }
+                                
+                                FreeToken.shared.logger("🖼️ Converting image attachment: \(attachment.data.count) bytes, type: \(attachment.contentType)", .debug)
+                                
+                                #if canImport(UIKit)
+                                if let image = UIImage(data: attachment.data) {
+                                    FreeToken.shared.logger("🖼️ Successfully created UIImage: \(image.size)", .debug)
+                                    return LLMAttachment.image(image)
+                                }
+                                #elseif canImport(AppKit)
+                                if let image = NSImage(data: attachment.data) {
+                                    FreeToken.shared.logger("🖼️ Successfully created NSImage: \(image.size)", .debug)
+                                    return LLMAttachment.image(image)
+                                }
+                                #endif
+                                
+                                if let inputImage = LLMInputImage(data: attachment.data) {
+                                    FreeToken.shared.logger("🖼️ Successfully created LLMInputImage", .debug)
+                                    return LLMAttachment.image(inputImage)
+                                }
+                                
+                                FreeToken.shared.logger("🖼️ Failed to create any image type from attachment data", .error)
+                                return nil
+                            } ?? []
+                            
                             switch message.role {
-                            case .assistant: return LLMInput.Message.assistant(message.content)
-                            case .user: return LLMInput.Message.user(message.content)
-                            case .system: return LLMInput.Message.system(message.content)
-                            case .tool: return LLMInput.Message(role: .custom("tool"), content: message.content)
+                            case .assistant:
+                                return LLMInput.Message.assistant(message.content, attachments: attachments)
+                            case .user:
+                                return LLMInput.Message.user(message.content, attachments: attachments)
+                            case .system:
+                                return LLMInput.Message.system(message.content)
+                            case .tool:
+                                return LLMInput.Message(role: .custom("tool"), content: message.content, attachments: attachments)
                             }
                         }
                         
@@ -823,8 +920,55 @@ extension FreeToken {
                 let finalUsage = Double(threadState.approximateTokenCount) / Double(contextWindowSize) * 100
                 FreeToken.shared.logger("📊 Starting generation with context: \(threadState.approximateTokenCount)/\(contextWindowSize) tokens (\(String(format: "%.1f", finalUsage))%)", .info)
                 FreeToken.shared.logger("📊 Prompt: \"\(promptMessage.content.prefix(50))...\"", .debug)
+                FreeToken.shared.logger("🔍 DEBUGGING: Model code: \(self.modelInitOptions?.huggingFaceID ?? "unknown")", .info)
+                FreeToken.shared.logger("🔍 DEBUGGING: Model type: \(self.modelInitOptions?.modelType ?? .llamaCpp)", .info)
                 
-                return session.streamResponse(to: promptMessage.content)
+                // Check for vision requirements before streaming
+                let hasImages = messages.contains { message in
+                    message.attachments?.contains { $0.type == .image } == true
+                }
+                if hasImages {
+                    FreeToken.shared.logger("🔍 About to stream response with image attachments - checking vision model compatibility", .info)
+                }
+                
+                
+                // Check if any message in the conversation has image attachments
+                let hasImagesInConversation = messages.contains { message in
+                    message.attachments?.contains { $0.type == .image } == true
+                }
+                
+                if hasImagesInConversation {
+                    FreeToken.shared.logger("🖼️ ✅ Conversation contains image attachments - using full conversation context", .info)
+                    
+                    // Log details about which messages have images
+                    for (index, message) in messages.enumerated() {
+                        let imageCount = message.attachments?.filter { $0.type == .image }.count ?? 0
+                        if imageCount > 0 {
+                            FreeToken.shared.logger("🖼️ Message \(index) (\(message.role)): \(imageCount) image(s)", .info)
+                        }
+                    }
+                } else {
+                    FreeToken.shared.logger("🖼️ ⚠️ No image attachments found in conversation", .warning)
+                }
+                
+                // Convert FreeToken attachments to LLMAttachments for the current prompt
+                let llmAttachments: [LLMAttachment] = (promptMessage.attachments ?? []).compactMap { attachment in
+                    switch attachment.type {
+                    case .image:
+                        #if os(iOS) || os(tvOS)
+                        if let image = UIImage(data: attachment.data) {
+                            return LLMAttachment.image(image)
+                        }
+                        #elseif os(macOS)
+                        if let image = NSImage(data: attachment.data) {
+                            return LLMAttachment.image(image)
+                        }
+                        #endif
+                        return nil
+                    }
+                }
+                
+                return session.streamResponse(to: promptMessage.content, attachments: llmAttachments)
             }
             
             func unloadModel() {
@@ -1058,6 +1202,9 @@ extension FreeToken {
                 throw FreeTokenError.noMessagesToSend
             }
             
+            // Note: Vision support is checked during inference by LocalLLMClient
+            // The client will throw appropriate errors if images are used with non-vision models
+
             // Make sure we're not going to blow out the memory! 
             _ = await FreeToken.shared.aiModelsManager.unloadAllOtherModels(except: modelCode)
             
@@ -1074,6 +1221,13 @@ extension FreeToken {
                 aiRunConfig: aiRunConfig
             )
             
+            // Debug: Log the incoming messages
+            FreeToken.shared.logger("🔍 SEND MESSAGES DEBUG: Processing \(messages.count) messages", .info)
+            for (index, message) in messages.enumerated() {
+                let imageCount = message.attachments?.filter { $0.type == .image }.count ?? 0
+                FreeToken.shared.logger("🔍 SEND MESSAGES DEBUG: Message \(index) (\(message.role)): \(imageCount) image(s)", .info)
+            }
+            
             let preparedMessages: [Message] = try MessagePrep(
                 messages: messages, 
                 promptTemplateConfig: promptTemplateConfig,
@@ -1081,6 +1235,13 @@ extension FreeToken {
                 model: currentModel,
                 isNewSession: willCreateNewSession
             ).prepareMessages()
+            
+            // Debug: Log the prepared messages
+            FreeToken.shared.logger("🔍 PREPARED MESSAGES DEBUG: After prep: \(preparedMessages.count) messages", .info)
+            for (index, message) in preparedMessages.enumerated() {
+                let imageCount = message.attachments?.filter { $0.type == .image }.count ?? 0
+                FreeToken.shared.logger("🔍 PREPARED MESSAGES DEBUG: Message \(index) (\(message.role)): \(imageCount) image(s)", .info)
+            }
             
             let aiResults = AIResults()
             
@@ -1113,6 +1274,27 @@ extension FreeToken {
                         
                     } catch {
                         FreeToken.shared.logger("Error generating response: \(error.localizedDescription)", .error)
+                        FreeToken.shared.logger("Error type: \(type(of: error))", .error)
+                        
+                        // Check if this might be a vision-related error
+                        let hasImages = messages.contains { message in
+                            message.attachments?.contains { $0.type == .image } == true
+                        }
+                        if hasImages {
+                            FreeToken.shared.logger("🔍 Vision error detected: Message contains image attachments", .error)
+                            FreeToken.shared.logger("🔍 Error details: \(error)", .error)
+                            
+                            // Check if the error suggests vision capability issues
+                            let errorDescription = error.localizedDescription.lowercased()
+                            if errorDescription.contains("vision") || 
+                               errorDescription.contains("image") || 
+                               errorDescription.contains("multimodal") ||
+                               errorDescription.contains("no mmproj file") {
+                                FreeToken.shared.logger("🔍 Likely vision capability error - model may not support images", .error)
+                                throw FreeTokenError.visionModelRequired
+                            }
+                        }
+                        
                         throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
                     }
                 }

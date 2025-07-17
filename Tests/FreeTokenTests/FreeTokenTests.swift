@@ -24,11 +24,13 @@ final class FreeTokenTests: XCTestCase {
 //            try await FreeToken.shared.resetModelCaches()
             await FreeToken.shared.registerDeviceSession(scope: "swift-tests") {
                 await FreeToken.shared.downloadAIModel { isLocal in
+                    print("AI model downloaded successfully. Local: \(isLocal)")
                     semaphore.signal()
                 } error: { error in
                     XCTFail("Failed to download AI model: \(error.message)")
                 } progressPercent: { progressPercent in
                     // Nothing to do here
+                    print("Download progress: \(progressPercent)%")
                 }
             } error: { error in
                 XCTFail("Failed to register device session: \(error.message)")
@@ -400,5 +402,127 @@ final class FreeTokenTests: XCTestCase {
         
         wait(for: [expectation], timeout: 60.0)
     }
+    
+    func testMultiModalImageRun() {
+        print("🔍 Starting multi-modal test...")
+        
+        // Download a test image from URL
+        let expectation = self.expectation(description: "Waiting for multi-modal image run")
+        
+        Task {
+            do {
+                let url = URL(string: "https://upload.wikimedia.org/wikipedia/en/e/ed/Nyan_cat_250px_frame.PNG")!
+                let (imageData, _) = try await URLSession.shared.data(from: url)
+                print("🖼️ Downloaded image: \(imageData.count) bytes")
+                
+                let imageAttachment = FreeToken.MessageAttachment(type: .image, data: imageData, filename: "Nyan_cat_250px_frame.PNG", contentType: "image/png")
+                let message = FreeToken.Message(role: .user, content: "What do you see in this image?", attachments: [imageAttachment])
+                
+                print("🔍 TEST: Created message with \(message.attachments?.count ?? 0) attachments")
+                
+                await FreeToken.shared.createMessageThread { messageThread in
+                    await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id) { resultMessage in
+                            print("✅ Multi-modal response: \(resultMessage.content)")
+                            XCTAssertTrue(resultMessage.content.count > 0, "Expected non-empty response")
+                            XCTAssertTrue(resultMessage.content.contains("Nyan"), "Expected response to mention 'Nyan Cat'")
+                            expectation.fulfill()
+                        } error: { error in
+                            print("❌ Failed to run message thread with image: \(error.message)")
+                            print("❌ Error details: \(error)")
+                            
+                            // Check if it's a vision model error
+                            if case .visionModelRequired = error {
+                                print("🔍 Vision model error: Current model doesn't support vision capabilities")
+                                // Don't fail the test - this is an expected error for non-vision models
+                                expectation.fulfill()
+                            } else {
+                                XCTFail("Failed to run message thread with image: \(error.message)")
+                                expectation.fulfill()
+                            }
+                        }
+                    } error: { error in
+                        print("❌ Failed to add image message to thread: \(error.message)")
+                        XCTFail("Failed to add image message to thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                } error: { error in
+                    print("❌ Failed to create message thread for image run: \(error.message)")
+                    XCTFail("Failed to create message thread for image run: \(error.message)")
+                    expectation.fulfill()
+                }
+            } catch {
+                print("❌ Failed to download image: \(error)")
+                XCTFail("Failed to download image: \(error)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 180.0)
+    }
 
+    
+    func testMultiModalEncryptedImageRun() {
+        print("🔍 Starting multi-modal test...")
+        
+        // Download a test image from URL
+        let expectation = self.expectation(description: "Waiting for multi-modal image run")
+        
+        Task {
+            do {
+                let url = URL(string: "https://upload.wikimedia.org/wikipedia/en/e/ed/Nyan_cat_250px_frame.PNG")!
+                let (imageData, _) = try await URLSession.shared.data(from: url)
+                print("🖼️ Downloaded image: \(imageData.count) bytes")
+                
+                let imageAttachment = FreeToken.MessageAttachment(type: .image, data: imageData, filename: "Nyan_cat_250px_frame.PNG", contentType: "image/png")
+                let message = FreeToken.Message(role: .user, content: "What do you see in this image?", attachments: [imageAttachment])
+                
+                print("🔍 TEST: Created message with \(message.attachments?.count ?? 0) attachments")
+                
+                try FreeToken.shared.privacyModeEncryption { toEncrypt in
+                    // Use base64 to simulate encryption
+                    return Data(toEncrypt.utf8).base64EncodedString()
+                } decrypt: { toDecrypt in
+                    return String(data: Data(base64Encoded: toDecrypt) ?? Data(), encoding: .utf8) ?? ""
+                }
+                
+                await FreeToken.shared.createMessageThread { messageThread in
+                    await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, forceCloudRun: true) { resultMessage in
+                            print("✅ Multi-modal response: \(resultMessage.content)")
+                            XCTAssertTrue(resultMessage.content.count > 0, "Expected non-empty response")
+                            expectation.fulfill()
+                        } error: { error in
+                            print("❌ Failed to run message thread with image: \(error.message)")
+                            print("❌ Error details: \(error)")
+                            
+                            // Check if it's a vision model error
+                            if case .visionModelRequired = error {
+                                print("🔍 Vision model error: Current model doesn't support vision capabilities")
+                                // Don't fail the test - this is an expected error for non-vision models
+                                expectation.fulfill()
+                            } else {
+                                XCTFail("Failed to run message thread with image: \(error.message)")
+                                expectation.fulfill()
+                            }
+                        }
+                    } error: { error in
+                        print("❌ Failed to add image message to thread: \(error.message)")
+                        XCTFail("Failed to add image message to thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                } error: { error in
+                    print("❌ Failed to create message thread for image run: \(error.message)")
+                    XCTFail("Failed to create message thread for image run: \(error.message)")
+                    expectation.fulfill()
+                }
+            } catch {
+                print("❌ Failed to download image: \(error)")
+                XCTFail("Failed to download image: \(error)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 180.0)
+    }
 }

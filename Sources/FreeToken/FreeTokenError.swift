@@ -50,6 +50,7 @@ extension FreeToken {
         case aiModelNotLoaded
         case noMessagesToSend
         case messagesMustAlternate
+        case visionModelRequired
         case aiRunFailed(message: String? = nil)
         case unsupportedModelType(message: String? = nil)
         case failedToRunAIWithError(message: String? = nil)
@@ -141,6 +142,7 @@ extension FreeToken.FreeTokenError {
         case .failedToLoadModel: return "failedToLoadModel"
         case .aiModelNotLoaded: return "aiModelNotLoaded"
         case .noMessagesToSend: return "noMessagesToSend"
+        case .visionModelRequired: return "visionModelRequired"
         case .messagesMustAlternate: return "messagesMustAlternate"
         case .aiRunFailed(_): return "aiRunFailed"
         case .unsupportedModelType(_): return "unsupportedModelType"
@@ -231,6 +233,7 @@ extension FreeToken.FreeTokenError {
         case .failedToLoadModel: return "Failed to load model"
         case .aiModelNotLoaded: return "AI model is not loaded. Try .loadModel() first"
         case .noMessagesToSend: return "No messages to send to the AI model"
+        case .visionModelRequired: return "This model does not support vision capabilities. Images can only be processed by vision-enabled models."
         case .messagesMustAlternate: return "Messages must alternate between user and assistant."
         case .aiRunFailed(let message): return "AI run failed" + ((message != nil) ? (": \(message!)") : "")
         case .unsupportedModelType(let message): return "Unsupported model type" + ((message != nil) ? (": \(message!)") : "")
@@ -325,11 +328,12 @@ extension FreeToken.FreeTokenError {
         case .failedToLoadModel: return 2003
         case .aiModelNotLoaded: return 2004
         case .noMessagesToSend: return 2005
-        case .messagesMustAlternate: return 2006
-        case .aiRunFailed(_): return 2007
-        case .unsupportedModelType(_): return 2008
-        case .failedToRunAIWithError(_): return 2009
-        case .aiQueueTimeout: return 2010
+        case .visionModelRequired: return 2006
+        case .messagesMustAlternate: return 2007
+        case .aiRunFailed(_): return 2008
+        case .unsupportedModelType(_): return 2009
+        case .failedToRunAIWithError(_): return 2010
+        case .aiQueueTimeout: return 2011
         case .embeddingFailed: return 3000
         case .modelAlreadyDownloading: return 3001
         case .modelDownload: return 3002

@@ -310,6 +310,11 @@ extension FreeToken {
             let usage: TokenUsage?
             let messages = messageThread.messages
             
+            FreeToken.shared.logger("🔍 WORKFLOW: Processing \(messages.count) messages in thread", .info)
+            for (index, msg) in messages.enumerated() {
+                FreeToken.shared.logger("🔍 WORKFLOW: Message \(index): role=\(msg.role), attachments=\(msg.attachments?.count ?? 0)", .info)
+            }
+            
             let profiler = Profiler()
             do {
                 let aiModelManager = context.aiModelManager!

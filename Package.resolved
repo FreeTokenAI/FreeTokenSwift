@@ -1,5 +1,5 @@
 {
-  "originHash" : "5270122bda460f0748e15d154231a76b2dd1df1643303b415b3c98480963961c",
+  "originHash" : "6b2f1488f8316eb13953ce6283d14c5acc55316c688e43aab0de4febbaacd8f3",
   "pins" : [
     {
       "identity" : "gzipswift",
@@ -20,21 +20,12 @@
       }
     },
     {
-      "identity" : "localllmclient",
-      "kind" : "remoteSourceControl",
-      "location" : "https://github.com/FreeTokenAI/LocalLLMClient",
-      "state" : {
-        "branch" : "release",
-        "revision" : "5b4aebd274aeaef3f584791d51ad6c4792963dca"
-      }
-    },
-    {
       "identity" : "mlx-swift",
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/ml-explore/mlx-swift",
       "state" : {
-        "revision" : "b79c74ce773440b86a81ef925ea78dd5023a16c0",
-        "version" : "0.25.5"
+        "revision" : "96c0f69cf15f38abd6248bb71fca908171dab1d8",
+        "version" : "0.25.6"
       }
     },
     {

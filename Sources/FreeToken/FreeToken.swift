@@ -144,7 +144,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - decryptCallback: A closure that takes a `String` to be decrypted and returns the decrypted `String`.
     ///
     /// - Throws: An error if the encryption or decryption process fails.
-    public func privacyModeEncryption(encrypt encryptCallback: @escaping (_ encrypt: String) -> String, decrypt decryptCallback: @escaping (_ decrypt: String) -> String) throws {
+    public func privacyModeEncryption(encrypt encryptCallback: @escaping (_ toEncrypt: String) -> String, decrypt decryptCallback: @escaping (_ toDecrypt: String) -> String) throws {
         
         self.encryptionManager.enableEncryption(encryptor: encryptCallback, decryptor: decryptCallback)
     }
@@ -286,9 +286,9 @@ public class FreeToken: @unchecked Sendable {
         // Delete the whole directory
         do {
             try FileManager.default.removeItem(at: defaultRootDirectory)
-            FreeToken.shared.logger("❌ AI model cache reset successfully", .info)
+            FreeToken.shared.logger("🗑️ AI model cache reset successfully", .info)
         } catch {
-            FreeToken.shared.logger("Failed to reset LLM model cache: \(error.localizedDescription)", .error)
+            FreeToken.shared.logger("🔴 Failed to reset LLM model cache: \(error.localizedDescription)", .error)
         }
     }
     
@@ -937,7 +937,21 @@ public class FreeToken: @unchecked Sendable {
         let config = deviceDetails!.aiModel.config.defaultSettings
         
         // Convert types
-        let requestMessages = preparedMessages.map { Codings.CodableMessage(role: $0.role.rawValue, content: $0.content) }
+        let requestMessages = preparedMessages.map { message in
+            let urls: [Codings.CodableAttachment]?
+            
+            if let attachments = message.attachments {
+                urls = attachments.map { attachment in
+                    let base64String = attachment.data.base64EncodedString()
+                    let imageType = attachment.contentType
+                    return Codings.CodableAttachment(imageUrl: "data:\(imageType);base64,\(base64String)")
+                }
+            } else {
+                urls = nil
+            }
+            
+            return Codings.CodableMessage(role: message.role.rawValue, content: message.content, attachments: urls)
+        }
         
         let topK: Int = aiRunConfig?.topK ?? config.topK
         let topP: Float = aiRunConfig?.topP ?? config.topP
@@ -989,14 +1003,20 @@ public class FreeToken: @unchecked Sendable {
                 // Process the response
                 if let tokenUsage = response.tokenUsage, let responseMessage = response.message {
                     let usage = TokenUsage(from: tokenUsage)
-                    let message = Message(from: responseMessage, tokenUsage: usage)
-                    profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: true, tokenStats: usage)
-                    if let chatStatusStream = chatStatusStream {
-                        await chatStatusStream(nil, .stream_ended)
+                    do {
+                        let message = try await Message.fromCloudResponse(responseMessage, tokenUsage: usage)
+                        profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: true, tokenStats: usage)
+                        if let chatStatusStream = chatStatusStream {
+                            await chatStatusStream(nil, .stream_ended)
+                        }
+                        
+                        // Call the success callback
+                        await successCallback(message)
+                    } catch {
+                        await chatStatusStream?(nil, .failed)
+                        FreeToken.shared.logger("🔴 Failed to parse cloud response message with images: \(error)", .error)
+                        await errorCallback(FreeTokenError.cloudCompletionInvalidResponse)
                     }
-                    
-                    // Call the success callback
-                    await successCallback(message)
                 } else {
                     // Error that there wasn't the right response
                     await chatStatusStream?(nil, .failed)
@@ -1714,6 +1734,35 @@ public class FreeToken: @unchecked Sendable {
         } catch {
             await completion(.failure(FreeTokenError.encoding(message: error.localizedDescription)))
         }
+    }
+    
+    internal func postMultipartData<T: Decodable>(
+        path: String,
+        jsonData: [String: Any],
+        attachments: [MessageAttachment],
+        responseType: T.Type,
+        completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
+    ) async {
+        guard isClientConfigured() else {
+            await completion(.failure(FreeTokenError.clientNotConfigured))
+            return
+        }
+
+        let baseURL = self.baseURL!
+        let apiKey = self.appToken!
+        let endpoint = baseURL.appendingPathComponent(path)
+        
+        var headers: [String: String] = [
+            "Authorization": "Bearer \(apiKey)",
+            "Client-Version": clientVersion,
+            "Client-Type": clientType
+        ]
+                    
+        if self.deviceSessionToken != nil {
+            headers["Device-Session-Token"] = deviceSessionToken
+        }
+        
+        await httpClient.postMultipart(to: endpoint, headers: headers, jsonData: jsonData, attachments: attachments, responseType: responseType, completion: completion)
     }
     
     /// Posts data to the server.
