@@ -41,6 +41,8 @@ extension FreeToken {
         case encoding(message: String? = nil)
         case isCloudOnlyModel
         case isTooHot
+        case deviceOverheating
+        case deviceNotCapable
         
         // MARK: - AIModelManager Class Errors:
         case unsupportedVersion
@@ -135,6 +137,8 @@ extension FreeToken.FreeTokenError {
         case .encoding(_): return "encodingError"
         case .isCloudOnlyModel: return "isCloudOnlyModel"
         case .isTooHot: return "isTooHot"
+        case .deviceOverheating: return "deviceOverheating"
+        case .deviceNotCapable: return "deviceNotCapable"
 
         case .unsupportedVersion: return "unsupportedVersion"
         case .aiModelNotDownloaded: return "aiModelNotDownloaded"
@@ -226,6 +230,8 @@ extension FreeToken.FreeTokenError {
             return response
         case .isCloudOnlyModel: return "This AI model is cloud only and cannot be run on-device"
         case .isTooHot: return "The device is too hot to run AI processing"
+        case .deviceOverheating: return "Cannot run AI locally: device is overheating. Please wait for device to cool down or use cloud execution."
+        case .deviceNotCapable: return "Cannot run AI locally: this device is not capable of running AI models"
         
         case .unsupportedVersion: return "The AI model sent by the server is not supported by this client"
         case .aiModelNotDownloaded: return "AI model has not yet been downloded. Try .downloadAIModel() first"
@@ -322,6 +328,8 @@ extension FreeToken.FreeTokenError {
         case .encoding(_): return 1028
         case .isCloudOnlyModel: return 1029
         case .isTooHot: return 1030
+        case .deviceOverheating: return 1031
+        case .deviceNotCapable: return 1032
         case .unsupportedVersion: return 2000
         case .aiModelNotDownloaded: return 2001
         case .modelAlreadyLoading: return 2002

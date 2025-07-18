@@ -834,6 +834,12 @@ extension FreeToken {
         case cloudOnly
     }
     
+    public enum RunLocation: String, Equatable, Sendable {
+        case automatic
+        case cloudRun
+        case localRun
+    }
+    
     public class MessageAttachment: @unchecked Sendable {
         public let id: String?
         public let type: AttachmentType

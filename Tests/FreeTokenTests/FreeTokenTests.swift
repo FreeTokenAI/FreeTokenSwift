@@ -97,7 +97,7 @@ final class FreeTokenTests: XCTestCase {
                 XCTFail(error.message)
                 expectation.fulfill()
             } progressPercent: { progressPercent in
-                print("Downloading model \(modelCode): \(progressPercent)%")
+                print("Downloading model \(modelCode): \(progressPercent * 100.0)%")
             }
         }
 
@@ -157,20 +157,20 @@ final class FreeTokenTests: XCTestCase {
                 
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                        await FreeToken.shared.runMessageThread(id: messageThread.id, modelCode: modelCode) { resultMessage in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, modelCode: modelCode, success: { resultMessage in
                             XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
                             let finalMessage = await messageStream.getMessage()
                             XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
                             expectation.fulfill()
-                        } error: { error in
+                        }, error: { error in
                             XCTFail("Failed to run message thread: \(error.message)")
                             expectation.fulfill()
-                        } chatStatusStream: { token, status in
+                        }, chatStatusStream: { token, status in
                             if let token = token {
                                 print("Received token: \(token)")
                                 await messageStream.append(token)
                             }
-                        }
+                        })
                     } error: { error in
                         XCTFail("Failed to add message to thread: \(error.message)")
                         expectation.fulfill()
@@ -242,20 +242,20 @@ final class FreeTokenTests: XCTestCase {
             
             await FreeToken.shared.createMessageThread { messageThread in
                 await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                    await FreeToken.shared.runMessageThread(id: messageThread.id, forceCloudRun: true) { resultMessage in
+                    await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .cloudRun, success: { resultMessage in
                         assert(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
                         let finalMessage = await messageStream.getMessage()
                         assert(resultMessage.content == finalMessage, "Expected final message to match result message")
                         expectation.fulfill()
-                    } error: { error in
+                    }, error: { error in
                         XCTFail("Failed to run message thread: \(error.message)")
                         expectation.fulfill()
-                    } chatStatusStream: { token, status in
+                    }, chatStatusStream: { token, status in
                         if let token = token {
                             print("Received token: \(token)")
                             await messageStream.append(token)
                         }
-                    }
+                    })
                 } error: { error in
                     XCTFail("Failed to add message to thread: \(error.message)")
                     expectation.fulfill()
@@ -331,18 +331,18 @@ final class FreeTokenTests: XCTestCase {
             
             await FreeToken.shared.createMessageThread { messageThread in
                 await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                    await FreeToken.shared.runMessageThread(id: messageThread.id, forceCloudRun: true) { resultMessage in
+                    await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .cloudRun, success: { resultMessage in
                         await messageStream.setCompletionMessage(resultMessage)
-                    } error: { error in
+                    }, error: { error in
                         XCTFail("Failed to run message thread: \(error.message)")
                         expectation.fulfill()
-                    } chatStatusStream: { token, status in
+                    }, chatStatusStream: { token, status in
                         if let token = token {
                             await messageStream.append(token)
                         } else if status == .stream_ended {
                             await messageStream.setStreamEnded()
                         }
-                    }
+                    })
                 } error: { error in
                     XCTFail("Failed to add message to thread: \(error.message)")
                     expectation.fulfill()
@@ -422,12 +422,12 @@ final class FreeTokenTests: XCTestCase {
                 
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                        await FreeToken.shared.runMessageThread(id: messageThread.id) { resultMessage in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .cloudRun, success: { resultMessage in
                             print("✅ Multi-modal response: \(resultMessage.content)")
                             XCTAssertTrue(resultMessage.content.count > 0, "Expected non-empty response")
                             XCTAssertTrue(resultMessage.content.contains("Nyan"), "Expected response to mention 'Nyan Cat'")
                             expectation.fulfill()
-                        } error: { error in
+                        }, error: { error in
                             print("❌ Failed to run message thread with image: \(error.message)")
                             print("❌ Error details: \(error)")
                             
@@ -440,7 +440,7 @@ final class FreeTokenTests: XCTestCase {
                                 XCTFail("Failed to run message thread with image: \(error.message)")
                                 expectation.fulfill()
                             }
-                        }
+                        })
                     } error: { error in
                         print("❌ Failed to add image message to thread: \(error.message)")
                         XCTFail("Failed to add image message to thread: \(error.message)")
@@ -488,11 +488,11 @@ final class FreeTokenTests: XCTestCase {
                 
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                        await FreeToken.shared.runMessageThread(id: messageThread.id, forceCloudRun: true) { resultMessage in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .cloudRun, success: { resultMessage in
                             print("✅ Multi-modal response: \(resultMessage.content)")
                             XCTAssertTrue(resultMessage.content.count > 0, "Expected non-empty response")
                             expectation.fulfill()
-                        } error: { error in
+                        }, error: { error in
                             print("❌ Failed to run message thread with image: \(error.message)")
                             print("❌ Error details: \(error)")
                             
@@ -505,7 +505,7 @@ final class FreeTokenTests: XCTestCase {
                                 XCTFail("Failed to run message thread with image: \(error.message)")
                                 expectation.fulfill()
                             }
-                        }
+                        })
                     } error: { error in
                         print("❌ Failed to add image message to thread: \(error.message)")
                         XCTFail("Failed to add image message to thread: \(error.message)")

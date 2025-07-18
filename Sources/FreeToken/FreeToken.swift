@@ -1344,7 +1344,7 @@ public class FreeToken: @unchecked Sendable {
     ///     })
     /// ```
     ///
-    /// > Tip: You can force a cloud run with the `forceCloudRun` flag.  This will run the AI in the cloud without using your local AI.
+    /// > Tip: You can control where the AI runs with the `runLocation` parameter. Use `.cloudRun` to force cloud execution, `.localRun` to force local execution, or `.automatic` (default) to let the system decide.
     ///
     /// > Tip: Use `documentSearchScope` to change the context that the AI uses for RAG.  If left unset, the AI will use the document scope set in the Agent in the FreeToken Admin console.
     ///
@@ -1352,7 +1352,7 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Parameters:
     ///     - id: String of the message thread ID
-    ///     - forceCloudRun: Optional Boolean to force the AI to run in the cloud rather than on device
+    ///     - runLocation: Specifies where to run the AI - `.automatic` (default), `.cloudRun`, or `.localRun`
     ///     - documentSearchScope: Optional document search scope. Used for context for the AI
     ///     - privateDocumentStoreIds: Optional array of private document store IDs for RAG context
     ///     - aiRunConfig: Optional AI run configuration to override default AI model settings
@@ -1365,7 +1365,7 @@ public class FreeToken: @unchecked Sendable {
     /// - Returns: Void
     public func runMessageThread(
         id messageThreadID: String,
-        forceCloudRun: Optional<Bool> = nil,
+        runLocation: RunLocation = .automatic,
         documentSearchScope: Optional<String> = nil,
         privateDocumentStoreIds: Optional<[String]> = nil,
         aiRunConfig: Optional<AIRunConfig> = nil,
@@ -1382,17 +1382,24 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        let effectiveForceCloudRun: Bool
+        let effectiveRunLocation: RunLocation
         
-        if let deviceDetails = deviceDetails, deviceDetails.forceCloudRun == true {
-            effectiveForceCloudRun = true
+        // Determine effective run location based on priority:
+        // 1. Explicit runLocation parameter (if not automatic)
+        // 2. Device session forceCloudRun setting
+        // 3. Default to automatic
+        if runLocation != .automatic {
+            effectiveRunLocation = runLocation
+        } else if let deviceDetails = deviceDetails, deviceDetails.forceCloudRun == true {
+            effectiveRunLocation = .cloudRun
         } else {
-            effectiveForceCloudRun = forceCloudRun ?? false
+            effectiveRunLocation = .automatic
         }
         
         var aiModelManager: AIModelManager? = nil
         
-        if effectiveForceCloudRun == false {
+        // Only load AI model manager if we might run locally
+        if effectiveRunLocation != .cloudRun {
             if let modelCode = modelCode {
                 if let manager = aiModelsManager.getManager(for: modelCode) {
                     // Found a manager!
@@ -1409,7 +1416,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Workflow Context
-        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: effectiveForceCloudRun, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream, toolCallback: toolCallback)
+        let context = RunMessageThreadContext(messageThreadID: messageThreadID, runLocation: effectiveRunLocation, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream, toolCallback: toolCallback)
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
