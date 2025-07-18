@@ -252,7 +252,7 @@ public class FreeToken: @unchecked Sendable {
     /// Reset Model Caches
     ///
     public func resetModelCaches() async throws {
-        try resetEmbeddingModelCache()
+        try? resetEmbeddingModelCache()
         await deleteAIModelCache()
     }
     

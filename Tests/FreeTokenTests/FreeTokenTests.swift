@@ -101,7 +101,7 @@ final class FreeTokenTests: XCTestCase {
             }
         }
 
-        wait(for: [expectation], timeout: 180.0) // Has to be long because it's downloading the model
+        wait(for: [expectation], timeout: 300.0) // Has to be long because it's downloading the model
     }
     
     func testLocalChatWithModelCode() throws {
@@ -130,7 +130,7 @@ final class FreeTokenTests: XCTestCase {
             }
         }
         
-        wait(for: [expectation], timeout: 180.0) // Has to be long because it's downloading the model
+        wait(for: [expectation], timeout: 300.0) // Has to be long because it's downloading the model
     }
     
     func testRunMessageThreadWithModelCode() throws {

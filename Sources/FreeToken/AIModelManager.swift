@@ -644,9 +644,24 @@ extension FreeToken {
             }
             
             func downloadModel(progress: @escaping @Sendable (_ progress: Double) async -> Void) async throws {
-                guard let model = self.model else {
-                    throw FreeTokenError.aiModelNotLoaded
+                // Check if already downloaded
+                if getDownloadState() == .downloaded {
+                    await progress(1.0)
+                    return
                 }
+                
+                // Create model object for downloading (even if not loaded)
+                let model: LLMSession.DownloadModel
+                if let existingModel = self.model {
+                    model = existingModel
+                } else {
+                    // Create a model just for downloading
+                    guard let modelInitOptions = self.modelInitOptions else {
+                        throw FreeTokenError.aiModelNotLoaded
+                    }
+                    model = try modelFactory(initOptions: modelInitOptions)
+                }
+                
                 setDownloadState(.downloading)
                 do {
                     FreeToken.shared.logger("☁️ Starting AI model file downloads...", .info)
@@ -947,8 +962,6 @@ extension FreeToken {
                             FreeToken.shared.logger("🖼️ Message \(index) (\(message.role)): \(imageCount) image(s)", .info)
                         }
                     }
-                } else {
-                    FreeToken.shared.logger("🖼️ ⚠️ No image attachments found in conversation", .warning)
                 }
                 
                 // Convert FreeToken attachments to LLMAttachments for the current prompt
@@ -1089,28 +1102,44 @@ extension FreeToken {
                 return false
             }
             
-            FreeToken.shared.logger("🔄 Loading AI model...", .info)
-            let loadResult = await loadModel()
-            
-            switch loadResult {
-            case .success(_):
-                FreeToken.shared.logger("🧠 AI engine initialized successfully", .info)
+            // First initialize the engine to set up modelInitOptions
+            do {
+                let huggingfaceModel: Codings.HuggingfaceModelResponse
+                let modelType: ModelType
                 
-                do {
-                    _ = try await stateManager.downloadModel { progress in
-                        FreeToken.shared.logger("☁️ Download progress: \(progress * 100.0)%", .info)
+                (huggingfaceModel, modelType) = modelSelection()
+                
+                _ = try await self.stateManager.initializeEngine(
+                    huggingFaceID: huggingfaceModel.repo,
+                    modelFileName: huggingfaceModel.modelFileName,
+                    mmproj: huggingfaceModel.mmproj,
+                    configuration: modelConfig,
+                    modelType: modelType,
+                    memoryRequirement: clientConfig.requiredMemoryBytes
+                )
+                
+                _ = try await stateManager.downloadModel { progress in
+                    Task { @MainActor in
                         progressCallback?(progress)
                     }
+                }
+                FreeToken.shared.logger("⬇️ AI model downloaded successfully", .info)
+                
+                // Now try to load the model to verify it works
+                let loadResult = await loadModel()
+                
+                switch loadResult {
+                case .success(_):
+                    FreeToken.shared.logger("🧠 AI engine initialized successfully", .info)
                     return true
-                } catch {
-                    FreeToken.shared.logger("🔴 Error downloading AI model: \(error.localizedDescription)", .error)
-                    _ = await self.stateManager.setDownloadState(.failed(error: error.localizedDescription))
-                    return false
+                case .failure(let error):
+                    FreeToken.shared.logger("🔴 Failed to load AI model after download: \(error.localizedDescription)", .error)
+                    return true // Still return true because download succeeded
                 }
                 
-            case .failure(let error):
-                FreeToken.shared.logger("🔴 Failed to load AI model: \(error.localizedDescription)", .error)
-                profiler.end(eventType: .downloadModel, eventTypeID: modelCode, isSuccess: false, errorMessage: error.localizedDescription)
+            } catch {
+                FreeToken.shared.logger("🔴 Error downloading AI model: \(error.localizedDescription)", .error)
+                _ = await self.stateManager.setDownloadState(.failed(error: error.localizedDescription))
                 return false
             }
         }
