@@ -30,10 +30,9 @@ extension FreeToken {
         struct AIModelInitializeOptions {
             let modelConfig: Codings.AiModelResponse
             let clientVersion: String
-            let deviceMode: DeviceMode
         }
         
-        func addManager(modelConfig: Codings.AiModelResponse, clientVersion: String, deviceMode: DeviceMode, isDefault: Bool) throws -> AIModelManager {
+        func addManager(modelConfig: Codings.AiModelResponse, clientVersion: String, isDefault: Bool) throws -> AIModelManager {
             if isDefault == true, defaultManager != nil {
                 throw FreeTokenError.cannotInitializeSecondDefaultAIModel
             }
@@ -46,14 +45,12 @@ extension FreeToken {
             
             let initOptions = AIModelInitializeOptions(
                 modelConfig: modelConfig,
-                clientVersion: clientVersion,
-                deviceMode: deviceMode
+                clientVersion: clientVersion
             )
             
             let aiModelManager = AIModelManager(
                 modelConfig: modelConfig,
-                clientVersion: clientVersion,
-                deviceMode: deviceMode
+                clientVersion: clientVersion
             )
             
             #if os(iOS)

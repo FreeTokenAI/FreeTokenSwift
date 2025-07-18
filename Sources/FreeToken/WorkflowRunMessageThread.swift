@@ -17,7 +17,6 @@ extension FreeToken {
         let aiModelManager: AIModelManager?
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
         let toolCallback: Optional<@Sendable ([FreeToken.ToolCall]) async -> String>
-        let deviceMode: DeviceMode?
         let deviceManager: DeviceManager?
         let documentSearchScope: String?
         let privateDocumentStoreIds: [String]?
@@ -41,7 +40,6 @@ extension FreeToken {
             privateDocumentStoreIds: [String]?,
             deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?,
             aiModelManager: AIModelManager?,
-            deviceMode: DeviceMode?,
             deviceManager: DeviceManager?,
             messagesManager: MessagesManager,
             jsonToolResults: Bool,
@@ -57,7 +55,6 @@ extension FreeToken {
             self.deviceDetails = deviceDetails
             self.aiModelManager = aiModelManager
             self.chatStatusStream = chatStatusStream
-            self.deviceMode = deviceMode
             self.deviceManager = deviceManager
             self.messagesManager = messagesManager
             self.aiRunConfig = aiRunConfig
@@ -120,7 +117,6 @@ extension FreeToken {
         let deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?
         let aiModelManager: AIModelManager?
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
-        let deviceMode: DeviceMode?
         let runLocation: FreeToken.RunLocation
         let deviceManager: DeviceManager?
         
@@ -130,7 +126,6 @@ extension FreeToken {
             self.deviceDetails = context.deviceDetails
             self.aiModelManager = context.aiModelManager
             self.chatStatusStream = context.chatStatusStream
-            self.deviceMode = context.deviceMode
             self.runLocation = context.runLocation
             self.deviceManager = context.deviceManager
         }
@@ -153,12 +148,6 @@ extension FreeToken {
             case .cloudRun:
                 FreeToken.shared.logger("☁️ Force cloud run requested", .info)
                 context.cloudRun = true
-                
-                if deviceMode?.isPrivacyMode == true {
-                    await failure(FreeTokenError.cloudRunInPrivacyMode, context)
-                    return
-                }
-                
                 await success(context)
             case .localRun:
                 FreeToken.shared.logger("🧠 Force local run requested", .info)
@@ -197,42 +186,32 @@ extension FreeToken {
         }
         
         private func shouldCloudRun() async throws -> Bool {
+            // Check device capabilities first
             if deviceManager?.isAICapable == true {
+                // Device is AI capable, check model state
                 if await aiModelManager?.stateManager.getDownloadState() != .downloaded {
-                    if self.deviceMode?.isQuickStartMode == true {
-                        FreeToken.shared.logger("Quick Start Activated!", .info)
-                        // Quick start mode activated
-                        return true
-                    } else {
-                        throw FreeTokenError.aiModelNotDownloaded
-                    }
+                    // Model not downloaded - use cloud for automatic mode
+                    FreeToken.shared.logger("🔽 Model not downloaded, running in cloud", .info)
+                    return true
                 } else {
-                    // Downloaded
-                    
-                    if self.deviceMode?.isQuickStartMode == true {
-                        // If not loaded, run in cloud
-                        if await aiModelManager?.stateManager.getLoadedState() != .loaded {
-                            FreeToken.shared.logger("🧠 Model not loaded yet, running in cloud", .info)
-                            return true
-                        }
-                        
-                        if self.deviceManager?.isTooHot() == true {
-                            FreeToken.shared.logger("😰 Device too hot, running in cloud", .warning)
-                            return true
-                        }
+                    // Model downloaded, check if loaded and device conditions
+                    if await aiModelManager?.stateManager.getLoadedState() != .loaded {
+                        FreeToken.shared.logger("🧠 Model not loaded yet, running in cloud", .info)
+                        return true
                     }
                     
-                    FreeToken.shared.logger("🧠 Model downloaded and AI supported - Should run locally", .info)
+                    if self.deviceManager?.isTooHot() == true {
+                        FreeToken.shared.logger("😰 Device too hot, running in cloud", .warning)
+                        return true
+                    }
+                    
+                    FreeToken.shared.logger("🧠 Model ready and device capable - Should run locally", .info)
                     return false
                 }
             } else {
-                if self.deviceMode?.isCompatibilityMode == true {
-                    // Compatibility Mode activated
-                    FreeToken.shared.logger("☁️🧠 Compatibility Mode Activated!", .info)
-                    return true
-                } else {
-                    throw FreeTokenError.aiNotSupportedNoCompatibility
-                }
+                // Device not AI capable - use cloud
+                FreeToken.shared.logger("☁️🧠 Device not AI capable, running in cloud", .info)
+                return true
             }
         }
     }
@@ -347,7 +326,7 @@ extension FreeToken {
                 let aiModelManager = context.aiModelManager!
                 
                 FreeToken.shared.logger("🏁 Running message thread locally with ID: \(context.messageThreadID)", .info)
-                (resultText, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: messageThread.id, aiRunConfig: aiRunConfig) { tokens in
+                (resultText, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: messageThread.id, runLocation: context.runLocation, aiRunConfig: aiRunConfig) { tokens in
                     await self.chatStatusStream?(tokens, .streaming_tokens)
                     // TODO: Try to start handling tool calls before the AI completes?
                 }
@@ -367,9 +346,9 @@ extension FreeToken {
                     // User explicitly requested local run, so fail without fallback
                     FreeToken.shared.logger("❌ Local run explicitly requested, not falling back to cloud", .error)
                     await failure(error, context)
-                } else if context.deviceMode?.isQuickStartMode == true {
-                    // If we're in Quick Start mode and not explicitly local, failback to cloud
-                    FreeToken.shared.logger("🔄 Quick Start mode active, AI Model failed, falling back to cloud run", .warning)
+                } else if context.runLocation == .automatic {
+                    // Automatic mode - fall back to cloud when local fails
+                    FreeToken.shared.logger("🔄 Automatic mode active, AI Model failed, falling back to cloud run", .warning)
                     context.cloudRun = true
                     await success(context) // Continue to the next step which will run in the cloud
                 } else {

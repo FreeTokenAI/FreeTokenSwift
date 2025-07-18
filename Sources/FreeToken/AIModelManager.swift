@@ -56,20 +56,14 @@ extension FreeToken {
         
         actor AITaskQueue {
             private var isRunning = false
-            private var isTurboMode: Bool = false
-
-            init(isTurboMode: Bool = false) {
-                self.isTurboMode = isTurboMode
-            }
             
-            func enqueue<T: Sendable>(_ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+            func enqueue<T: Sendable>(runLocation: RunLocation, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
                 let startTime = DispatchTime.now()
-                let isTurboMode = self.isTurboMode
                 
                 while isRunning {
                     try await Task.sleep(nanoseconds: 10_000_000) // 10ms
                     FreeToken.shared.logger("⏰ Waiting for AI task queue to be free...", .info)
-                    if isTurboMode, DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds > 30_000_000 { // 30 seconds
+                    if runLocation == .automatic, DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds > 30_000_000 { // 30 seconds
                         FreeToken.shared.logger("⏰ AI task queue timeout reached, aborting operation", .error)
                         throw FreeTokenError.aiQueueTimeout
                     }
@@ -1049,7 +1043,7 @@ extension FreeToken {
             }
         }
         
-        init(modelConfig: Codings.AiModelResponse, clientVersion: String, deviceMode: DeviceMode) {
+        init(modelConfig: Codings.AiModelResponse, clientVersion: String) {
             self.modelCode = modelConfig.code
             #if os(macOS)
             self.clientConfig = modelConfig.clientsConfig["macOS"]!
@@ -1060,7 +1054,7 @@ extension FreeToken {
             self.modelConfig = AIModelConfiguration(from: modelConfig.config.defaultSettings)
             self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
             self.availableModelTypes = modelConfig.modelTypes!
-            self.taskQueue = AITaskQueue(isTurboMode: deviceMode == .compatibilityQuickStartMode)
+            self.taskQueue = AITaskQueue()
         }
         
         actor ResultsCollector {
@@ -1211,6 +1205,7 @@ extension FreeToken {
                 let _ = try await sendMessagesToAI(
                     messages: warmupMessage,
                     runIdentifier: "warmup-\(UUID().uuidString)",
+                    runLocation: .localRun,
                     noContextCache: true,
                     aiRunConfig: warmupConfig
                 )
@@ -1222,7 +1217,7 @@ extension FreeToken {
             }
         }
         
-        func sendMessagesToAI(messages: [Message], runIdentifier: String, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
+        func sendMessagesToAI(messages: [Message], runIdentifier: String, runLocation: RunLocation = .automatic, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
             if await self.stateManager.getLoadedState() != .loaded {
                 _ = await loadModel()
             }
@@ -1280,7 +1275,7 @@ extension FreeToken {
             
             // Generate response using the AIStateManager
             let task = Task {
-                _ = try await taskQueue.enqueue {
+                _ = try await taskQueue.enqueue(runLocation: runLocation) {
                     do {
                         let maxTokenCount = await aiResults.maxTokenCount
                         for try await value in try await self.stateManager.generateResponse(for: preparedMessages, runIdentifier: runIdentifier, promptTemplateConfig: self.promptTemplateConfig, aiRunConfig: aiRunConfig, noContextCache: noContextCache) {

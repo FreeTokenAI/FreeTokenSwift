@@ -60,7 +60,6 @@ extension FreeToken {
         struct ShowDeviceSessionResponse: Decodable {
             let token: String
             let scope: String
-            let mode: String
             let toolNames: [String]
             let documentsConfig: DocumentsConfigResponse
             let aiModel: AiModelResponse
@@ -74,7 +73,6 @@ extension FreeToken {
             enum CodingKeys: String, CodingKey {
                 case token
                 case scope
-                case mode
                 case toolNames = "tool_names"
                 case documentsConfig = "documents_config"
                 case aiModel = "ai_model"

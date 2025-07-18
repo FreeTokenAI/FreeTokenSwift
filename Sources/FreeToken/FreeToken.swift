@@ -43,45 +43,6 @@ public class FreeToken: @unchecked Sendable {
     
     let encryptionManager = EncryptionManager()
     
-    var deviceMode: DeviceMode? = nil
-    
-    enum DeviceMode: String {
-        case privacyMode = "privacy"
-        case compatibilityMode = "compatibility"
-        case compatibilityQuickStartMode = "compatibility_quick_start"
-        
-        var isCompatibilityMode: Bool {
-            switch self {
-            case .compatibilityMode, .compatibilityQuickStartMode:
-                return true
-            case .privacyMode:
-                return false
-            }
-        }
-        
-        var isPrivacyMode: Bool {
-            switch self {
-            case .compatibilityMode, .compatibilityQuickStartMode:
-                return false
-            case .privacyMode:
-                return true
-            }
-        }
-        
-        var isQuickStartMode: Bool {
-            switch self {
-            case .compatibilityQuickStartMode:
-                return true
-            case .privacyMode, .compatibilityMode:
-                return false
-            }
-        }
-        
-        init?(from string: String) {
-            self.init(rawValue: string)
-        }
-    }
-    
     public enum ChatStreamStatus: String, @unchecked Sendable {
         case starting = "starting"
         case failed = "failed"
@@ -178,18 +139,6 @@ public class FreeToken: @unchecked Sendable {
         await postData(path: "device_sessions", data: createDeviceSessionRequest, responseType: Codings.ShowDeviceSessionResponse.self) { result in
             switch result {
             case .success(let response):
-                self.deviceMode = DeviceMode(from: response.mode)
-                
-                if self.deviceMode?.isPrivacyMode == true, self.encryptionManager.isEncryptionEnabled == false {
-                    // Require these to be set before moving forward.
-                    await errorCallback(FreeTokenError.noEncryptOrDecryptDefinedInPrivacyMode)
-                    return
-                }
-                if self.deviceMode?.isCompatibilityMode == true, self.encryptionManager.isEncryptionEnabled == true {
-                    await errorCallback(FreeTokenError.encryptOrDecryptDefinedInCompatibilityMode)
-                    return
-                }
-                
                 self.deviceSessionToken = response.token
                 self.deviceDetails = response
                 
@@ -200,7 +149,7 @@ public class FreeToken: @unchecked Sendable {
                 if response.aiModel.cloudOnly == false {
                     // Initialize the AI Model Manager
                     do {
-                        _ = try self.aiModelsManager.addManager(modelConfig: response.aiModel, clientVersion: self.clientVersion, deviceMode: self.deviceMode!, isDefault: true)
+                        _ = try self.aiModelsManager.addManager(modelConfig: response.aiModel, clientVersion: self.clientVersion, isDefault: true)
                     } catch {
                         FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager: \(error.localizedDescription)", .error)
                         await errorCallback(error as! FreeToken.FreeTokenError)
@@ -208,13 +157,7 @@ public class FreeToken: @unchecked Sendable {
                         return
                     }
                     
-                    let deviceManager = self.aiModelsManager.getDeviceManager(for: response.aiModel.code)
-                    
-                    if deviceManager?.isAICapable == false, self.deviceMode?.isPrivacyMode == true {
-                        FreeToken.shared.logger("🔴 Device is not capable of running AI models in privacy mode", .error)
-                        await errorCallback(FreeTokenError.deviceIncapableOfAiInPrivacyMode)
-                        return
-                    }
+                    _ = self.aiModelsManager.getDeviceManager(for: response.aiModel.code)
                 } else {
                     FreeToken.shared.logger("⏭️ AI Model is cloud-only, skipping local model initialization.", .info)
                 }
@@ -245,7 +188,6 @@ public class FreeToken: @unchecked Sendable {
         deviceDetails = nil
         deviceSessionToken = nil
         aiModelsManager.reset()
-        deviceMode = nil
         encryptionManager.reset()
     }
     
@@ -374,7 +316,7 @@ public class FreeToken: @unchecked Sendable {
                 }
                 
                 do {
-                    let modelManager = try self.aiModelsManager.addManager(modelConfig: aiModel.coding, clientVersion: self.clientVersion, deviceMode: self.deviceMode!, isDefault: isDefaultModelCode)
+                    let modelManager = try self.aiModelsManager.addManager(modelConfig: aiModel.coding, clientVersion: self.clientVersion, isDefault: isDefaultModelCode)
                     
                     let deviceManager = self.aiModelsManager.getDeviceManager(for: aiModel.code)! // Should always have a device manager since it was just added
                     
@@ -762,11 +704,7 @@ public class FreeToken: @unchecked Sendable {
             return
         } else {
             // Generate cloud completion
-            if self.deviceMode?.isPrivacyMode == false {
-                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
-            } else {
-                await errorCompletion(FreeTokenError.cloudCompletionPrivacyMode)
-            }
+            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
         }
     }
     
@@ -891,20 +829,15 @@ public class FreeToken: @unchecked Sendable {
             let response: String
             let usage: TokenUsage?
             
-            (response, usage) = try await aiModelManager.sendMessagesToAI(messages: [message], runIdentifier: uuid, noContextCache: true)
+            (response, usage) = try await aiModelManager.sendMessagesToAI(messages: [message], runIdentifier: uuid, runLocation: .localRun, noContextCache: true)
             let completion = Completion(response: response)
 
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: usage)
             await successCompletion(completion)
         } catch {
-            if error as? FreeTokenError == .aiQueueTimeout, self.deviceMode?.isQuickStartMode == true {
-                // Queue is taking too long, send this to the cloud
-                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
-            } else {
-                let error = FreeTokenError.encoding(message: error.localizedDescription)
-                profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
-                await errorCompletion(error)
-            }
+            let error = FreeTokenError.encoding(message: error.localizedDescription)
+            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
+            await errorCompletion(error)
         }
     }
     
@@ -1416,7 +1349,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Workflow Context
-        let context = RunMessageThreadContext(messageThreadID: messageThreadID, runLocation: effectiveRunLocation, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream, toolCallback: toolCallback)
+        let context = RunMessageThreadContext(messageThreadID: messageThreadID, runLocation: effectiveRunLocation, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream, toolCallback: toolCallback)
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
@@ -1604,7 +1537,7 @@ public class FreeToken: @unchecked Sendable {
         do {
             let response: String
             let usage: TokenUsage?
-            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runIdentifier, aiRunConfig: aiRunConfig)
+            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runIdentifier, runLocation: .localRun, aiRunConfig: aiRunConfig)
             
             let message = Message(role: .assistant, content: response, tokenUsage: usage)
             
