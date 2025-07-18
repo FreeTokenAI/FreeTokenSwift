@@ -39,7 +39,6 @@ extension FreeToken {
             forceCloudRun: Bool?,
             documentSearchScope: String?,
             privateDocumentStoreIds: [String]?,
-            toolRunOnly: Bool = true,
             deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?,
             aiModelManager: AIModelManager?,
             deviceMode: DeviceMode?,

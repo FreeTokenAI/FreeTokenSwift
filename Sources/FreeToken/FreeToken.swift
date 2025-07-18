@@ -1409,7 +1409,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Workflow Context
-        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: effectiveForceCloudRun, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, toolRunOnly: true, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream)
+        let context = RunMessageThreadContext(messageThreadID: messageThreadID, forceCloudRun: effectiveForceCloudRun, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceMode: deviceMode, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream, toolCallback: toolCallback)
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
