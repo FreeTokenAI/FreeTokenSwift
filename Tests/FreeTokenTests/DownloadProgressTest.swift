@@ -33,7 +33,9 @@ final class DownloadProgressTest: XCTestCase {
     override func tearDownWithError() throws {
         // Put teardown code here. This method is called after the invocation of each test method in the class.
         print("--------------------------------- RESETTING -----------------------------------------")
-        try FreeToken.shared.resetDevice()
+        Task {
+            try await FreeToken.shared.resetDevice()
+        }
     }
     
     func testDownloadProgressReporting() throws {

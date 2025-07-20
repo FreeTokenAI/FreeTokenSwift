@@ -21,6 +21,7 @@ public class FreeToken: @unchecked Sendable {
     let httpClient = HTTPClient()
     let messagesManager: MessagesManager
     let aiModelsManager: AIModelsManager = AIModelsManager()
+    let toolDefinitionsManager = ToolDefinitionsManager()
     
     var baseURL: URL? = nil
     var appToken: String? = nil
@@ -161,6 +162,17 @@ public class FreeToken: @unchecked Sendable {
                 } else {
                     FreeToken.shared.logger("⏭️ AI Model is cloud-only, skipping local model initialization.", .info)
                 }
+                
+                // Capture Tool Call Instructions
+                await self.toolDefinitionsManager.setToolInstructions(response.toolInstructions)
+                
+                // Capture Built in and Cloud Tool Calls
+                let builtInTools = response.builtInToolDefinitions.map { ToolDefinition(from: $0) }
+                await self.toolDefinitionsManager.addToolDefinitions(builtInTools, type: .builtIn)
+                
+                let cloudTools = response.cloudToolDefinitions.map { ToolDefinition(from: $0) }
+                await self.toolDefinitionsManager.addToolDefinitions(cloudTools, type: .cloud)
+                
                 FreeToken.shared.logger("📋 Device registered successfully", .info)
                 
                 profiler.end(eventType: Profiler.EventType.registerDeviceSession, isSuccess: true)
@@ -179,16 +191,15 @@ public class FreeToken: @unchecked Sendable {
     ///   client.resetDevice()
     /// ```
     ///
-    /// Performs two major functions:
-    /// 1. Deletes any persisted references to the device
-    /// 2. Deletes the AI model cache
+    /// > Note: This method is used to reset the client to original state to begin registering again.
     ///
     /// - Returns: Void
-    public func resetDevice() throws {
+    public func resetDevice() async throws {
         deviceDetails = nil
         deviceSessionToken = nil
         aiModelsManager.reset()
         encryptionManager.reset()
+        await toolDefinitionsManager.removeAllToolDefinitions()
     }
     
     /// Reset Model Caches
@@ -455,6 +466,41 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    /// Register tool definitions with the client
+    ///
+    ///
+    /// - Parameters:
+    ///  - toolDefinitions: An array of `ToolDefinition` objects to register.
+    /// - Returns: Void
+    public func registerToolDefinitions(_ toolDefinitions: [ToolDefinition]) async {
+        
+        for toolDefinition in toolDefinitions {
+            await toolDefinitionsManager.addToolDefinition(toolDefinition, type: .application)
+        }
+    }
+    
+    /// Add a tool definition globally to the client
+    ///
+    /// ```
+    ///   await client.addToolDefinition(name: "myTool", definitionJSON: "{...}")
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - name: Name of the tool function to add
+    ///   - definitionJSON: OpenAI Tool Definition JSON string
+    /// - Returns: Void
+    public func addToolDefinition(name: String, definitionJSON: String) async {
+        let toolDefinition = ToolDefinition(name: name, definition: definitionJSON)
+        await toolDefinitionsManager.addToolDefinition(toolDefinition, type: .application)
+    }
+    
+    /// Remove all tool definitions
+    ///
+    /// - Returns: Void
+    public func removeAllToolDefintions() async {
+        await toolDefinitionsManager.removeAllToolDefinitions()
+    }
+    
     /// Create Message Thread in FreeToken Cloud
     ///
     /// ```
@@ -470,19 +516,32 @@ public class FreeToken: @unchecked Sendable {
     /// > If it's not persisted, it will be lost and you will have no way of adding messages to the thread.
     ///
     /// - Parameters:
-    ///     - agentScope: Optional parameter to attach the message thread to a specific agent that matches this scope.
+    ///     - toolAccess: An array of `ToolRunMask` to define which tools will be available in this message thread. Defaults to `.allowAll`.
     ///     - success: A closure that is executed when the message thread is successfully created.
     ///     - error: A closure that is executed if there is an error during the creation of the message thread.
     ///
     /// - Returns: Void
-    public func createMessageThread(agentScope: Optional<String> = nil, success successCompletion: @escaping @Sendable (MessageThread) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    public func createMessageThread(toolAccess: [ToolRunMask] = [.allowAll], success successCompletion: @escaping @Sendable (MessageThread) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
+        // Assemble the system message
+        let deviceDetails = self.deviceDetails!
+        
+        var systemMessageContent = deviceDetails.systemInstructions
+        
+        let toolDefinitions = await toolDefinitionsManager.processToolMask(toolAccess)
+        if toolDefinitions.isEmpty == false {
+            let toolDefinitionJSON = toolDefinitions.map { $0.definition }.joined(separator: ",\n")
+            systemMessageContent += "\n\n\(await toolDefinitionsManager.getToolInstructions())\n\nAvailable Tools:\n[\n\(toolDefinitionJSON)\n]"
+        }
+        
+        let systemMessage = Message(role: .system, content: systemMessageContent)
+        
         // Use Message Manager
-        await messagesManager.createMessageThread(agentScope: agentScope) { result in
+        await messagesManager.createMessageThread(systemMessage: systemMessage) { result in
             switch result {
             case .success(let messageThread):
                 FreeToken.shared.logger("📝 Message thread created successfully: \(messageThread.id)", .info)
@@ -1281,6 +1340,8 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Tip: Use `documentSearchScope` to change the context that the AI uses for RAG.  If left unset, the AI will use the document scope set in the Agent in the FreeToken Admin console.
     ///
+    /// > Tip: Use `toolAccess` to control which tools can be run during the message thread.  This allows you to limit the tools that can be used during the message thread execution. Order matters, so if you want to allow only one tool you can use `[.denyAll, .allow("my_tool")]`. This would deny all tools except "my_tool".
+    ///
     /// > Warning: The AI model must be downloaded prior to using this method. It's recommended that you ensure that ``downloadAIModel(completion:)`` is called prior to use.
     ///
     /// - Parameters:
@@ -1290,6 +1351,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - privateDocumentStoreIds: Optional array of private document store IDs for RAG context
     ///     - aiRunConfig: Optional AI run configuration to override default AI model settings
     ///     - modelCode: Optional AI Model Code to use a different model than provided by the device session (will force to cloud)
+    ///     - toolAccess: Optional ToolRunMask to control which tools can be run during the message thread
     ///     - success: A closure to capture the result of the run of the message thread
     ///     - error: A closure to capture any errors that occur during the call
     ///     - chatStatusStream: Optional closure to capture the status of the chat stream
@@ -1303,6 +1365,7 @@ public class FreeToken: @unchecked Sendable {
         privateDocumentStoreIds: Optional<[String]> = nil,
         aiRunConfig: Optional<AIRunConfig> = nil,
         modelCode: Optional<String> = nil,
+        toolAccess: [ToolRunMask] = [.allowAll],
         success successCompletion: @escaping @Sendable (Message) async -> Void,
         error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void,
         chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void> = nil,
@@ -1349,10 +1412,28 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Workflow Context
-        let context = RunMessageThreadContext(messageThreadID: messageThreadID, runLocation: effectiveRunLocation, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds, deviceDetails: deviceDetails, aiModelManager: aiModelManager, deviceManager: deviceManager, messagesManager: messagesManager, jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false, aiRunConfig: aiRunConfig, modelCode: modelCode, chatStatusStream: chatStatusStream, toolCallback: toolCallback)
+        let context = RunMessageThreadContext(
+            messageThreadID: messageThreadID,
+            runLocation: effectiveRunLocation,
+            documentSearchScope: documentSearchScope,
+            privateDocumentStoreIds: privateDocumentStoreIds,
+            deviceDetails: deviceDetails,
+            aiModelManager: aiModelManager,
+            deviceManager: deviceManager,
+            messagesManager: messagesManager,
+            jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false,
+            aiRunConfig: aiRunConfig,
+            modelCode: modelCode,
+            toolRunMasks: toolAccess,
+            allToolDefinitions: await toolDefinitionsManager.allToolDefinitions(),
+            toolDefinitionsManager: toolDefinitionsManager,
+            chatStatusStream: chatStatusStream,
+            toolCallback: toolCallback
+        )
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
+            ToolCallMasking.self,
             LoadAIModel.self,
             DetermineAIRunLocation.self,
             GetMessageThread.self,

@@ -22,7 +22,7 @@ extension FreeToken {
         
         func parse() throws -> [ToolCall] {
             guard !toolNames.isEmpty else {
-                throw ParseError.message("No tool names provided")
+                throw FreeTokenError.noToolNamesProvided
             }
             
             // Clear previous results
@@ -95,10 +95,6 @@ extension FreeToken {
             }
             
             return arguments
-        }
-        
-        enum ParseError: Error {
-            case message(String)
         }
     }
 }

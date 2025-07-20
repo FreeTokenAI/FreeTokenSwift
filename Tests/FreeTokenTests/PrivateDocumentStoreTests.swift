@@ -41,7 +41,9 @@ final class PrivateDocumentStoreTests: XCTestCase {
 
     override func tearDownWithError() throws {
         print("--------------------------------- TEARDOWN -----------------------------------------")
-        try FreeToken.shared.resetDevice()
+        Task {
+            await try FreeToken.shared.resetDevice()
+        }
     }
 
     func testCreatePrivateDocumentStore() async throws {

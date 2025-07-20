@@ -9,22 +9,30 @@ import Foundation
 
 extension FreeToken {
     class ToolCallsManager: @unchecked Sendable {
-        private let messageContent: String
-        private let toolNames: [String]
+        internal let builtInToolDefinitions: [ToolDefinition]
+        internal let applicationToolDefinitions: [ToolDefinition]
+        internal let cloudToolDefinitions: [ToolDefinition]
         
-        private let availableCloudToolCalls: [String]
-        private let internalLocalToolCalls = ["article_lookup", "web_search"]
+        private let messageContent: String
         private let documentSearchScope: String?
         private let privateDocumentStoreIds: [String]?
         
         private var toolCalls: [ToolCall] = []
                 
-        internal init(messageContent: String, availableCloudToolCalls: [String], toolNames: [String], documentSearchScope: String?, privateDocumentStoreIds: [String]?) {
+        internal init(
+            messageContent: String,
+            builtInToolDefinitions: [ToolDefinition],
+            applicationToolDefinitions: [ToolDefinition] = [],
+            cloudToolDefinitions: [ToolDefinition] = [],
+            documentSearchScope: String?,
+            privateDocumentStoreIds: [String]?
+        ) {
             self.messageContent = messageContent
-            self.availableCloudToolCalls = availableCloudToolCalls
             self.documentSearchScope = documentSearchScope
             self.privateDocumentStoreIds = privateDocumentStoreIds
-            self.toolNames = toolNames
+            self.builtInToolDefinitions = builtInToolDefinitions
+            self.cloudToolDefinitions = cloudToolDefinitions
+            self.applicationToolDefinitions = applicationToolDefinitions
         }
         
         actor ToolCallResultsCollector {
@@ -50,15 +58,18 @@ extension FreeToken {
                 await successCallback("")
                 return
             }
+            
+            let cloudToolCallNames = cloudToolDefinitions.map { $0.name }
+            let builtInToolCallNames = builtInToolDefinitions.map { $0.name }
 
             let remainingToolCalls = toolCalls.filter { toolCall in
-                let isCloudCall = availableCloudToolCalls.contains { $0 == toolCall.name }
-                let isInternalCall = internalLocalToolCalls.contains { $0 == toolCall.name }
+                let isCloudCall = cloudToolCallNames.contains { $0 == toolCall.name }
+                let isInternalCall = builtInToolCallNames.contains { $0 == toolCall.name }
                 return !isCloudCall && !isInternalCall
             }
 
-            let cloudToolCalls = toolCalls.filter { availableCloudToolCalls.contains($0.name) }
-            let internalCalls = toolCalls.filter { internalLocalToolCalls.contains($0.name) }
+            let cloudToolCalls = toolCalls.filter { cloudToolCallNames.contains($0.name) }
+            let internalCalls = toolCalls.filter { builtInToolCallNames.contains($0.name) }
 
             let toolCallResultsCollector = ToolCallResultsCollector()
             let dispatchGroup = DispatchGroup()
@@ -107,6 +118,7 @@ extension FreeToken {
         }
         
         private func parseToolCalls() throws {
+            let toolNames = builtInToolDefinitions.map { $0.name } + applicationToolDefinitions.map { $0.name } + cloudToolDefinitions.map { $0.name }
             let parser = ParseToolCalls(messageContent: messageContent, toolNames: toolNames)
             
             self.toolCalls = try parser.parse()

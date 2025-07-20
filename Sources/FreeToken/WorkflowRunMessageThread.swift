@@ -24,6 +24,8 @@ extension FreeToken {
         let aiRunConfig: AIRunConfig?
         let jsonToolResults: Bool
         let modelCode: String?
+        let toolRunMasks: [ToolRunMask]
+        let toolDefinitionsManager: ToolDefinitionsManager
 
         var cloudRun: Bool? = nil
         var resultMessage: Message? = nil
@@ -31,6 +33,7 @@ extension FreeToken {
         var tokenUsage: TokenUsage? = nil // Not sure I'll use this, but keeping it for now
         var toolCallRecursiveRuns: Int = 0
         var stopExecution: Bool = false // Special flag to stop execution of the workflow after current step.
+        var selectedToolDefinitions: [ToolDefinition] = []
         
         
         init(
@@ -45,6 +48,9 @@ extension FreeToken {
             jsonToolResults: Bool,
             aiRunConfig: AIRunConfig? = nil,
             modelCode: String? = nil,
+            toolRunMasks: [ToolRunMask],
+            allToolDefinitions: [ToolDefinition] = [],
+            toolDefinitionsManager: ToolDefinitionsManager,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>,
             toolCallback: Optional<@Sendable ([FreeToken.ToolCall]) async -> String> = nil
         ) {
@@ -61,6 +67,44 @@ extension FreeToken {
             self.toolCallback = toolCallback
             self.jsonToolResults = jsonToolResults
             self.modelCode = modelCode
+            self.selectedToolDefinitions = allToolDefinitions
+            self.toolRunMasks = toolRunMasks
+            self.toolDefinitionsManager = toolDefinitionsManager
+        }
+    }
+    
+    // MARK: - Tool Call Masking
+    
+    final class ToolCallMasking: WorkflowStep, @unchecked Sendable {
+        let context: RunMessageThreadContext
+        let masks: [ToolRunMask]
+        
+        init(context: any FreeToken.WorkflowContext) {
+            self.context = context as! RunMessageThreadContext
+            self.masks = self.context.toolRunMasks
+        }
+        
+        func execute(
+            success: @escaping @Sendable (_ context: any WorkflowContext) async -> Void,
+            failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
+        ) async -> Void {
+            for mask in masks {
+                switch mask {
+                case .denyAll:
+                    context.selectedToolDefinitions.removeAll()
+                case .allow(let name):
+                    if context.selectedToolDefinitions.first(where: { $0.name == name }) == nil {
+                        let definition = (await context.toolDefinitionsManager.getToolDefinition(for: name))!
+                        context.selectedToolDefinitions.append(definition)
+                    }
+                case .deny(let name):
+                    context.selectedToolDefinitions.removeAll(where: { $0.name == name })
+                case .allowAll:
+                    context.selectedToolDefinitions = await context.toolDefinitionsManager.allToolDefinitions()
+                }
+            }
+            
+            await success(context)
         }
     }
     
@@ -399,7 +443,6 @@ extension FreeToken {
     final class RunToolCalls: WorkflowStep, @unchecked Sendable {
         let context: RunMessageThreadContext
         let deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse
-        let toolNames: [String]
         let resultMessage: Message
         let documentSearchScope: String?
         let privateDocumentStoreIds: [String]?
@@ -410,7 +453,6 @@ extension FreeToken {
         init(context: any FreeToken.WorkflowContext) {
             let context = context as! RunMessageThreadContext
             self.context = context
-            self.toolNames = context.deviceDetails?.toolNames ?? []
             self.deviceDetails = context.deviceDetails!
             self.resultMessage = context.resultMessage!
             self.documentSearchScope = context.documentSearchScope
@@ -424,6 +466,8 @@ extension FreeToken {
             success: @escaping @Sendable (_ context: any WorkflowContext) async -> Void,
             failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
         ) async -> Void {
+            let toolNames = await context.toolDefinitionsManager.processToolMask(context.toolRunMasks)
+            
             guard toolNames.count > 0 else {
                 FreeToken.shared.logger("🛠️ No tool calls defined, skipping", .info)
                 await success(context)
@@ -431,9 +475,19 @@ extension FreeToken {
             }
             
             FreeToken.shared.logger("🛠️ Checking for tool calls", .info)
-  
-            let cloudCallNames: [String] = [] // This is not implemented yet.
-            let toolCallManager = ToolCallsManager(messageContent: resultMessage.content, availableCloudToolCalls: cloudCallNames, toolNames: toolNames, documentSearchScope: documentSearchScope, privateDocumentStoreIds: privateDocumentStoreIds)
+            
+            let builtInToolDefinitions = await context.toolDefinitionsManager.getToolDefinitions(for: .builtIn).filter { tool in
+                return context.selectedToolDefinitions.contains(where: { $0.name == tool.name })
+            }
+            let applicationToolDefinitions = await context.toolDefinitionsManager.getToolDefinitions(for: .application).filter { tool in
+                return context.selectedToolDefinitions.contains(where: { $0.name == tool.name })
+            }
+            let cloudToolDefinitions = await context.toolDefinitionsManager.getToolDefinitions(for: .cloud).filter { tool in
+                return context.selectedToolDefinitions.contains(where: { $0.name == tool.name })
+            }
+            
+            let toolCallManager = ToolCallsManager(messageContent: resultMessage.content, builtInToolDefinitions: builtInToolDefinitions, applicationToolDefinitions: applicationToolDefinitions, cloudToolDefinitions: cloudToolDefinitions, documentSearchScope: context.documentSearchScope, privateDocumentStoreIds: context.privateDocumentStoreIds)
+                
             let profiler = Profiler()
             
             do {

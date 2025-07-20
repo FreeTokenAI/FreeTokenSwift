@@ -60,11 +60,13 @@ extension FreeToken {
         struct ShowDeviceSessionResponse: Decodable {
             let token: String
             let scope: String
-            let toolNames: [String]
             let documentsConfig: DocumentsConfigResponse
             let aiModel: AiModelResponse
             let embeddingModel: EmbeddingModelResponse
             let systemInstructions: String
+            let builtInToolDefinitions: [ToolDefinition]
+            let cloudToolDefinitions: [ToolDefinition]
+            let toolInstructions: String
             let precache: [DownloadableFile]
             let forceCloudRun: Bool
             let createdAt: Date
@@ -73,11 +75,13 @@ extension FreeToken {
             enum CodingKeys: String, CodingKey {
                 case token
                 case scope
-                case toolNames = "tool_names"
                 case documentsConfig = "documents_config"
                 case aiModel = "ai_model"
                 case embeddingModel = "embedding_model"
                 case systemInstructions = "system_instructions"
+                case builtInToolDefinitions = "built_in_tool_definitions"
+                case cloudToolDefinitions = "cloud_tool_definitions"
+                case toolInstructions = "tool_instructions"
                 case precache = "precache"
                 case forceCloudRun = "force_cloud_run"
                 case createdAt = "created_at"
@@ -262,12 +266,10 @@ extension FreeToken {
         }
         
         struct CreateMessageThreadRequest: Encodable {
-            let agentScope: String?
-            let encryptionEnabled: Bool
+            let messages: [CreateMessageRequest]?
             
             enum CodingKeys: String, CodingKey {
-                case agentScope = "agent_scope"
-                case encryptionEnabled = "encryption_enabled"
+                case messages
             }
         }
         
@@ -479,7 +481,7 @@ extension FreeToken {
         }
         
         struct CreateMessageRequest: Encodable {
-            let messageThreadID: String
+            let messageThreadID: String?
             let role: String
             let content: String
             let encryptionEnabled: Bool
@@ -1165,6 +1167,34 @@ extension FreeToken {
             self.name = name
             self.arguments = arguments
         }
+    }
+    
+    public class ToolDefinition: @unchecked Sendable {
+        public let name: String
+        public let definition: String
+        
+        internal init(from toolDefinition: Codings.ToolDefinition) {
+            self.name = toolDefinition.name
+            self.definition = toolDefinition.definition
+        }
+        
+        public init(name: String, definition: String) {
+            self.name = name
+            self.definition = definition
+        }
+    }
+    
+    enum ToolDefinitionType: Equatable, Sendable {
+        case builtIn
+        case application
+        case cloud
+    }
+    
+    public enum ToolRunMask: Equatable, Sendable {
+        case denyAll
+        case allowAll
+        case allow(_ toolName: String)
+        case deny(_ toolName: String)
     }
     
     public struct AIRunConfig: Sendable {

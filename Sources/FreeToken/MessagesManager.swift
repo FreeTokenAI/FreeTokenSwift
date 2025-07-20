@@ -115,14 +115,16 @@ extension FreeToken {
             }
         }
         
-        func createMessageThread(agentScope: Optional<String> = nil, result handler: @escaping @Sendable (Result<MessageThread, FreeTokenError>) async -> Void) async {
+        func createMessageThread(systemMessage: Message, result handler: @escaping @Sendable (Result<MessageThread, FreeTokenError>) async -> Void) async {
             guard let client = client else {
                 FreeToken.shared.logger("🔴 MessagesManager not initialized with a FreeToken client", .error)
                 await handler(.failure(FreeTokenError.clientNotInitialized))
                 return
             }
             
-            let request = Codings.CreateMessageThreadRequest(agentScope: agentScope, encryptionEnabled: encryptionManager.isEncryptionEnabled)
+            let messageRequest = Codings.CreateMessageRequest(messageThreadID: nil, role: systemMessage.role.rawValue, content: systemMessage.content, encryptionEnabled: false, lastMessageID: nil, encryptedImages: nil)
+            
+            let request = Codings.CreateMessageThreadRequest(messages: [messageRequest])
             
             let profiler = Profiler()
             await client.postData(path: "message_threads", data: request, responseType: Codings.ShowMessageThreadResponse.self) { result in

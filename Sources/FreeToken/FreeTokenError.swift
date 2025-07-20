@@ -96,6 +96,9 @@ extension FreeToken {
         case cannotInitializeSecondDefaultAIModel
         case modelManagerAlreadyInitialized(code: String)
         
+        // MARK: - ParseToolCalls Errors:
+        case noToolNamesProvided
+        
         // MARK: - Custom Error:
         case error(message: String, code: Int? = nil)
     }
@@ -185,6 +188,8 @@ extension FreeToken.FreeTokenError {
             
         case .cannotInitializeSecondDefaultAIModel: return "cannotInitializeSecondDefaultAIModel"
         case .modelManagerAlreadyInitialized: return "modelManagerAlreadyInitialized"
+            
+        case .noToolNamesProvided: return "noToolNamesProvided"
         
         case .error(_, _):
             return "error"
@@ -289,7 +294,9 @@ extension FreeToken.FreeTokenError {
         case .cannotInitializeSecondDefaultAIModel: return "Cannot initialize a second default AI model, only one is allowed"
         case .modelManagerAlreadyInitialized(let code):
             return "AIModelManager for code \(code) is already initialized, cannot initialize again"
-            
+        
+        case .noToolNamesProvided: return "No tool names provided for parsing tool calls"
+
         case .error(let message, _):
             return message
         }
@@ -368,6 +375,7 @@ extension FreeToken.FreeTokenError {
         case .unhandledInternalToolCall: return 4000
         case .cannotInitializeSecondDefaultAIModel: return 5000
         case .modelManagerAlreadyInitialized(_): return 5001
+        case .noToolNamesProvided: return 6000
             
         case .error(_, let code):
             return code
