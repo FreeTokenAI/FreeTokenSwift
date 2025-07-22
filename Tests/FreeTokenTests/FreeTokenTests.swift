@@ -481,12 +481,12 @@ final class FreeTokenTests: XCTestCase {
                 
                 print("🔍 TEST: Created message with \(message.attachments?.count ?? 0) attachments")
                 
-                try FreeToken.shared.privacyModeEncryption { toEncrypt in
+                try FreeToken.shared.enableEncryption(encrypt: { toEncrypt in
                     // Use base64 to simulate encryption
                     return Data(toEncrypt.utf8).base64EncodedString()
-                } decrypt: { toDecrypt in
+                }, decrypt: { toDecrypt in
                     return String(data: Data(base64Encoded: toDecrypt) ?? Data(), encoding: .utf8) ?? ""
-                }
+                })
                 
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in

@@ -18,12 +18,8 @@ extension FreeToken {
         case deviceReset
         case cacheReset
         case invalidURL
-        case aiNotSupportedNoCompatibility
         case responseTypeInvalid
         case handlingToolCallsFailed
-        case encryptionEnabledInCompatibilityMode
-        case encryptedMessageLoadedInCompatibilityMode
-        case cloudCompletionPrivacyMode
         case cloudCompletionFailed(message: String? = nil)
         case encryptedDocumentReceivedWithoutWayToDecrypt
         case encryptedMessageThreadLoadedWithoutWayToDecrypt
@@ -32,10 +28,6 @@ extension FreeToken {
         case privateDocumentStoreDeletionFailed
         case invalidPrivateDocumentStoreId
         case privateDocumentCreationFailed
-        case noEncryptOrDecryptDefinedInPrivacyMode
-        case encryptOrDecryptDefinedInCompatibilityMode
-        case deviceIncapableOfAiInPrivacyMode
-        case cloudRunInPrivacyMode
         case modelMustBeLoadedBeforeAddingMessage
         case cloudCompletionInvalidResponse
         case encoding(message: String? = nil)
@@ -117,12 +109,8 @@ extension FreeToken.FreeTokenError {
         case .deviceReset: return "deviceReset"
         case .cacheReset: return "cacheReset"
         case .invalidURL: return "InvalidURL"
-        case .aiNotSupportedNoCompatibility: return "aiNotSupportedNoCompitability"
         case .responseTypeInvalid: return "responseTypeInvalid"
         case .handlingToolCallsFailed: return "handlingToolCallsFailed"
-        case .encryptionEnabledInCompatibilityMode: return "encryptionEnabledInCompatabilityMode"
-        case .encryptedMessageLoadedInCompatibilityMode: return "encryptedMessageLoadedInCompatabilityMode"
-        case .cloudCompletionPrivacyMode: return "cloudCompletionPrivacyModeError"
         case .cloudCompletionFailed(_): return "cloudCompletionFailed"
         case .encryptedDocumentReceivedWithoutWayToDecrypt: return "encryptedDocumentRecievedWithoutWayToDecrypt"
         case .encryptedMessageThreadLoadedWithoutWayToDecrypt: return "encryptedMessageThreadLoadedWithoutWayToDecrypt"
@@ -131,10 +119,6 @@ extension FreeToken.FreeTokenError {
         case .privateDocumentStoreDeletionFailed: return "privateDocumentStoreDeletionFailed"
         case .invalidPrivateDocumentStoreId: return "invalidPrivateDocumentStoreId"
         case .privateDocumentCreationFailed: return "privateDocumentCreationFailed"
-        case .noEncryptOrDecryptDefinedInPrivacyMode: return "noEncryptOrDecryptDefinedInPrivacyMode"
-        case .encryptOrDecryptDefinedInCompatibilityMode: return "encryptOrDecryptDefinedInCompatibilityMode"
-        case .deviceIncapableOfAiInPrivacyMode: return "deviceIncapableOfAiInPrivacyMode"
-        case .cloudRunInPrivacyMode: return "cannotCloudRunAiInPrivacyMode"
         case .modelMustBeLoadedBeforeAddingMessage: return "modelMustBeLoadedBeforeAddingMessage"
         case .cloudCompletionInvalidResponse: return "cloudCompletionInvalidResponse"
         case .encoding(_): return "encodingError"
@@ -206,12 +190,8 @@ extension FreeToken.FreeTokenError {
         case .deviceReset: return "Could not reset the device"
         case .cacheReset: return "Could not reset the AI model cache"
         case .invalidURL: return "Failed to construct URL with query parameters."
-        case .aiNotSupportedNoCompatibility: return "AI is not supported on this device and compatibility mode is off"
         case .responseTypeInvalid: return "The response from the server was invalid"
         case .handlingToolCallsFailed: return "Failed to handle tool calls"
-        case .encryptionEnabledInCompatibilityMode: return "Encryption is not available in compatability mode, for encryption turn on privacy mode in the admin."
-        case .encryptedMessageLoadedInCompatibilityMode: return "An encrypted message was loaded from the server in compatability mode where no decryption method is defined."
-        case .cloudCompletionPrivacyMode: return "Application tried to run a completion in the cloud with Privacy Mode enabled. Likely cause is that the AI model is not downloaded yet."
         case .cloudCompletionFailed(let message):
             var response = "Cloud completion failed"
             response += (message != nil) ? (":\n \(message!)") : ""
@@ -223,10 +203,6 @@ extension FreeToken.FreeTokenError {
         case .privateDocumentStoreDeletionFailed: return "Failed to delete private document store"
         case .invalidPrivateDocumentStoreId: return "The private document store ID is invalid"
         case .privateDocumentCreationFailed: return "Failed to create document in private document store"
-        case .noEncryptOrDecryptDefinedInPrivacyMode: return "Encrypt & Decrypt must be added via the configure method in Privacy Mode"
-        case .encryptOrDecryptDefinedInCompatibilityMode: return "Encrypt & Decrypt must not be added via configure in Compatibility Mode"
-        case .deviceIncapableOfAiInPrivacyMode: return "This device is not capable of AI and the App is configured for Privacy Mode (on-device AI only)"
-        case .cloudRunInPrivacyMode: return "Cloud run of a is not supported in Privacy Mode"
         case .modelMustBeLoadedBeforeAddingMessage: return "Model must be loaded before adding a message"
         case .cloudCompletionInvalidResponse: return "The response from the cloud completion was invalid"
         case .encoding(let message):
@@ -312,12 +288,8 @@ extension FreeToken.FreeTokenError {
         case .deviceReset: return 1006
         case .cacheReset: return 1007
         case .invalidURL: return nil
-        case .aiNotSupportedNoCompatibility: return 1008
         case .responseTypeInvalid: return 1009
         case .handlingToolCallsFailed: return 1010
-        case .encryptionEnabledInCompatibilityMode: return 1011
-        case .encryptedMessageLoadedInCompatibilityMode: return 1012
-        case .cloudCompletionPrivacyMode: return 1013
         case .encryptedDocumentReceivedWithoutWayToDecrypt: return 1014
         case .encryptedMessageThreadLoadedWithoutWayToDecrypt: return 1015
         case .privateDocumentStoreNotFound: return 1016
@@ -325,10 +297,6 @@ extension FreeToken.FreeTokenError {
         case .privateDocumentStoreDeletionFailed: return 1018
         case .invalidPrivateDocumentStoreId: return 1019
         case .privateDocumentCreationFailed: return 1020
-        case .noEncryptOrDecryptDefinedInPrivacyMode: return 1021
-        case .encryptOrDecryptDefinedInCompatibilityMode: return 1022
-        case .deviceIncapableOfAiInPrivacyMode: return 1023
-        case .cloudRunInPrivacyMode: return 1024
         case .modelMustBeLoadedBeforeAddingMessage: return 1025
         case .cloudCompletionFailed(_): return 1026
         case .cloudCompletionInvalidResponse: return 1027
@@ -403,18 +371,10 @@ extension FreeToken.FreeTokenError {
              (.deviceReset, .deviceReset),
              (.cacheReset, .cacheReset),
              (.invalidURL, .invalidURL),
-             (.aiNotSupportedNoCompatibility, .aiNotSupportedNoCompatibility),
              (.responseTypeInvalid, .responseTypeInvalid),
              (.handlingToolCallsFailed, .handlingToolCallsFailed),
-             (.encryptionEnabledInCompatibilityMode, .encryptionEnabledInCompatibilityMode),
-             (.encryptedMessageLoadedInCompatibilityMode, .encryptedMessageLoadedInCompatibilityMode),
-             (.cloudCompletionPrivacyMode, .cloudCompletionPrivacyMode),
              (.encryptedDocumentReceivedWithoutWayToDecrypt, .encryptedDocumentReceivedWithoutWayToDecrypt),
              (.encryptedMessageThreadLoadedWithoutWayToDecrypt, .encryptedMessageThreadLoadedWithoutWayToDecrypt),
-             (.noEncryptOrDecryptDefinedInPrivacyMode, .noEncryptOrDecryptDefinedInPrivacyMode),
-             (.encryptOrDecryptDefinedInCompatibilityMode, .encryptOrDecryptDefinedInCompatibilityMode),
-             (.deviceIncapableOfAiInPrivacyMode, .deviceIncapableOfAiInPrivacyMode),
-             (.cloudRunInPrivacyMode, .cloudRunInPrivacyMode),
              (.modelMustBeLoadedBeforeAddingMessage, .modelMustBeLoadedBeforeAddingMessage),
              (.cloudCompletionInvalidResponse, .cloudCompletionInvalidResponse),
              (.unsupportedVersion, .unsupportedVersion),

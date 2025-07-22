@@ -2,9 +2,24 @@ import Foundation
 
 /// FreeToken Client
 public class FreeToken: @unchecked Sendable {
+    /// Shared instance of FreeToken client
+    ///
+    /// Use this singleton instance to access all FreeToken functionality:
+    /// ```
+    /// let client = FreeToken.shared
+    /// client.configure(appToken: "your-api-key")
+    /// ```
     static public let shared = FreeToken()
     
-    
+    /// Indicates whether the client has been configured
+    ///
+    /// Returns `true` if the client has been configured with an API key and base URL, `false` otherwise.
+    /// Check this before making API calls to ensure the client is ready:
+    /// ```
+    /// if FreeToken.shared.isConfigured {
+    ///     // Client is ready to use
+    /// }
+    /// ```
     public var isConfigured: Bool {
         get {
             return isClientConfigured()
@@ -44,13 +59,41 @@ public class FreeToken: @unchecked Sendable {
     
     let encryptionManager = EncryptionManager()
     
+    /// Status updates for AI chat stream operations
+    ///
+    /// Provides real-time status updates during message thread execution. Used with the `chatStatusStream` callback
+    /// in `runMessageThread` to monitor the progress of AI operations:
+    /// ```
+    /// await client.runMessageThread(
+    ///     id: threadId,
+    ///     chatStatusStream: { status in
+    ///         switch status {
+    ///         case .starting:
+    ///             print("Starting AI operation...")
+    ///         case .streaming_tokens:
+    ///             print("Receiving response tokens...")
+    ///         case .stream_ended:
+    ///             print("Response complete!")
+    ///         default:
+    ///             print("Status: \(status.rawValue)")
+    ///         }
+    ///     }
+    /// )
+    /// ```
     public enum ChatStreamStatus: String, @unchecked Sendable {
+        /// Initial status when the operation begins
         case starting = "starting"
+        /// Indicates the operation has failed
         case failed = "failed"
+        /// AI is actively streaming response tokens
         case streaming_tokens = "streaming_tokens"
+        /// The response stream has completed
         case stream_ended = "stream_ended"
+        /// Request is being sent to local on-device AI
         case sending_to_local_ai = "sending_to_local_ai"
+        /// Request is being sent to cloud AI
         case sending_to_cloud_ai = "sending_to_cloud_ai"
+        /// AI is evaluating function/tool calls
         case evaluating_tool_calls = "evaluating_tool_calls"
     }
     
@@ -86,10 +129,10 @@ public class FreeToken: @unchecked Sendable {
         return self
     }
     
-    /// Enables privacy mode encryption by providing encryption and decryption callbacks.
+    /// Enables encryption by providing encryption and decryption callbacks.
     ///
     /// ```
-    ///     try client.privacyModeEncryption(encrypt: { text in
+    ///     try client.enableEncryption(encrypt: { text in
     ///         // Your encryption logic here
     ///         return encryptedText
     ///     }, decrypt: { text in
@@ -98,23 +141,21 @@ public class FreeToken: @unchecked Sendable {
     ///     })
     /// ```
     ///
-    /// > Note: This method sets the encryption and decryption callbacks to be used in privacy mode.
-    /// > These callbacks are required for handling encrypted data when privacy mode is enabled.
+    /// > Note: This enables encryption for all messages and documents from this point forward. Any incoming message or document will be decrypted using this callback. Similarly, any outgoing message or document will be encrypted using the provided encryption callback.
     ///
     /// - Parameters:
     ///     - encryptCallback: A closure that takes a `String` to be encrypted and returns the encrypted `String`.
     ///     - decryptCallback: A closure that takes a `String` to be decrypted and returns the decrypted `String`.
     ///
     /// - Throws: An error if the encryption or decryption process fails.
-    public func privacyModeEncryption(encrypt encryptCallback: @escaping (_ toEncrypt: String) -> String, decrypt decryptCallback: @escaping (_ toDecrypt: String) -> String) throws {
-        
+    public func enableEncryption(encrypt encryptCallback: @escaping (_ toEncrypt: String) -> String, decrypt decryptCallback: @escaping (_ toDecrypt: String) -> String) throws {
         self.encryptionManager.enableEncryption(encryptor: encryptCallback, decryptor: decryptCallback)
     }
     
     /// Determine Device Capabilities and Register with FreeToken Cloud
     ///
     /// ```
-    ///     client.registerDevice(scope: "my-app-v1") {
+    ///     await client.registerDevice(scope: "my-app-v1") {
     ///         // Successfully registered
     ///     } error: { error in
     ///         // Failed to register device
@@ -123,10 +164,11 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Warning: If you are changing the `scope` of a device after it has been previously registered,
     /// > you must use ``resetDevice()`` prior to registering the device.
-    /// > This function is asynchronous and may throw an error if the reset operation fails.
+    ///
+    /// > Tip: Add a random recognizable letter or number to the end of your scope to perform A/B testing on your users with different Agents.  Agent routing is defined in the server console.
     ///
     /// - Parameters:
-    ///   - scope: The Device Scope used in routing to agents and keeping in cohorts
+    ///   - scope: The Device Scope used in routing to an app agent
     ///   - success: A closure that is executed if the call was successful
     ///   - error: A closure that is executed if the call failed.
     ///
@@ -226,6 +268,12 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    
+    /// Delete AI Model Cache
+    ///
+    /// > Warning: This method deletes the entire AI model cache directory, including all downloaded models.
+    ///
+    /// - Returns: Void
     public func deleteAIModelCache() async {
 #if os(macOS) || os(Linux)
         let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".localllmclient")
@@ -248,18 +296,16 @@ public class FreeToken: @unchecked Sendable {
     /// Download the AI model for this specific device
     ///
     /// ```
-    ///     client.downloadAIModel(success: { isModelDownloaded in
-    ///         // Model is ready for use
+    ///     await client.downloadAIModel(success: { modelState in
+    ///        // Model is ready for use
+    ///        // Check the modelState to determine if the model was downloaded, and if AI is supported.
     ///     }, error: { error in
     ///         // Failure - retry downloading.
     ///     })
     /// ```
     ///
     /// > Note: There are scenarios where the a successful result will mean that the model was not downloaded.
-    /// > An example is that the device is not capable of supporting AI.  This returns a successful result but in the
-    /// > above example, isModelDownloaded will be false.  There will let your program know
-    /// > that no model that can run locally. If you allow cloud fallbacks via the admin console this is seamless and can be ignored;
-    /// > but if not, all calls to the AI will fail going forward.
+    /// > Use `modelState` to determine the state of the download.
     ///
     /// - Parameters:
     ///   - success: Closure that is executed after the result of whether the model is downloaded is returned.
@@ -405,7 +451,7 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Note: This method retrieves all AI models available in the FreeToken, both cloud and local supported models.
     ///
-    /// > Tip: Use this to retrieve model codes for use in other methods
+    /// > Tip: Use this to retrieve model codes for use in other methods or to present to the user for model selection.
     ///
     /// - Parameters:
     ///   - success: A closure that is executed when the AI models are successfully listed.
@@ -468,6 +514,7 @@ public class FreeToken: @unchecked Sendable {
     
     /// Register tool definitions with the client
     ///
+    /// > Tip: Use OpenAI JSON Tool Definitions to register tools.
     ///
     /// - Parameters:
     ///  - toolDefinitions: An array of `ToolDefinition` objects to register.
@@ -485,6 +532,8 @@ public class FreeToken: @unchecked Sendable {
     ///   await client.addToolDefinition(name: "myTool", definitionJSON: "{...}")
     /// ```
     ///
+    /// > Tip: Use OpenAI JSON Tool Definitions to register tools.
+    ///
     /// - Parameters:
     ///   - name: Name of the tool function to add
     ///   - definitionJSON: OpenAI Tool Definition JSON string
@@ -497,14 +546,14 @@ public class FreeToken: @unchecked Sendable {
     /// Remove all tool definitions
     ///
     /// - Returns: Void
-    public func removeAllToolDefintions() async {
+    public func removeAllToolDefinitions() async {
         await toolDefinitionsManager.removeAllToolDefinitions()
     }
     
     /// Create Message Thread in FreeToken Cloud
     ///
     /// ```
-    ///     client.createMessageThread(agentScope: "agent-scope", success: { messageThread in
+    ///     await client.createMessageThread(success: { messageThread in
     ///         // Persist the message thread ID in your application
     ///         yourMethodToPersist(messageThreadID: messageThread.id)
     ///     }, error: { error in
@@ -512,14 +561,15 @@ public class FreeToken: @unchecked Sendable {
     ///     })
     /// ```
     ///
-    /// > Note: This process is the only time you will have access to the Message Thread ID.
+    /// > Warning: This process is the only time you will have access to the Message Thread ID.
     /// > If it's not persisted, it will be lost and you will have no way of adding messages to the thread.
+    ///
+    /// > Tip: Use `toolAccess` to selectively define tools that will be availble to this thread.  You can then use `toolAccess` on ``runMessageThread`` to allow certain tools for a specific run.
     ///
     /// - Parameters:
     ///     - toolAccess: An array of `ToolRunMask` to define which tools will be available in this message thread. Defaults to `.allowAll`.
     ///     - success: A closure that is executed when the message thread is successfully created.
     ///     - error: A closure that is executed if there is an error during the creation of the message thread.
-    ///
     /// - Returns: Void
     public func createMessageThread(toolAccess: [ToolRunMask] = [.allowAll], success successCompletion: @escaping @Sendable (MessageThread) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
@@ -556,12 +606,15 @@ public class FreeToken: @unchecked Sendable {
     /// Delete a message thread
     ///
     /// ```
-    ///    client.deleteMessageThread(id: "[message-thread-id]", success: {
-    ///     // Message thread deleted successfully
+    ///    await client.deleteMessageThread(id: "[message-thread-id]", success: {
+    ///         // Message thread deleted successfully
     ///     }, error: { error in
-    ///     // Failed to delete message thread
+    ///         // Failed to delete message thread
     ///     })
     /// ```
+    ///
+    /// > Tip: If your account is billed for storage, deleting message threads will reduce your storage costs.
+    ///
     /// - Parameters:
     ///   - id: ID of the message thread to delete
     ///   - success: A closure that is executed when the message thread is successfully deleted
@@ -593,7 +646,7 @@ public class FreeToken: @unchecked Sendable {
     ///         // Show your messages in the UI
     ///         // Array of messages: messageThread.messages
     ///     } error: { error in
-    ///        // Can be retried
+    ///        // Can retry for connection issues.
     ///        print(error.localizedDescription)
     ///     }
     /// ```
@@ -623,7 +676,7 @@ public class FreeToken: @unchecked Sendable {
     /// Add a message to a message thread
     ///
     /// ```
-    ///     client.addMessageToThread(id: "msg_thr-id", message: Message(role: .user, content: "Hello!"), success: { message in
+    ///     await client.addMessageToThread(id: "msg_thr-id", message: FreeToken.Message(role: .user, content: "Hello!"), success: { message in
     ///         // Message was created successfully
     ///         // Display message in your UI
     ///     }, error: { error in
@@ -633,8 +686,6 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Note: Created messages are not immediately sent to the AI. You must call ``runMessageThread``
     /// > to run this on the AI.
-    ///
-    /// > Note: Messages are automatically indexed for reference in large message threads that will not fit in the AI's context window.
     ///
     /// - Parameters:
     ///     - id: ID of the message thread to add the message
@@ -1282,7 +1333,35 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    func webSearch(query: String, resultCount: Int? = nil, success successCompletion: @escaping @Sendable ([WebSearchResult]) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    /// Perform Web Search
+    ///
+    /// Perform web searches and retrieve results for use in AI or user-facing features. This is the same method that is used by the AI to search the web for relevant information when generating completions or responses.
+    ///
+    /// ```
+    ///     await client.webSearch(
+    ///         query: "latest AI news",
+    ///         resultCount: 3,
+    ///         success: { results in
+    ///             for result in results {
+    ///                 print("Web result: \(result.title) - \(result.url)")
+    ///             }
+    ///         },
+    ///         error: { error in
+    ///             print("Web search failed: \(error)")
+    ///         }
+    ///     )
+    /// ```
+    ///
+    /// > Note: You must setup the web search with an API key in the FreeToken dashboard before using this feature.
+    ///
+    /// - Parameters:
+    ///     - query: The search query string
+    ///     - resultCount: Optional number of results to return
+    ///     - success: A closure to capture the web search results
+    ///     - error: A closure to capture any errors that occur during the call
+    ///
+    /// - Returns: Void
+    public func webSearch(query: String, resultCount: Int? = nil, success successCompletion: @escaping @Sendable ([WebSearchResult]) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.deviceNotRegistered)
             return

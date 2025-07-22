@@ -1,13 +1,13 @@
 # FreeToken Swift Client
 
-The FreeToken Swift client provides seamless AI integration for iOS/macOS apps, supporting both on-device and cloud AI, privacy mode, document search, and more.
+The FreeToken Swift client provides seamless AI integration for iOS/macOS apps, supporting both on-device and cloud AI, document search, and more.
 
 ---
 
 ## Features
 
 - **On-device and Cloud AI**: Automatic fallback between local and cloud inference.
-- **Privacy Mode**: End-to-end encryption for sensitive data. All data stored by FreeToken is encrypted by you with your own encryption keys and algorithms.
+- **Client-side Encryption**: Optional encryption/decryption for sensitive data using your own algorithms.
 - **Document Indexing & Search**: Store and retrieve context for Retrieval-Augmented Generation (RAG).
 - **Private Document Stores**: Secure, isolated document storage with server-generated IDs.
 - **Message Threading**: Multi-turn conversations with persistent threads in the cloud for syncing between clients.
@@ -81,7 +81,7 @@ client.downloadAIModel { isModelDownloaded in
     if isModelDownloaded {
         // Device supports on-device AI
     } else {
-        // Fallback to cloud/compatibility mode if supported
+        // Fallback to cloud if supported
     }
 } error: { error in
     print("Download failed: \(error)")
@@ -411,12 +411,12 @@ Private document stores seamlessly integrate with the AI system for Retrieval-Au
 
 ---
 
-### 8. Privacy Mode
+### 8. Encryption
 
-Enable encryption/decryption for privacy-sensitive data.
+Enable client-side encryption/decryption for sensitive data. When enabled, all messages and documents will be encrypted before sending to the server and decrypted when received.
 
 ```swift
-try client.privacyModeEncryption(
+try client.enableEncryption(
     encrypt: { text in
         // Your encryption logic here
         return encryptedText
@@ -428,7 +428,7 @@ try client.privacyModeEncryption(
 )
 ```
 
-Note: In Privacy mode, you _MUST_ define your own encryption and decryption logic before running the client.
+Note: You must implement your own encryption and decryption logic. The library provides the hooks but does not include encryption algorithms.
 
 ---
 
