@@ -80,6 +80,7 @@ extension FreeToken {
         
         // MARK: - MessagesManager Errors:
         case clientNotInitialized
+        case encryptionError(message: String? = nil)
         
         // MARK: - ToolCallsManager Errors:
         case unhandledInternalToolCall
@@ -90,6 +91,15 @@ extension FreeToken {
         
         // MARK: - ParseToolCalls Errors:
         case noToolNamesProvided
+        
+        // MARK: - EncryptionManager Errors:
+        case encryptionKeyNotSet
+        case decodingEncryptionKeyFailed
+        case stringToUTF8DataFailed
+        case encryptionFailed
+        case customEncryptionClosureNotSet
+        case customDecryptionClosureNotSet
+        case decryptionFailed
         
         // MARK: - Custom Error:
         case error(message: String, code: Int? = nil)
@@ -167,6 +177,7 @@ extension FreeToken.FreeTokenError {
         case .decodingFailed(_): return "decodingFailed"
             
         case .clientNotInitialized: return "clientNotInitialized"
+        case .encryptionError(_): return "encryptionError"
             
         case .unhandledInternalToolCall: return "unhandledInternalToolCall"
             
@@ -174,6 +185,14 @@ extension FreeToken.FreeTokenError {
         case .modelManagerAlreadyInitialized: return "modelManagerAlreadyInitialized"
             
         case .noToolNamesProvided: return "noToolNamesProvided"
+            
+        case .encryptionKeyNotSet: return "encryptionKeyNotSet"
+        case .decodingEncryptionKeyFailed: return "decodingEncryptionKeyFailed"
+        case .stringToUTF8DataFailed: return "stringToUTF8DataFailed"
+        case .encryptionFailed: return "encryptionFailed"
+        case .customEncryptionClosureNotSet: return "customEncryptionClosureNotSet"
+        case .customDecryptionClosureNotSet: return "customDecryptionClosureNotSet"
+        case .decryptionFailed: return "decryptionFailed"
         
         case .error(_, _):
             return "error"
@@ -264,6 +283,7 @@ extension FreeToken.FreeTokenError {
         case .decodingFailed(let message): return message ?? "Decoding failed during generation"
             
         case .clientNotInitialized: return "MessagesManager not initialized with a FreeToken client"
+        case .encryptionError(let message): return "Encryption error occurred: \(message ?? "Unknown error")"
             
         case .unhandledInternalToolCall: return "An internal tool call was not handled by the client code"
             
@@ -272,6 +292,14 @@ extension FreeToken.FreeTokenError {
             return "AIModelManager for code \(code) is already initialized, cannot initialize again"
         
         case .noToolNamesProvided: return "No tool names provided for parsing tool calls"
+            
+        case .encryptionKeyNotSet: return "Encryption key is not set"
+        case .decodingEncryptionKeyFailed: return "Failed to decode the encryption key from base64"
+        case .stringToUTF8DataFailed: return "Failed to parse the encryption key"
+        case .encryptionFailed: return "Encryption failed"
+        case .customEncryptionClosureNotSet: return "Custom encryption closure is not set"
+        case .customDecryptionClosureNotSet: return "Custom decryption closure is not set"
+        case .decryptionFailed: return "Decryption failed"
 
         case .error(let message, _):
             return message
@@ -340,10 +368,18 @@ extension FreeToken.FreeTokenError {
         case .selfDeallocated: return 10001
         case .decodingFailed(_): return 10002
         case .clientNotInitialized: return 11000
+        case .encryptionError(_): return 11001
         case .unhandledInternalToolCall: return 4000
         case .cannotInitializeSecondDefaultAIModel: return 5000
         case .modelManagerAlreadyInitialized(_): return 5001
         case .noToolNamesProvided: return 6000
+        case .encryptionKeyNotSet: return 7000
+        case .decodingEncryptionKeyFailed: return 7006
+        case .stringToUTF8DataFailed: return 7001
+        case .encryptionFailed: return 7002
+        case .customEncryptionClosureNotSet: return 7003
+        case .customDecryptionClosureNotSet: return 7004
+        case .decryptionFailed: return 7005
             
         case .error(_, let code):
             return code

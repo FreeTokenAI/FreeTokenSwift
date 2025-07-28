@@ -12,10 +12,10 @@ import LocalLLMClientLlama
 
 final class ContextFullFalsePositiveTests: XCTestCase {
     
-    override func setUp() {
+    override func setUpWithError() throws {
         super.setUp()
-        _ = FreeToken.shared.configure(
-            appToken: "test-token", 
+        _ = try FreeToken.shared.configure(
+            appToken: "test-token",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug
         )

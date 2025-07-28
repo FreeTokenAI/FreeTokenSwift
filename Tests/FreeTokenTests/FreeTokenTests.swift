@@ -13,7 +13,7 @@ final class FreeTokenTests: XCTestCase {
     
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.
-        _ = FreeToken.shared.configure(
+        _ = try FreeToken.shared.configure(
             appToken: "app_tkn_3b39cb60-22cd-4877-b784-170b75f88a92",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug
@@ -481,13 +481,12 @@ final class FreeTokenTests: XCTestCase {
                 
                 print("🔍 TEST: Created message with \(message.attachments?.count ?? 0) attachments")
                 
-                try FreeToken.shared.enableEncryption(encrypt: { toEncrypt in
-                    // Use base64 to simulate encryption
+                try FreeToken.shared.enableCustomEncryption { toEncrypt, scope in
                     return Data(toEncrypt.utf8).base64EncodedString()
-                }, decrypt: { toDecrypt in
+                } decrypt: { toDecrypt, scope in
                     return String(data: Data(base64Encoded: toDecrypt) ?? Data(), encoding: .utf8) ?? ""
-                })
-                
+                }
+
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
                         await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .cloudRun, success: { resultMessage in

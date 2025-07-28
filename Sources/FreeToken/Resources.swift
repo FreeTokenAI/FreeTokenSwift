@@ -383,6 +383,7 @@ extension FreeToken {
 
         struct ShowDocumentResponse: Decodable {
             let id: String
+            let documentType: String
             let searchScope: String
             let metadata: String?
             let content: String
@@ -391,6 +392,7 @@ extension FreeToken {
             
             enum CodingKeys: String, CodingKey {
                 case id
+                case documentType = "document_type"
                 case searchScope = "search_scope"
                 case metadata
                 case content
@@ -420,12 +422,14 @@ extension FreeToken {
         struct SearchDocumentsResponse: Decodable {
             struct DocumentChunkResult: Decodable {
                 let documentID: String
+                let documentType: String
                 let documentMetadata: String?
                 let contentChunk: String
                 let encryptionEnabled: Bool
                 
                 enum CodingKeys: String, CodingKey {
                     case documentID = "document_id"
+                    case documentType = "document_type"
                     case documentMetadata = "document_metadata"
                     case contentChunk = "content_chunk"
                     case encryptionEnabled = "encryption_enabled"
@@ -768,18 +772,22 @@ extension FreeToken {
         
     public class Document {
         public let id: String
+        public let documentType: DocumentType
         public let searchScope: String
         public let metadata: String?
         public let content: String
         public let createdAt: Date
         internal let encryptionManager = FreeToken.shared.encryptionManager
         
-        internal init(from documentResponse: Codings.ShowDocumentResponse) {
+        internal init(from documentResponse: Codings.ShowDocumentResponse) throws {
             self.id = documentResponse.id
+            self.documentType = documentResponse.documentType == "private_document" ? .privateDocument : .publicDocument
             self.searchScope = documentResponse.searchScope
             if documentResponse.encryptionEnabled {
-                self.metadata = documentResponse.metadata != nil ? encryptionManager.decrypt(documentResponse.metadata!) : nil
-                self.content = encryptionManager.decrypt(documentResponse.content)
+                let scope: EncryptionScope = documentType == .privateDocument ? .userPrivate : .sharedPublic
+                
+                self.metadata = documentResponse.metadata != nil ? try encryptionManager.decrypt(documentResponse.metadata!, scope) : nil
+                self.content = try encryptionManager.decrypt(documentResponse.content, scope)
             } else {
                 self.metadata = documentResponse.metadata
                 self.content = documentResponse.content
@@ -792,30 +800,39 @@ extension FreeToken {
     public class DocumentSearchResults {
         public let documentChunks: [DocumentChunk]
         
-        internal init(from searchResults: Codings.SearchDocumentsResponse) {
-            self.documentChunks = searchResults.documentChunks.map { documentChunkResult in
-                DocumentChunk(from: documentChunkResult)
+        internal init(from searchResults: Codings.SearchDocumentsResponse) throws {
+            self.documentChunks = try searchResults.documentChunks.map { documentChunkResult in
+                try DocumentChunk(from: documentChunkResult)
             }
         }
     }
     
     public class DocumentChunk {
         public let documentID: String
+        public let documentType: DocumentType
         public let documentMetadata: String?
         public let contentChunk: String
         internal let encryptionManager = FreeToken.shared.encryptionManager
         
-        internal init(from documentChunkResponse: Codings.SearchDocumentsResponse.DocumentChunkResult) {
+        internal init(from documentChunkResponse: Codings.SearchDocumentsResponse.DocumentChunkResult) throws {
             self.documentID = documentChunkResponse.documentID
             
+            self.documentType = documentChunkResponse.documentType == "private_document" ? .privateDocument : .publicDocument
+            let scope: EncryptionScope = documentType == .privateDocument ? .userPrivate : .sharedPublic
+            
             if documentChunkResponse.encryptionEnabled {
-                self.documentMetadata = documentChunkResponse.documentMetadata != nil ? encryptionManager.decrypt(documentChunkResponse.documentMetadata!) : nil
-                self.contentChunk = encryptionManager.decrypt(documentChunkResponse.contentChunk)
+                self.documentMetadata = documentChunkResponse.documentMetadata != nil ? try encryptionManager.decrypt(documentChunkResponse.documentMetadata!, scope) : nil
+                self.contentChunk = try encryptionManager.decrypt(documentChunkResponse.contentChunk, scope)
             } else {
                 self.documentMetadata = documentChunkResponse.documentMetadata
                 self.contentChunk = documentChunkResponse.contentChunk
             }
         }
+    }
+    
+    public enum DocumentType: Equatable, Sendable {
+        case privateDocument
+        case publicDocument
     }
         
     public enum MessageRole: String, Codable {
@@ -931,7 +948,7 @@ extension FreeToken {
                 
                 processedAttachments = try await withThrowingTaskGroup(of: MessageAttachment?.self) { group in
                     for (imageResponse, _) in imageProcessingData {
-                        group.addTask { @Sendable in
+                        group.addTask { @Sendable () -> MessageAttachment? in
                             if let urlString = imageResponse.url, let url = URL(string: urlString) {
                                 // Fetch image from URL (both encrypted and unencrypted)
                                 do {
@@ -953,7 +970,7 @@ extension FreeToken {
                                             return nil
                                         }
                                         
-                                        let decryptedBase64 = FreeToken.shared.encryptionManager.decrypt(encryptedString)
+                                        let decryptedBase64 = try FreeToken.shared.encryptionManager.decrypt(encryptedString, .userPrivate)
                                         guard let imageData = Data(base64Encoded: decryptedBase64) else {
                                             FreeToken.shared.logger("Failed to decode decrypted base64 data", .error)
                                             return nil
@@ -998,7 +1015,7 @@ extension FreeToken {
                 id: showMessageResponse.id,
                 role: MessageRole(rawValue: showMessageResponse.role) ?? .user,
                 content: showMessageResponse.encryptionEnabled ? 
-                    encryptionManager.decrypt(showMessageResponse.content) : 
+                try encryptionManager.decrypt(showMessageResponse.content, .userPrivate) :
                     showMessageResponse.content,
                 attachments: processedAttachments,
                 createdAt: showMessageResponse.createdAt,
@@ -1015,7 +1032,7 @@ extension FreeToken {
             if let attachments = codableMessage.attachments {
                 processedAttachments = try await withThrowingTaskGroup(of: MessageAttachment?.self) { group in
                     for attachment in attachments {
-                        group.addTask {
+                        group.addTask { () -> MessageAttachment? in
                             guard let url = URL(string: attachment.imageUrl) else {
                                 FreeToken.shared.logger("🔴 Invalid image URL: \(attachment.imageUrl)", .error)
                                 return nil
@@ -1075,16 +1092,16 @@ extension FreeToken {
         // MARK: - Encryption/Decryption Methods
         
         /// Converts message to encrypted request format for server
-        internal func toEncryptedRequest(messageThreadID: String, lastMessageID: String?, encryptionManager: EncryptionManager) -> Codings.CreateMessageRequest {
-            let encryptedContent = encryptionManager.encrypt(self.content)
+        internal func toEncryptedRequest(messageThreadID: String, lastMessageID: String?, encryptionManager: EncryptionManager) throws -> Codings.CreateMessageRequest {
+            let encryptedContent = try encryptionManager.encrypt(self.content, .userPrivate)
             
             var encryptedImages: [Codings.EncryptedImageData]? = nil
             if let attachments = self.attachments {
                 let imageAttachments = attachments.filter { $0.type == .image }
                 if !imageAttachments.isEmpty {
-                    encryptedImages = imageAttachments.map { attachment in
+                    encryptedImages = try imageAttachments.map { attachment in
                         let base64String = attachment.data.base64EncodedString()
-                        let encryptedBase64 = encryptionManager.encrypt(base64String)
+                        let encryptedBase64 = try encryptionManager.encrypt(base64String, .userPrivate)
                         return Codings.EncryptedImageData(
                             data: encryptedBase64,
                             filename: attachment.filename,
@@ -1233,6 +1250,11 @@ extension FreeToken {
         case aiNotSupported = "AI not supported, skipping download"
         case cloudOnly = "Cloud only model, skipping download"
         case downloaded = "AI model downloaded"
+    }
+    
+    public enum EncryptionScope: Equatable, Sendable {
+        case sharedPublic
+        case userPrivate
     }
     
 }

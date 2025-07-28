@@ -12,10 +12,9 @@ import LocalLLMClientLlama
 
 final class MessagePrepTests: XCTestCase {
     
-    override func setUp() {
-        super.setUp()
+    override func setUpWithError() throws {
         // Initialize FreeToken for logging
-        _ = FreeToken.shared.configure(
+        _ = try FreeToken.shared.configure(
             appToken: "test-token",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug

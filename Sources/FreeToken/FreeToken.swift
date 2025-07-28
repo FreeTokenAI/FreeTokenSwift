@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 /// FreeToken Client
 public class FreeToken: @unchecked Sendable {
@@ -7,13 +8,12 @@ public class FreeToken: @unchecked Sendable {
     /// Use this singleton instance to access all FreeToken functionality:
     /// ```
     /// let client = FreeToken.shared
-    /// client.configure(appToken: "your-api-key")
     /// ```
     static public let shared = FreeToken()
     
     /// Indicates whether the client has been configured
     ///
-    /// Returns `true` if the client has been configured with an API key and base URL, `false` otherwise.
+    /// Returns `true` if the client has been configured with an API key, `false` otherwise.
     /// Check this before making API calls to ensure the client is ready:
     /// ```
     /// if FreeToken.shared.isConfigured {
@@ -22,7 +22,7 @@ public class FreeToken: @unchecked Sendable {
     /// ```
     public var isConfigured: Bool {
         get {
-            return isClientConfigured()
+            return clientConfigStatus == .configured
         }
     }
     
@@ -38,6 +38,7 @@ public class FreeToken: @unchecked Sendable {
     let aiModelsManager: AIModelsManager = AIModelsManager()
     let toolDefinitionsManager = ToolDefinitionsManager()
     
+    var clientConfigStatus: ClientConfigStatus = .notConfigured
     var baseURL: URL? = nil
     var appToken: String? = nil
     var deviceSessionToken: String? = nil
@@ -97,6 +98,11 @@ public class FreeToken: @unchecked Sendable {
         case evaluating_tool_calls = "evaluating_tool_calls"
     }
     
+    enum ClientConfigStatus: Equatable {
+        case notConfigured
+        case configured
+    }
+    
     // Methods:
     
     private init() {
@@ -117,22 +123,64 @@ public class FreeToken: @unchecked Sendable {
     ///     - logLevel: Optional log level for the client. Default is `.info`
     ///
     /// - Returns: A configured `FreeToken` instance.
-    public func configure(appToken: String, baseURL: Optional<URL> = nil, logLevel: FreeTokenLogger.LogLevel = .info) -> FreeToken {
+    public func configure(
+        appToken: String,
+        baseURL: Optional<URL> = nil,
+        sharedPublicEncryptionKey: String? = nil,
+        userPrivateEncryptionKey: String? = nil,
+        logLevel: FreeTokenLogger.LogLevel = .info
+    ) throws -> FreeToken {
         self.appToken = appToken
+        FreeTokenLogger.shared.configure(logLevel: logLevel)
         
         if let baseURL = baseURL {
             self.baseURL = baseURL
         }
         
-        FreeTokenLogger.shared.configure(logLevel: logLevel)
+        if let sharedPublicEncryptionKey = sharedPublicEncryptionKey {
+            try self.encryptionManager.setEncryptionKey(sharedPublicEncryptionKey, scope: .sharedPublic)
+        } else {
+            FreeToken.shared.logger("⚠️ No Shared Public Encryption Key provided. Public Documents will not be encrypted/decrypted.", .warning)
+        }
+        
+        if let userPrivateEncryptionKey = userPrivateEncryptionKey {
+            try self.encryptionManager.setEncryptionKey(userPrivateEncryptionKey, scope: .userPrivate)
+        } else {
+            FreeToken.shared.logger("⚠️ No User Private Encryption Key provided. Messages and Private Document Store Documents will not be encrypted/decrypted.", .warning)
+        }
+        
+        if userPrivateEncryptionKey == nil || sharedPublicEncryptionKey == nil {
+            FreeToken.shared.logger("⚠️ Enable encryption by calling the `enableEncryption` method.", .warning)
+        }
+        
+        self.clientConfigStatus = .configured
         
         return self
+    }
+    
+    /// Enable Encryption for a scope using built-in encryption management system
+    ///
+    /// ```
+    ///   let encryptionKey = client.enableEncryption(scope: .sharedPublic)
+    /// ```
+    ///
+    /// > Note: After this method is run, all messages and documents will be encrypted using the built-in encryption system and the key returned.
+    ///
+    /// > Warning: This will be the only time you have access to this key, so ensure you persist it securely.
+    ///
+    /// > Tip: The next time the FreeToken client is initialized, pass this key into the `configure` method to the appropriately scoped attribute.
+    ///
+    /// - Parameters:
+    ///   - scope: The `EncryptionScope` to enable encryption for. This determines the scope of the encryption key.
+    /// - Returns: A `String` representing the generated encryption key for the specified scope.
+    public func enableEncryption(scope: EncryptionScope) -> String {
+        return self.encryptionManager.generateEncryptionKey(for: scope)
     }
     
     /// Enables encryption by providing encryption and decryption callbacks.
     ///
     /// ```
-    ///     try client.enableEncryption(encrypt: { text in
+    ///     try client.enableCustomEncryption(encrypt: { text in
     ///         // Your encryption logic here
     ///         return encryptedText
     ///     }, decrypt: { text in
@@ -146,10 +194,12 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - encryptCallback: A closure that takes a `String` to be encrypted and returns the encrypted `String`.
     ///     - decryptCallback: A closure that takes a `String` to be decrypted and returns the decrypted `String`.
-    ///
     /// - Throws: An error if the encryption or decryption process fails.
-    public func enableEncryption(encrypt encryptCallback: @escaping (_ toEncrypt: String) -> String, decrypt decryptCallback: @escaping (_ toDecrypt: String) -> String) throws {
-        self.encryptionManager.enableEncryption(encryptor: encryptCallback, decryptor: decryptCallback)
+    public func enableCustomEncryption(
+        encrypt encryptCallback: @escaping @Sendable (_ toEncrypt: String, _ scope: EncryptionScope) throws -> String,
+        decrypt decryptCallback: @escaping @Sendable (_ toDecrypt: String, _ scope: EncryptionScope) throws -> String
+    ) throws {
+        self.encryptionManager.enableCustomEncryption(encryptor: encryptCallback, decryptor: decryptCallback)
     }
     
     /// Determine Device Capabilities and Register with FreeToken Cloud
@@ -1104,7 +1154,14 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func createDocument(content: String, metadata: Optional<String> = nil, searchScope: String, privateDocumentStoreID: Optional<String> = nil, success successCompletion: @escaping @Sendable (Document) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func createDocument(
+        content: String,
+        metadata: Optional<String> = nil,
+        searchScope: String,
+        privateDocumentStoreID: Optional<String> = nil,
+        success successCompletion: @escaping @Sendable (Document) -> Void,
+        error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void
+    ) async throws {
         guard isDeviceRegistered() else {
             errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -1118,12 +1175,26 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        let chunks = document.chunks.map { chunk in
-            let content = encryptionManager.encrypt(chunk.chunkContent)
+        let encryptionScope: EncryptionScope
+        if privateDocumentStoreID != nil {
+            encryptionScope = .userPrivate
+        } else {
+            encryptionScope = .sharedPublic
+        }
+        
+        let chunks = try document.chunks.map { chunk in
+            let content = try encryptionManager.encrypt(chunk.chunkContent, encryptionScope)
             return Codings.CreateDocumentChunkRequest(content: content, embedding: chunk.embedding!, embeddingModel: chunk.embeddingModelName)
         }
         
-        let request = Codings.CreateDocumentRequest(content: encryptionManager.encrypt(content), metadata: (metadata != nil ? encryptionManager.encrypt(metadata!) : nil), searchScope: searchScope, documentChunks: chunks, encryptionEnabled: encryptionManager.isEncryptionEnabled, privateDocumentStoreID: privateDocumentStoreID)
+        let request = Codings.CreateDocumentRequest(
+            content: try encryptionManager.encrypt(content, encryptionScope),
+            metadata: (metadata != nil ? try encryptionManager.encrypt(metadata!, encryptionScope) : nil),
+            searchScope: searchScope,
+            documentChunks: chunks,
+            encryptionEnabled: encryptionManager.isEncryptionEnabled,
+            privateDocumentStoreID: privateDocumentStoreID
+        )
         
         let wrapper = Codings.CreateDocumentRequestWrapper(document: request)
         
@@ -1133,7 +1204,13 @@ public class FreeToken: @unchecked Sendable {
             case .success(let response):
                 profiler.end(eventType: .createDocument, isSuccess: true)
                 FreeToken.shared.logger("📄 Document created successfully", .info)
-                successCompletion(Document(from: response))
+                do {
+                    let document = try Document(from: response)
+                    successCompletion(document)
+                } catch {
+                    let error = FreeTokenError.encryptionError(message: "Initializing the document failed with error: \(error.localizedDescription)")
+                    errorCompletion(error)
+                }
             case .failure(let error):
                 profiler.end(eventType: .createDocument, isSuccess: false, errorMessage: error.message)
                 FreeToken.shared.logger("🔴 Document failed to create with error: \(error)", .error)
@@ -1171,7 +1248,13 @@ public class FreeToken: @unchecked Sendable {
         await fetchResource(path: path, responseType: Codings.ShowDocumentResponse.self, useEtagCaching: true) { result in
             switch result {
             case .success(let response):
-                successCompletion(Document(from: response))
+                do {
+                    let document = try Document(from: response)
+                    successCompletion(document)
+                } catch {
+                    let error = FreeTokenError.encryptionError(message: "Failed to initialize document with error: \(error.localizedDescription)")
+                    errorCompletion(error)
+                }
             case .failure(let error):
                 errorCompletion(error)
             }
@@ -1238,8 +1321,13 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.searchDocuments, isSuccess: true)
-
-                await successCompletion(DocumentSearchResults(from: response))
+                do {
+                    let searchResults = try DocumentSearchResults(from: response)
+                    await successCompletion(searchResults)
+                } catch {
+                    let error = FreeTokenError.encryptionError(message: "Failed to initialize document search results with error: \(error.localizedDescription)")
+                    await errorCompletion(error)
+                }
             case .failure(let error):
                 profiler.end(eventType: .searchDocuments, isSuccess: false, errorMessage: error.message)
                 FreeToken.shared.logger("🔴 Document search failed with error \(error.message)", .error)
@@ -1706,16 +1794,6 @@ public class FreeToken: @unchecked Sendable {
             throw error
         }
     }
-
-    // MARK: Private Methods
-    
-    private func isClientConfigured() -> Bool {
-        if baseURL != nil && appToken != nil {
-            return true
-        } else {
-            return false
-        }
-    }
     
     // Internal Method
     func sendTelemetry(profiler: Profiler) {
@@ -1761,7 +1839,7 @@ public class FreeToken: @unchecked Sendable {
         useEtagCaching: Bool = false,
         completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
     ) async {
-        guard isClientConfigured() else {
+        guard isConfigured else {
             await completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
@@ -1806,7 +1884,7 @@ public class FreeToken: @unchecked Sendable {
         responseType: T.Type,
         completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
     ) async {
-        guard isClientConfigured() else {
+        guard isConfigured else {
             await completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
@@ -1843,7 +1921,7 @@ public class FreeToken: @unchecked Sendable {
         responseType: T.Type,
         completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
     ) async {
-        guard isClientConfigured() else {
+        guard isConfigured else {
             await completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
@@ -1877,7 +1955,7 @@ public class FreeToken: @unchecked Sendable {
         streamCallback: @escaping @Sendable (String) async -> Void,
         completion: @escaping @Sendable (Result<T, FreeTokenError>) async -> Void
     ) async {
-        guard isClientConfigured() else {
+        guard isConfigured else {
             await completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }
@@ -1911,7 +1989,7 @@ public class FreeToken: @unchecked Sendable {
         path: String,
         completion: @escaping @Sendable (Result<Void, FreeTokenError>) -> Void
     ) {
-        guard isClientConfigured() else {
+        guard isConfigured else {
             completion(.failure(FreeTokenError.clientNotConfigured))
             return
         }

@@ -45,7 +45,7 @@ final class ToolCallTests: XCTestCase {
     
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.
-        _ = FreeToken.shared.configure(
+        _ = try FreeToken.shared.configure(
             appToken: "app_tkn_3b39cb60-22cd-4877-b784-170b75f88a92",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug

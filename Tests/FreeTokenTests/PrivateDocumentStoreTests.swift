@@ -14,7 +14,7 @@ final class PrivateDocumentStoreTests: XCTestCase {
     
     override func setUpWithError() throws {
         // Configure FreeToken for testing
-        _ = FreeToken.shared.configure(
+        _ = try FreeToken.shared.configure(
             appToken: "app_tkn_3b39cb60-22cd-4877-b784-170b75f88a92",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug
@@ -42,7 +42,7 @@ final class PrivateDocumentStoreTests: XCTestCase {
     override func tearDownWithError() throws {
         print("--------------------------------- TEARDOWN -----------------------------------------")
         Task {
-            await try FreeToken.shared.resetDevice()
+            try await FreeToken.shared.resetDevice()
         }
     }
 
@@ -69,7 +69,7 @@ final class PrivateDocumentStoreTests: XCTestCase {
                     print("📁 Created store: \(storeId)")
                     
                     Task {
-                        await freeTokenRef.createDocument(content: "This is a test document for the private document store.", searchScope: "test-document") { document in
+                        try await freeTokenRef.createDocument(content: "This is a test document for the private document store.", searchScope: "test-document") { document in
                             XCTAssertFalse(document.id.isEmpty, "Document ID should not be empty")
                             XCTAssertEqual(document.content, "This is a test document for the private document store.")
                             print("✅ Created document in private store: \(document.id)")
@@ -96,7 +96,7 @@ final class PrivateDocumentStoreTests: XCTestCase {
                     print("📁 Created store for search test: \(storeId)")
                     
                     Task {
-                        await freeTokenRef.createDocument(content: "The solar system contains eight planets including Earth and Mars.", searchScope: "eight-planets", privateDocumentStoreID: storeId) { document in
+                        try await freeTokenRef.createDocument(content: "The solar system contains eight planets including Earth and Mars.", searchScope: "eight-planets", privateDocumentStoreID: storeId) { document in
                             print("📄 Created searchable document: \(document.id)")
                             
                             Task {
@@ -139,7 +139,7 @@ final class PrivateDocumentStoreTests: XCTestCase {
                     print("📁 Created store to delete: \(storeId)")
                     
                     Task {
-                        await freeTokenRef.createDocument(content: "This document will be deleted with the store.", searchScope: "delete-document", privateDocumentStoreID: storeId) { document in
+                        try await freeTokenRef.createDocument(content: "This document will be deleted with the store.", searchScope: "delete-document", privateDocumentStoreID: storeId) { document in
                             print("📄 Created document to be deleted: \(document.id)")
                             
                             Task {
@@ -173,11 +173,11 @@ final class PrivateDocumentStoreTests: XCTestCase {
                     print("📁 Created private store: \(storeId)")
                     
                     Task {
-                        await freeTokenRef.createDocument(content: "Private information about quantum computing algorithms.", searchScope: "quantum", privateDocumentStoreID: storeId) { document in
+                        try await freeTokenRef.createDocument(content: "Private information about quantum computing algorithms.", searchScope: "quantum", privateDocumentStoreID: storeId) { document in
                             print("📄 Created private document: \(document.id)")
                             
                             Task {
-                                await freeTokenRef.createDocument(
+                                try await freeTokenRef.createDocument(
                                     content: "Public information about classical computing methods.",
                                     metadata: "Public research",
                                     searchScope: "public-test"

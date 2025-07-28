@@ -12,9 +12,8 @@ import LocalLLMClientLlama
 
 final class KVCacheOptimizationTests: XCTestCase {
     
-    override func setUp() {
-        super.setUp()
-        _ = FreeToken.shared.configure(
+    override func setUpWithError() throws {
+        _ = try FreeToken.shared.configure(
             appToken: "test-token",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug

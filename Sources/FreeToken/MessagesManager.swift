@@ -184,15 +184,22 @@ extension FreeToken {
             
             if encryptionManager.isEncryptionEnabled {
                 // Encrypted mode: use encrypted request (handles both content and images)
-                let request = message.toEncryptedRequest(
-                    messageThreadID: messageThreadID,
-                    lastMessageID: lastMessage?.id,
-                    encryptionManager: encryptionManager
-                )
-                
-                await client.postData(path: "messages", data: request, responseType: Codings.ShowMessageResponse.self, completion: { result in
-                    await self.handleMessageResponse(result, messageThreadID: messageThreadID, handler: handler)
-                })
+                do {
+                    let request = try message.toEncryptedRequest(
+                        messageThreadID: messageThreadID,
+                        lastMessageID: lastMessage?.id,
+                        encryptionManager: encryptionManager
+                    )
+                    
+                    await client.postData(path: "messages", data: request, responseType: Codings.ShowMessageResponse.self, completion: { result in
+                        await self.handleMessageResponse(result, messageThreadID: messageThreadID, handler: handler)
+                    })
+                } catch {
+                    // Handle encryption errors
+                    let freeTokenError = FreeTokenError.encryptionError(message: "Failed to encrypt message: \(error.localizedDescription)")
+                    FreeToken.shared.logger("🔴 Error encrypting message: \(error)", .error)
+                    await handler(.failure(freeTokenError))
+                }
             } else if hasImageAttachments {
                 // Unencrypted mode with images: use multipart form data
                 let (jsonData, imageAttachments) = message.toUnencryptedMultipartData(
@@ -302,12 +309,12 @@ extension FreeToken {
             }
         }
         
-        private func encrypt(content: String) -> String {
-            return encryptionManager.encrypt(content)
+        private func encrypt(content: String) throws -> String {
+            return try encryptionManager.encrypt(content, .userPrivate)
         }
         
-        private func decrypt(content: String) -> String {
-            return encryptionManager.decrypt(content)
+        private func decrypt(content: String) throws -> String {
+            return try encryptionManager.decrypt(content, .userPrivate)
         }
         
         private func fetchMessages(messageThreadID: String, result handler: @escaping @Sendable (Result<MessageThread, FreeTokenError>) async -> Void) async {
