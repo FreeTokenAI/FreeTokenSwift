@@ -29,17 +29,80 @@ extension FreeToken {
             parsedTools = []
             toolMatches = []
             
+            var foundToolCalls: [String] = []
+            
+            // First try to parse JSON syntax
+            let jsonToolCalls = try parseJsonToolCalls()
+            parsedTools.append(contentsOf: jsonToolCalls.toolCalls)
+            foundToolCalls.append(contentsOf: jsonToolCalls.matches)
+            
+            // Then parse square bracket syntax
+            let squareBracketToolCalls = try parseSquareBracketToolCalls()
+            parsedTools.append(contentsOf: squareBracketToolCalls.toolCalls)
+            foundToolCalls.append(contentsOf: squareBracketToolCalls.matches)
+            
+            toolMatches = foundToolCalls
+            allTools = foundToolCalls.isEmpty ? nil : "[\(foundToolCalls.joined(separator: ", "))]"
+                        
+            return parsedTools
+        }
+        
+        private func parseJsonToolCalls() throws -> (toolCalls: [ToolCall], matches: [String]) {
+            var toolCalls: [ToolCall] = []
+            var matches: [String] = []
+            
+            // Pattern to match JSON tool calls
+            let jsonPattern = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}"#
+            let regex = try NSRegularExpression(pattern: jsonPattern, options: [])
+            let jsonMatches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
+            
+            for match in jsonMatches {
+                guard let nameRange = Range(match.range(at: 1), in: messageContent),
+                      let argsRange = Range(match.range(at: 2), in: messageContent),
+                      let fullRange = Range(match.range, in: messageContent) else {
+                    continue
+                }
+                
+                let toolName = String(messageContent[nameRange])
+                let argsJson = String(messageContent[argsRange])
+                let fullMatch = String(messageContent[fullRange])
+                
+                // Verify tool name is in allowed list
+                guard toolNames.contains(toolName) else {
+                    continue
+                }
+                
+                // Parse JSON arguments
+                if let data = argsJson.data(using: .utf8),
+                   let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    // Convert all values to strings
+                    var arguments: [String: String] = [:]
+                    for (key, value) in jsonObject {
+                        arguments[key] = String(describing: value)
+                    }
+                    
+                    let toolCall = ToolCall(name: toolName, arguments: arguments)
+                    toolCalls.append(toolCall)
+                    matches.append(fullMatch)
+                }
+            }
+            
+            return (toolCalls, matches)
+        }
+        
+        private func parseSquareBracketToolCalls() throws -> (toolCalls: [ToolCall], matches: [String]) {
+            var toolCalls: [ToolCall] = []
+            var matches: [String] = []
+            
             // Create pattern to match any of the specified tool names followed by parentheses
             let escapedToolNames = toolNames.map { NSRegularExpression.escapedPattern(for: $0) }
             let toolNamesPattern = escapedToolNames.joined(separator: "|")
             let pattern = #"(\#(toolNamesPattern))\s*\(([^)]*)\)"#
             
             let regex = try NSRegularExpression(pattern: pattern, options: [])
-            let matches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
+            let bracketMatches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
             
-            var foundToolCalls: [String] = []
-            
-            for match in matches {
+            for match in bracketMatches {
                 guard let toolNameRange = Range(match.range(at: 1), in: messageContent),
                       let paramsRange = Range(match.range(at: 2), in: messageContent) else {
                     continue
@@ -49,19 +112,15 @@ extension FreeToken {
                 let rawParams = String(messageContent[paramsRange])
                 let fullMatch = String(messageContent[Range(match.range, in: messageContent)!])
                 
-                foundToolCalls.append(fullMatch)
-                
                 // Parse parameters
                 let arguments = try parseParameters(rawParams)
                 let toolCall = ToolCall(name: toolName, arguments: arguments)
                 
-                parsedTools.append(toolCall)
+                toolCalls.append(toolCall)
+                matches.append(fullMatch)
             }
             
-            toolMatches = foundToolCalls
-            allTools = foundToolCalls.isEmpty ? nil : "[\(foundToolCalls.joined(separator: ", "))]"
-                        
-            return parsedTools
+            return (toolCalls, matches)
         }
         
         private func parseParameters(_ rawParams: String) throws -> [String: String] {

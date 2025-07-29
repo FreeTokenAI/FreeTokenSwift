@@ -194,6 +194,7 @@ extension FreeToken {
             let clientsConfig: [String: ShowClientConfig]
             let trainingCutoffDate: String
             let cloudOnly: Bool
+            let jsonToolCalls: Bool?
             
             enum CodingKeys: String, CodingKey {
                 case code
@@ -203,6 +204,7 @@ extension FreeToken {
                 case clientsConfig = "clients_config"
                 case trainingCutoffDate = "training_cutoff_date"
                 case cloudOnly = "cloud_only"
+                case jsonToolCalls = "json_tool_calls"
             }
         }
         
@@ -1258,6 +1260,7 @@ extension FreeToken {
         public let name: String
         public let trainingCutoffDate: String
         public let cloudOnly: Bool
+        public let jsonToolCalls: Bool
         internal let coding: Codings.AiModelResponse
         
         init(from: Codings.AiModelResponse) {
@@ -1265,6 +1268,7 @@ extension FreeToken {
             self.name = from.name
             self.trainingCutoffDate = from.trainingCutoffDate
             self.cloudOnly = from.cloudOnly
+            self.jsonToolCalls = from.jsonToolCalls ?? false
             self.coding = from
         }
     }
