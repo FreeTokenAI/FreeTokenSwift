@@ -235,7 +235,8 @@ public class FreeToken: @unchecked Sendable {
                 self.deviceSessionToken = response.token
                 self.deviceDetails = response
                 
-                EmbeddingManager.shared.config(modelConfig: response.embeddingModel)
+                let embeddingDeviceManager = DeviceManager(memoryRequirement: response.embeddingModel.memoryRequirement)
+                EmbeddingManager.shared.config(modelConfig: response.embeddingModel, deviceAICapable: embeddingDeviceManager.isAICapable)
                 
                 self.documentManager = DocumentManager(chunkSize: response.documentsConfig.documentChunkSize, overlapSize: response.documentsConfig.documentChunkOverlapSize)
                 
@@ -297,7 +298,7 @@ public class FreeToken: @unchecked Sendable {
     /// Reset Model Caches
     ///
     public func resetModelCaches() async throws {
-        try? resetEmbeddingModelCache()
+        try? await resetEmbeddingModelCache()
         await deleteAIModelCache()
     }
     
@@ -310,9 +311,9 @@ public class FreeToken: @unchecked Sendable {
     /// ```
     /// - Returns: Void
     /// - Throws: Error if failed to reset the cache
-    public func resetEmbeddingModelCache() throws {
+    public func resetEmbeddingModelCache() async throws {
         do {
-            try EmbeddingManager.shared.resetCache()
+            try await EmbeddingManager.shared.resetCache()
         } catch {
             throw FreeTokenError.deviceReset
         }
@@ -452,12 +453,14 @@ public class FreeToken: @unchecked Sendable {
                 await errorCallback(error)
             }
         }
-        downloadEmbeddingModel()
+        await downloadEmbeddingModel()
     }
     
-    private func downloadEmbeddingModel() {
-        guard EmbeddingManager.shared.modelState != .ready || EmbeddingManager.shared.modelState != .downloading else {
-            FreeToken.shared.logger("⏭️ Skipping downloading of embedding model as it's in state: \(EmbeddingManager.shared.modelState)", .info)
+    private func downloadEmbeddingModel() async {
+        let embeddingModelState = await EmbeddingManager.shared.modelStateActor.modelState
+        
+        guard embeddingModelState != .ready && embeddingModelState != .downloading else {
+            FreeToken.shared.logger("⏭️ Skipping downloading of embedding model as it's in state: \(embeddingModelState)", .info)
             return
         }
         
@@ -1169,9 +1172,13 @@ public class FreeToken: @unchecked Sendable {
         
         let document: FreeToken.DocumentManager.Document
         do {
-            document = try self.documentManager!.processDocument(content: content, metadata: metadata)
-        } catch (let error) {
-            errorCompletion(error as! FreeTokenError)
+            document = try await self.documentManager!.processDocument(content: content, metadata: metadata)
+        } catch {
+            if let freeTokenError = error as? FreeTokenError {
+                errorCompletion(freeTokenError)
+            } else {
+                errorCompletion(FreeTokenError.unableToGenerateEmbedding)
+            }
             return
         }
         
@@ -1295,8 +1302,8 @@ public class FreeToken: @unchecked Sendable {
         // EmbeddingManager
         var embedding: [Float]
         do {
-            embedding = try EmbeddingManager.shared.generate(text: query)
-        } catch (let error) {
+            embedding = try await EmbeddingManager.shared.generate(text: query)
+        } catch {
             FreeToken.shared.logger("🔴 Failed to generate embedding for search query: \(error.localizedDescription)", .error)
             let errorResponse = FreeTokenError.embeddingFailed
             await errorCompletion(errorResponse)

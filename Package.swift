@@ -18,9 +18,7 @@ let package = Package(
             targets: ["FreeToken"]),
     ],
     dependencies: [
-        .package(url: "https://github.com/microsoft/onnxruntime-swift-package-manager", from: "1.20.0"),
-        .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.18"),
-        .package(url: "https://github.com/1024jp/GzipSwift", from: "6.0.1"),
+        .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.20"),
         .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", branch: "release"),
         .package(url: "https://github.com/LaunchDarkly/swift-eventsource.git", from: "3.3.0")
     ],
@@ -28,9 +26,7 @@ let package = Package(
         .target(
             name: "FreeToken",
             dependencies: [
-                .product(name: "onnxruntime", package: "onnxruntime-swift-package-manager"),
                 .product(name: "Transformers", package: "swift-transformers"),
-                .product(name: "Gzip", package: "GzipSwift"),
                 .product(name: "LocalLLMClient", package: "LocalLLMClient"),
                 .product(name: "LocalLLMClientLlama", package: "LocalLLMClient"),
                 .product(name: "LocalLLMClientMLX", package: "LocalLLMClient"),

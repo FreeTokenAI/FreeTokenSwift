@@ -176,8 +176,8 @@ extension FreeToken {
         
         struct HuggingfaceModelResponse: Decodable {
             let repo: String
-            let modelFileName: String?
-            let mmproj: String?
+            let modelFileName: String? // MLX models download the entire repo
+            let mmproj: String? // Not supported for MLX
             
             enum CodingKeys: String, CodingKey {
                 case repo
@@ -241,14 +241,37 @@ extension FreeToken {
         
         struct EmbeddingModelResponse: Decodable {
             let name: String
-            let sizeBytes: Int
-            let files: FileDownloadPartResponse
+            let modelTypes: AvailableModelTypesResponse
+            let config: EmbeddingModelConfig
+            let memoryRequirement: Int
             
             enum CodingKeys: String, CodingKey {
                 case name
-                case sizeBytes = "size_bytes"
-                case files
+                case modelTypes = "model_types"
+                case config
+                case memoryRequirement = "memory_requirement"
             }
+        }
+        
+        struct EmbeddingModelConfig: Decodable {
+            let contextSize: Int
+            let batchSize: Int
+            let poolingType: EmbeddingPoolingTypes
+            
+            enum CodingKeys: String, CodingKey {
+                case contextSize = "context_size"
+                case batchSize = "batch_size"
+                case poolingType = "pooling_type"
+            }
+        }
+        
+        enum EmbeddingPoolingTypes: String, Equatable, Decodable {
+            case cls
+            case last
+            case mean
+            case none
+            case rank
+            case unspecified
         }
         
         struct DownloadableFile: Decodable {

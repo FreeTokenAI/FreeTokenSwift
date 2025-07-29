@@ -14,9 +14,9 @@ extension FreeToken {
             self.chunker = DocumentChunker(chunkSize: chunkSize, overlapSize: overlapSize)
         }
         
-        internal func processDocument(content: String, metadata: String? = nil) throws -> Document {
+        internal func processDocument(content: String, metadata: String? = nil) async throws -> Document {
             let document = Document(content: content, metadata: metadata, documentManager: self)
-            _ = try document.chunkDocument()
+            _ = try await document.chunkDocument()
     
             return document
         }
@@ -35,16 +35,31 @@ extension FreeToken {
                 self.metadata = metadata
             }
             
-            func chunkDocument() throws -> Document {
+            func chunkDocument() async throws -> Document {
                 let contentChunks = documentManager.chunker.chunkDocument(document: content)
                 let embeddor = EmbeddingManager.shared
                 var documentChunks: [DocumentChunk] = []
                 
-                for contentChunk in contentChunks {
+                var embeddingRequests: [EmbeddingManager.EmbeddingRequest] = []
+                for (i, contentChunk) in contentChunks.enumerated() {
                     let documentChunk = DocumentChunk(documentManager: documentManager, content: contentChunk)
-                    try documentChunk.embed(embeddor: embeddor)
+                    embeddingRequests.append(
+                        EmbeddingManager.EmbeddingRequest(
+                            id: i,
+                            content: documentChunk.chunkContent
+                        )
+                    )
                     documentChunks.append(documentChunk)
                 }
+                // Run all the embedding requests at once for efficiency
+                let results = try await embeddor.generate(requests: embeddingRequests)
+                
+                // Assign embeddings to the document chunks
+                for result in results {
+                    let chunkIndex = result.id
+                    documentChunks[chunkIndex].embedding = result.embedding
+                }
+                
                 self.chunks = documentChunks
                 return self
             }
@@ -64,8 +79,8 @@ extension FreeToken {
                 self.chunkContent = content
             }
             
-            func embed(embeddor: EmbeddingManager) throws -> Void {
-                self.embedding = try embeddor.generate(text: chunkContent)
+            func embed(embeddor: EmbeddingManager) async throws -> Void {
+                self.embedding = try await embeddor.generate(text: chunkContent)
             }
             
         }

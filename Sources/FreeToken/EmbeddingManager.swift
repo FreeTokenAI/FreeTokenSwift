@@ -6,9 +6,8 @@
 //
 
 import Foundation
-import Tokenizers
-import OnnxRuntimeBindings
-import Gzip
+import llama
+import Hub
 
 extension FreeToken {
     
@@ -18,6 +17,14 @@ extension FreeToken {
         enum ManagerState: Equatable {
             case unknown
             case configured
+        }
+        
+        actor ModelStateActor {
+            var modelState: ModelState = .unknown
+            
+            func setModelState(_ state: ModelState) {
+                modelState = state
+            }
         }
         
         enum ModelState: Equatable {
@@ -33,35 +40,43 @@ extension FreeToken {
             let modelConfig: Codings.EmbeddingModelResponse
         }
         
+        let modelStateActor = ModelStateActor()
+        
         var config: Config? = nil
-        var modelState: ModelState = .unknown
+        var deviceAICapable: Bool? = nil
         var managerState: ManagerState = .unknown
         var embeddingModelName: String {
             get {
-                return config?.modelName ?? ""
+                return config?.modelName ?? "Unknown"
             }
         }
         
-        func config(modelConfig: Codings.EmbeddingModelResponse) {
+        func config(modelConfig: Codings.EmbeddingModelResponse, deviceAICapable: Bool) {
             let modelPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("FreeToken/EmbeddingModels/\(modelConfig.name)")
             
             self.config = Config(modelName: modelConfig.name, modelPath: modelPath, modelConfig: modelConfig)
             self.managerState = .configured
+            self.deviceAICapable = deviceAICapable
         }
         
         private init() {}
 
         // MARK: - Downloading
         
-        func downloadModel(progress progressCompleted: Optional<@Sendable (_ percentage: Double) -> Void> = nil, successCallback: Optional<@Sendable () -> Void> = nil, failureCallback: Optional<@Sendable (FreeTokenError) -> Void> = nil) async {
+        func downloadModel(
+            progress progressCompleted: Optional<@Sendable (_ percentage: Double) -> Void> = nil,
+            successCallback: Optional<@Sendable () -> Void> = nil,
+            failureCallback: Optional<@Sendable (FreeTokenError) -> Void> = nil
+        ) async {
 
-            if modelState == .ready {
+            if await modelStateActor.modelState == .ready {
                 FreeToken.shared.logger("Embedding model is already downloaded.", .info)
+                progressCompleted?(100.0)
                 successCallback?()
                 return
             }
             
-            if modelState == .downloading {
+            if await modelStateActor.modelState == .downloading {
                 FreeToken.shared.logger("Embedding model is already downloading.", .info)
                 failureCallback?(FreeTokenError.modelAlreadyDownloading)
                 return
@@ -79,43 +94,67 @@ extension FreeToken {
                 do {
                     try FileManager.default.createDirectory(at: config.modelPath, withIntermediateDirectories: true, attributes: nil)
                 } catch {
-                    FreeToken.shared.logger("Error creating embedding model directory: \(error.localizedDescription)", .error)
+                    FreeToken.shared.logger("🔴 Error creating embedding model directory: \(error.localizedDescription)", .error)
                     return
                 }
             }
             
-            // If everything is downloaded already, just return 100% progress and return
-            modelState = .downloading
-            let downloadPipeline = DownloadPipelineManager(baseDirectory: config.modelPath, downloadFiles: config.modelConfig.files.toDownload, verifyFiles: config.modelConfig.files.toVerify, progressTracker: progressCompleted)
+            let repo = Hub.Repo(id: config.modelConfig.modelTypes.llamaCpp.repo)
+            let filesToDownload = [config.modelConfig.modelTypes.llamaCpp.modelFileName!] // Should always exist
+            let downloadPath: URL
+            
+            // Check if the model is already downloaded
+            if filesToDownload.allSatisfy({ FileManager.default.fileExists(atPath: config.modelPath.appendingPathComponent($0).path) }) {
+                FreeToken.shared.logger("✅ Embedding model files already exist, skipping download.", .info)
+                await modelStateActor.setModelState(.ready)
+                progressCompleted?(100.0)
+                successCallback?()
+                return
+            }
             
             do {
-                let result = try await downloadPipeline.run()
-                
-                switch result {
-                case .success:
-                    progressCompleted?(1.0)
-                    modelState = .ready
-                    successCallback?()
-                case .failure(let error):
-                    modelState = .downloadInvalid
-                    let errorDescription = error.localizedDescription
-                    FreeToken.shared.logger("Error downloading embedding model files: \(errorDescription)", .error)
-                    failureCallback?(FreeTokenError.modelDownload)
+                await modelStateActor.setModelState(.downloading)
+                downloadPath = try await Hub.snapshot(from: repo) { progress in
+                    progressCompleted?(progress.fractionCompleted * 100.0)
                 }
             } catch {
-                modelState = .downloadInvalid
-                FreeToken.shared.logger("Error downloading embedding model files: \(error.localizedDescription)", .error)
-                failureCallback?(FreeTokenError.modelDownload)
+                FreeToken.shared.logger("🔴 Error downloading embedding model files: \(error.localizedDescription)", .error)
+                await modelStateActor.setModelState(.downloadInvalid)
+                failureCallback?(FreeTokenError.aiModelDownload)
+                return
             }
+            
+            // Move the downloaded files to the model path
+            let fileManager = FileManager.default
+            
+            for fileName in filesToDownload {
+                let sourceURL = downloadPath.appendingPathComponent(fileName)
+                let destinationURL = config.modelPath.appendingPathComponent(fileName)
+                
+                do {
+                    if fileManager.fileExists(atPath: destinationURL.path) {
+                        try fileManager.removeItem(at: destinationURL)
+                    }
+                    try fileManager.moveItem(at: sourceURL, to: destinationURL)
+                } catch {
+                    FreeToken.shared.logger("🔴 Error moving downloaded model file \(fileName): \(error.localizedDescription)", .error)
+                    failureCallback?(FreeTokenError.modelDownload)
+                    return
+                }
+            }
+            
+            await modelStateActor.setModelState(.ready)
+            successCallback?()
         }
         
-        func resetCache() throws {
+        func resetCache() async throws {
             let fileManager = FileManager.default
             
             do {
                 let modelStore = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("FreeToken/EmbeddingModels")
                 try fileManager.removeItem(at: modelStore)
-                modelState = .unknown
+                
+                await modelStateActor.setModelState(.unknown)
             } catch {
                 FreeToken.shared.logger("Error removing embedding model directory: \(error.localizedDescription)", .error)
                 throw FreeTokenError.couldNotRemoveModel
@@ -123,8 +162,8 @@ extension FreeToken {
         }
 
         
-        private func initializeModel() -> EmbeddingModel? {
-            if modelState != .ready {
+        private func initializeModel() async throws -> LlamaEmbeddingClient? {
+            if await modelStateActor.modelState != .ready {
                 return nil
             }
             
@@ -134,214 +173,99 @@ extension FreeToken {
             
             let config = self.config!
             
-            if config.modelName == "gist-embedding-v0" {
-                return GistEmbeddingV0Model()
+            let pathToGGUF = config.modelPath.appendingPathComponent(config.modelConfig.modelTypes.llamaCpp.modelFileName!).path
+            
+            let model = LlamaEmbeddingClient(modelPath: pathToGGUF, contextSize: config.modelConfig.config.contextSize, batchSize: config.modelConfig.config.contextSize, poolingType: config.modelConfig.config.poolingType, deviceAICapable: deviceAICapable!)
+            try model.loadModel()
+            return model
+        }
+        
+        func generate(text: String) async throws -> [Float] {
+            // Check if model is ready
+            if await modelStateActor.modelState == .ready {
+                let model = try await initializeModel()
+                guard let model = model else {
+                    throw FreeTokenError.unableToInitializeModel
+                }
+                
+                do {
+                    return try model.generateEmbedding(text: text)
+                } catch {
+                    FreeToken.shared.logger("Error generating embedding: \(error.localizedDescription)", .error)
+                    throw FreeTokenError.unableToGenerateEmbedding
+                }
+            }
+            
+            // Check if model is in invalid state
+            if await modelStateActor.modelState == .downloadInvalid {
+                throw FreeTokenError.modelDownload
+            }
+            
+            // If model state is unknown and not configured, throw error
+            if managerState != .configured {
+                FreeToken.shared.logger("🔴 Generate called on embedding manager, but manager not configured.", .error)
+                throw FreeTokenError.managerNotConfigured
+            }
+            
+            // Start download if not already downloading
+            FreeToken.shared.logger("⚠️ Generate called on embedding manager, but model not ready. Starting download...", .warning)
+            _ = await self.downloadModel()
+            
+            if await modelStateActor.modelState == .ready {
+                return try await self.generate(text: text) // Run again after download
             } else {
-                FreeToken.shared.logger("Tried to initialize model of unknown name: \(config.modelName)", .error)
-                return nil
+                FreeToken.shared.logger("🔴 Generate called on embedding manager, but model still not ready after download.", .error)
+                throw FreeTokenError.modelDownload
             }
         }
         
-        func generate(text: String) throws -> [Float] {
-            if modelState != .ready || modelState != .downloading {
-                FreeToken.shared.logger("Genreate called on embedding manager, but invalid model state, retrying download.", .warning)
-                Task.detached {
-                    await self.downloadModel()
+        func generate(requests: [EmbeddingRequest]) async throws -> [EmbeddingResult] {
+            if await modelStateActor.modelState == .ready {
+                let model = try await initializeModel()
+                guard let model = model else {
+                    throw FreeTokenError.unableToInitializeModel
                 }
+                
+                var results: [EmbeddingResult] = []
+                // Generate multiple embeddings
+                for request in requests {
+                    let embedding = try model.generateEmbedding(text: request.content)
+                    results.append(EmbeddingResult(id: request.id, embedding: embedding))
+                }
+                
+                return results
             }
             
-            // If model is downloading, wait for it to be ready
-            while modelState == .downloading {
-                // Sleep for a short duration to avoid busy waiting
-                Thread.sleep(forTimeInterval: 0.2)
+            // Check if model is in invalid state
+            if await modelStateActor.modelState == .downloadInvalid {
+                throw FreeTokenError.modelDownload
             }
             
-            let model = initializeModel()
-            if model == nil {
-                throw FreeTokenError.unableToInitializeModel
+            // If model state is unknown and not configured, throw error
+            if managerState != .configured {
+                FreeToken.shared.logger("🔴 Generate called on embedding manager, but manager not configured.", .error)
+                throw FreeTokenError.managerNotConfigured
             }
             
-            var result: [Float]
+            // Start download if not already downloading
+            FreeToken.shared.logger("⚠️ Generate called on embedding manager, but model not ready. Starting download...", .warning)
+            _ = await self.downloadModel()
             
-            do {
-                result = try model!.generate(text: text)
-            } catch {
-                FreeToken.shared.logger("Error generating embedding: \(error.localizedDescription)", .error)
-                throw FreeTokenError.unableToGenerateEmbedding
+            if await modelStateActor.modelState == .ready {
+                return try await self.generate(requests: requests) // Run again after download
+            } else {
+                FreeToken.shared.logger("🔴 Generate called on embedding manager, but model still not ready after download.", .error)
+                throw FreeTokenError.modelDownload
             }
-
-            return result
         }
         
-        // MARK: - Model Class Definitions
-        
-        protocol EmbeddingModel {
-            func generate(text: String) throws -> [Float]
+        struct EmbeddingResult {
+            let id: Int
+            let embedding: [Float]
         }
-        
-        class GistEmbeddingV0Model: EmbeddingModel, @unchecked Sendable {            
-            let name = "gist-embedding-v0"
-            let maxTokens: Int = 512
-            let hiddenSize: Int = 768
-            let modelPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("FreeToken/EmbeddingModels/gist-embedding-v0")
-            
-            var _session: ORTSession? = nil
-            var _tokenizer: Tokenizer? = nil
-            
-            func session() throws -> ORTSession {
-                let fileManager = FileManager.default
-                let env = try ORTEnv(loggingLevel: .warning)
-                let fullPath = modelPath.appendingPathComponent("model.onnx").path
-                
-                if fileManager.fileExists(atPath: fullPath) {
-                    _session = try ORTSession(env: env, modelPath: fullPath, sessionOptions: nil)
-                } else {
-                    throw FreeTokenError.modelDoesNotExistAtPath(message: fullPath)
-                }
-                
-                return _session!
-            }
-            
-            func tokenizer(encode text: String) throws -> [Int] {
-                if _tokenizer == nil {
-                    let semaphore = DispatchSemaphore(value: 0)
-                    Task {
-                        self._tokenizer = try await AutoTokenizer.from(modelFolder: modelPath)
-                        semaphore.signal()
-                    }
-                    
-                    semaphore.wait()
-                }
-                
-                return _tokenizer!.encode(text: text, addSpecialTokens: true)
-            }
-            
-            public func generate(text: String) throws -> [Float] {
-                // 1. Tokenize the input text
-                let tokenized = try tokenizer(encode: text)
-
-                // 2. Define the maximum token limit
-                let maxTokens = self.maxTokens
-
-                // 3. Initialize an array to hold embeddings for each chunk
-                var chunkEmbeddings = [[Float]]()
-
-                // 4. Split tokenized text into chunks of maxTokens size
-                for chunkStart in stride(from: 0, to: tokenized.count, by: maxTokens) {
-                    let chunkEnd = min(chunkStart + maxTokens, tokenized.count)
-                    let tokenChunk = Array(tokenized[chunkStart..<chunkEnd])
-
-                    // 5. Create input_ids and attention_mask for the chunk
-                    let inputIds: [Int64] = tokenChunk.map { Int64($0) }
-                    let attentionMask: [Int64] = Array(repeating: 1, count: inputIds.count)
-
-                    // 6. Convert input_ids and attention_mask to NSData
-                    let inputIdsData = NSMutableData(length: inputIds.count * MemoryLayout<Int64>.size)!
-                    inputIds.withUnsafeBufferPointer { buffer in
-                        inputIdsData.replaceBytes(
-                            in: NSRange(location: 0, length: inputIdsData.length),
-                            withBytes: buffer.baseAddress!
-                        )
-                    }
-
-                    let attentionMaskData = NSMutableData(length: attentionMask.count * MemoryLayout<Int64>.size)!
-                    attentionMask.withUnsafeBufferPointer { buffer in
-                        attentionMaskData.replaceBytes(
-                            in: NSRange(location: 0, length: attentionMaskData.length),
-                            withBytes: buffer.baseAddress!
-                        )
-                    }
-
-                    // 7. Create the ORT environment and session
-                    let session = try session()
-
-                    // 8. Create ORTValues for input_ids and attention_mask
-                    let shape: [NSNumber] = [1, NSNumber(value: inputIds.count)]
-                    let inputIdsTensor = try ORTValue(
-                        tensorData: inputIdsData,
-                        elementType: .int64,
-                        shape: shape
-                    )
-                    let attentionMaskTensor = try ORTValue(
-                        tensorData: attentionMaskData,
-                        elementType: .int64,
-                        shape: shape
-                    )
-
-                    // 9. Gather the two inputs into a dictionary
-                    let inputsDict: [String: ORTValue] = [
-                        "input_ids": inputIdsTensor,
-                        "attention_mask": attentionMaskTensor
-                    ]
-
-                    // 10. Run inference
-                    let allOutputNames = try session.outputNames()
-                    let outputNameSet = Set(allOutputNames)
-
-                    let outputs = try session.run(
-                        withInputs: inputsDict,
-                        outputNames: outputNameSet,
-                        runOptions: nil
-                    )
-
-                    // 11. Retrieve the first output
-                    guard
-                        let firstOutputName = allOutputNames.first,
-                        let outputValue = outputs[firstOutputName]
-                    else {
-                        throw FreeTokenError.noOutputsFoundInResult
-                    }
-
-                    // 12. Convert the tensor data into [Float]
-                    let outputData = try outputValue.tensorData()
-                    let floatCount = outputData.count / MemoryLayout<Float>.size
-                    var floatArray = [Float](repeating: 0, count: floatCount)
-                    _ = floatArray.withUnsafeMutableBytes { ptr in
-                        outputData.copyBytes(to: ptr, count: outputData.count)
-                    }
-
-                    // 13. Reshape the output to [sequence_length, hidden_size]
-                    let sequenceLength = inputIds.count
-                    let hiddenSize = self.hiddenSize
-                    var embeddings = [[Float]]()
-                    for i in 0..<sequenceLength {
-                        let start = i * hiddenSize
-                        let end = start + hiddenSize
-                        let embedding = Array(floatArray[start..<end])
-                        embeddings.append(embedding)
-                    }
-
-                    // 14. Apply mean pooling to get a single embedding of size [hidden_size] for the chunk
-                    var pooledEmbedding = [Float](repeating: 0, count: hiddenSize)
-                    for embedding in embeddings {
-                        for j in 0..<hiddenSize {
-                            pooledEmbedding[j] += embedding[j]
-                        }
-                    }
-                    for j in 0..<hiddenSize {
-                        pooledEmbedding[j] /= Float(sequenceLength)
-                    }
-
-                    // 15. Append the pooled embedding of the chunk to the list
-                    chunkEmbeddings.append(pooledEmbedding)
-                }
-
-                // 16. Aggregate all chunk embeddings to form a single embedding for the entire text
-                let numChunks = chunkEmbeddings.count
-                var finalEmbedding = [Float](repeating: 0, count: hiddenSize)
-                for embedding in chunkEmbeddings {
-                    for j in 0..<hiddenSize {
-                        finalEmbedding[j] += embedding[j]
-                    }
-                }
-                for j in 0..<hiddenSize {
-                    finalEmbedding[j] /= Float(numChunks)
-                }
-
-                // 17. Return the final aggregated embedding vector
-                return finalEmbedding
-            }
+        struct EmbeddingRequest {
+            let id: Int
+            let content: String
         }
     }
-    
 }
