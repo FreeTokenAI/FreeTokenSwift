@@ -94,8 +94,12 @@ extension FreeToken {
                     context.selectedToolDefinitions.removeAll()
                 case .allow(let name):
                     if context.selectedToolDefinitions.first(where: { $0.name == name }) == nil {
-                        let definition = (await context.toolDefinitionsManager.getToolDefinition(for: name))!
-                        context.selectedToolDefinitions.append(definition)
+                        let definition = (await context.toolDefinitionsManager.getToolDefinition(for: name))
+                        if let definition = definition {
+                            context.selectedToolDefinitions.append(definition)
+                        } else {
+                            FreeToken.shared.logger("⚠️ Explicit allow of tool definition \(name) - tool by that name was not found", .warning)
+                        }
                     }
                 case .deny(let name):
                     context.selectedToolDefinitions.removeAll(where: { $0.name == name })

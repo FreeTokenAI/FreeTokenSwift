@@ -122,8 +122,12 @@ extension FreeToken {
                     definitions.removeAll()
                 case .allow(let name):
                     if definitions.first(where: { $0.name == name }) == nil {
-                        let definition = (self.getToolDefinition(for: name))!
-                        definitions.append(definition)
+                        let definition = self.getToolDefinition(for: name)
+                        if let definition = definition {
+                            definitions.append(definition)
+                        } else {
+                            FreeToken.shared.logger("⚠️ Explicit allow of tool definition \(name) - tool by that name was not found", .warning)
+                        }
                     }
                 case .deny(let name):
                     definitions.removeAll(where: { $0.name == name })
