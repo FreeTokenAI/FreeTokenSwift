@@ -112,9 +112,23 @@ extension FreeToken {
             var downloadState: DownloadState = .notDownloaded
             var loadedState: AIModelLoadingState = .unloaded
             var modelInitOptions: ModelInitOptions? = nil
+            var llamaTokenizerClient: LlamaClient? = nil
+            var mlxTokenizerClient: MLXClient? = nil
             
             // Thread state management
             private var threadStateManager = ThreadStateManager()
+            
+            // Helper function to tokenize text using the appropriate client
+            func tokenizeText(_ text: String) async -> Int {
+                if let llamaClient = llamaTokenizerClient {
+                    return await llamaClient.tokenize(text)
+                } else if let mlxClient = mlxTokenizerClient {
+                    return await mlxClient.tokenize(text)
+                } else {
+                    // Fallback to estimation
+                    return max(1, text.count / 4)
+                }
+            }
             
             struct SessionCache: @unchecked Sendable {
                 let runIdentifier: String
@@ -179,6 +193,26 @@ extension FreeToken {
                         totalTokens += max(1, message.content.count / 4)
                     }
                     return Int(Double(totalTokens) * 1.1) // Add buffer
+                }
+                
+                func countTokensAccurately(_ messages: [Message], tokenizer: @escaping (String) async -> Int, promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) async -> Int {
+                    // Convert messages to a single prompt string for tokenization
+                    var fullPrompt = ""
+                    for message in messages {
+                        // Add role prefix based on the prompt template
+                        switch message.role {
+                        case .system:
+                            fullPrompt += promptTemplateConfig.systemRole + message.content
+                        case .user:
+                            fullPrompt += promptTemplateConfig.userRole + message.content
+                        case .assistant:
+                            fullPrompt += promptTemplateConfig.assistantRole + message.content
+                        case .tool:
+                            fullPrompt += promptTemplateConfig.toolRole + message.content
+                        }
+                    }
+                    
+                    return await tokenizer(fullPrompt)
                 }
                 
                 func canAppendSafely(_ newMessages: [Message]) -> Bool {
@@ -686,6 +720,14 @@ extension FreeToken {
                 
                 self.loadedState = .loading
                 self.model = try modelFactory(initOptions: self.modelInitOptions!)
+                
+                // Create tokenizer client for accurate token counting
+                do {
+                    try await createTokenizerClient(initOptions: self.modelInitOptions!)
+                } catch {
+                    FreeToken.shared.logger("⚠️ Failed to create tokenizer client: \(error). Token counting will use estimates.", .warning)
+                }
+                
                 self.loadedState = .loaded
             }
             
@@ -715,6 +757,13 @@ extension FreeToken {
                 }
                 
                 return model
+            }
+            
+            func createTokenizerClient(initOptions: ModelInitOptions) async throws {
+                // Note: Creating standalone tokenizer clients requires access to model file paths
+                // which are not publicly exposed by LocalLLMClient. The tokenization will work
+                // through the main session once it's created, but for now we'll use estimation.
+                FreeToken.shared.logger("📊 Tokenizer client creation deferred - token counting will use estimation until session is created", .info)
             }
             
             func generateResponse(
@@ -1273,6 +1322,38 @@ extension FreeToken {
                 await aiResults.setMaxTokenCount(maxTokens)
             }
             
+            // Count input tokens using the tokenizer if available
+            var inputTokenCount = 0
+            let hasLlamaTokenizer = await stateManager.llamaTokenizerClient != nil
+            let hasMLXTokenizer = await stateManager.mlxTokenizerClient != nil
+            let hasTokenizer = hasLlamaTokenizer || hasMLXTokenizer
+            if hasTokenizer {
+                // Convert all prepared messages to a single prompt string for tokenization
+                var fullPrompt = ""
+                for message in preparedMessages {
+                    // Add role prefix based on the prompt template
+                    switch message.role {
+                    case .system:
+                        fullPrompt += promptTemplateConfig.systemRole + message.content
+                    case .user:
+                        fullPrompt += promptTemplateConfig.userRole + message.content
+                    case .assistant:
+                        fullPrompt += promptTemplateConfig.assistantRole + message.content
+                    case .tool:
+                        fullPrompt += promptTemplateConfig.toolRole + message.content
+                    }
+                }
+                
+                inputTokenCount = await stateManager.tokenizeText(fullPrompt)
+                FreeToken.shared.logger("📊 Input token count: \(inputTokenCount) tokens", .info)
+            } else {
+                // Fallback to estimation
+                inputTokenCount = preparedMessages.reduce(0) { sum, message in
+                    sum + max(1, message.content.count / 4)
+                }
+                FreeToken.shared.logger("📊 Estimated input token count: \(inputTokenCount) tokens", .info)
+            }
+            
             // Generate response using the AIStateManager
             let task = Task {
                 _ = try await taskQueue.enqueue(runLocation: runLocation) {
@@ -1331,13 +1412,20 @@ extension FreeToken {
             var usage: TokenUsage? = nil
             let startTime = await aiResults.startTime
             let endTime = await aiResults.endTime
-            let tokenCount = await aiResults.tokenCount
+            let outputTokenCount = await aiResults.tokenCount
             
             if let start = startTime, let endTime = endTime {
                 let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
-                let tokensPerSecond = Float(Double(await aiResults.tokenCount) / (duration / 1000.0))
-                usage = TokenUsage(totalTokens: tokenCount, tokensPerSecond: tokensPerSecond)
-                FreeToken.shared.logger("🧠 AI response generated \(tokenCount) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
+                let tokensPerSecond = Float(Double(outputTokenCount) / (duration / 1000.0))
+                let totalTokens = inputTokenCount + outputTokenCount
+                usage = TokenUsage(
+                    totalTokens: totalTokens, 
+                    tokensPerSecond: tokensPerSecond, 
+                    inputTokens: inputTokenCount, 
+                    outputTokens: outputTokenCount, 
+                    modelCode: self.modelCode
+                )
+                FreeToken.shared.logger("🧠 AI response generated - Input: \(inputTokenCount) tokens, Output: \(outputTokenCount) tokens, Total: \(totalTokens) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
             }
             
             let responseContent = await aiResults.responseContent

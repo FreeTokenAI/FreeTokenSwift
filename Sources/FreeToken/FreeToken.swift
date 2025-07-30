@@ -1789,15 +1789,17 @@ public class FreeToken: @unchecked Sendable {
             runIdentifier = uniqueID!
         }
         
+        let profiler = Profiler()
         do {
             let response: String
             let usage: TokenUsage?
             (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runIdentifier, runLocation: .localRun, aiRunConfig: aiRunConfig)
-            
+            profiler.end(eventType: .generateLocalChatCompletion, isSuccess: true, tokenStats: usage)
             let message = Message(role: .assistant, content: response, tokenUsage: usage)
             
             return message
         } catch {
+            profiler.end(eventType: .generateLocalChatCompletion, isSuccess: false, errorMessage: "Failed to generate local chat with error: \(error.localizedDescription)")
             throw error
         }
     }

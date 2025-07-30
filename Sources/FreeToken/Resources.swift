@@ -1179,16 +1179,25 @@ extension FreeToken {
     
     public struct TokenUsage: @unchecked Sendable {
         let totalTokens: Int
+        let inputTokens: Int
+        let outputTokens: Int
+        let modelCode: String
         let tokensPerSecond: Float
 
-        internal init(totalTokens: Int, tokensPerSecond: Float) {
+        internal init(totalTokens: Int, tokensPerSecond: Float, inputTokens: Int, outputTokens: Int, modelCode: String) {
             self.totalTokens = totalTokens
             self.tokensPerSecond = tokensPerSecond
+            self.inputTokens = inputTokens
+            self.outputTokens = outputTokens
+            self.modelCode = modelCode
         }
         
         internal init(from tokenUsageReponse: Codings.TokenUsageResponse) {
             self.totalTokens = tokenUsageReponse.totalTokens
             self.tokensPerSecond = tokenUsageReponse.tokensPerSecond
+            self.inputTokens = 0
+            self.outputTokens = 0
+            self.modelCode = ""
         }
                 
         func asCodable() -> Codings.TokenUsageRequest {
