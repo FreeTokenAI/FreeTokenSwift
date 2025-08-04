@@ -1730,8 +1730,31 @@ public class FreeToken: @unchecked Sendable {
     /// > Note: This method will unload the AI model from the device memory, freeing up resources.
     /// > It is useful when the AI model is no longer needed or when you want to switch to a different model.
     ///
+    /// - Parameters:
+    ///    - modelCode: Optional AI Model Code to unload a specific model, if not provided the default AI Model will be unloaded
     /// - Returns: Void
-    public func unloadModel() async {
+    public func unloadModel(modelCode: String? = nil) async {
+        
+        // Get the AI Model Manager
+        let aiModelManager: AIModelManager?
+        if let modelCode = modelCode {
+            if let manager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = manager
+            } else {
+                // Model not downloaded
+                FreeToken.shared.logger("⚠️ AI Model with code \(modelCode) not loaded", .warning)
+                return
+            }
+        } else {
+            // Use the default AI Model Manager
+            aiModelManager = self.aiModelManager
+            
+            guard deviceDetails?.aiModel.cloudOnly == false else {
+                FreeToken.shared.logger("⚠️ AI Model is cloud-only, nothing to unload", .warning)
+                return
+            }
+        }
+        
         await aiModelManager?.unloadModel()
     }
     
