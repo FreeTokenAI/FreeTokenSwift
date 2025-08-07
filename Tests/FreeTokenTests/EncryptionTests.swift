@@ -12,7 +12,7 @@ final class EncryptionTests: XCTestCase {
     var freeToken: FreeToken!
     
     override func setUpWithError() throws {
-        freeToken = try FreeToken.shared.configure(appToken: "app_tkn_3b39cb60-22cd-4877-b784-170b75f88a92", baseURL: URL(string: "http://localhost:3000/api/v1/"), sharedPublicEncryptionKey: nil, userPrivateEncryptionKey: nil, logLevel: .debug)
+        freeToken = try FreeToken.shared.configure(appToken: "test-token", baseURL: URL(string: "http://localhost:3000/api/v1/"), sharedPublicEncryptionKey: nil, userPrivateEncryptionKey: nil, logLevel: .debug)
     }
     
     override func tearDown() async throws {

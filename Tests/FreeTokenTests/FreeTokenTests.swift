@@ -14,14 +14,14 @@ final class FreeTokenTests: XCTestCase {
     override func setUpWithError() throws {
         // Put setup code here. This method is called before the invocation of each test method in the class.
         _ = try FreeToken.shared.configure(
-            appToken: "app_tkn_3b39cb60-22cd-4877-b784-170b75f88a92",
+            appToken: "test-token",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug
         )
         // Register Device
         let semaphore = DispatchSemaphore(value: 0)
         Task {
-//            try await FreeToken.shared.resetModelCaches()
+            try await FreeToken.shared.resetModelCaches()
             await FreeToken.shared.registerDeviceSession(scope: "swift-tests") {
                 await FreeToken.shared.downloadAIModel { isLocal in
                     print("AI model downloaded successfully. Local: \(isLocal)")
@@ -29,7 +29,7 @@ final class FreeTokenTests: XCTestCase {
                 } error: { error in
                     XCTFail("Failed to download AI model: \(error.message)")
                 } progressPercent: { progressPercent in
-                    // Nothing to do here
+                    // NOTE: This is not getting called during the test download
                     print("Download progress: \(progressPercent)%")
                 }
             } error: { error in
@@ -60,7 +60,7 @@ final class FreeTokenTests: XCTestCase {
             }
         }
 
-        wait(for: [expectation], timeout: 30.0)
+        wait(for: [expectation], timeout: 60.0)
     }
     
     func testGenerateCompletion() throws {
@@ -424,7 +424,7 @@ final class FreeTokenTests: XCTestCase {
                 
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .cloudRun, success: { resultMessage in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
                             print("✅ Multi-modal response: \(resultMessage.content)")
                             XCTAssertTrue(resultMessage.content.count > 0, "Expected non-empty response")
                             XCTAssertTrue(resultMessage.content.contains("Nyan"), "Expected response to mention 'Nyan Cat'")

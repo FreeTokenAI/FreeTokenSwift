@@ -1162,9 +1162,7 @@ extension FreeToken {
                 )
                 
                 _ = try await stateManager.downloadModel { progress in
-                    Task { @MainActor in
-                        progressCallback?(progress)
-                    }
+                    progressCallback?(progress)
                 }
                 FreeToken.shared.logger("⬇️ AI model downloaded successfully", .info)
                 

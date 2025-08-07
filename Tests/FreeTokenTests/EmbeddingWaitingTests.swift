@@ -14,7 +14,7 @@ final class EmbeddingWaitingTests: XCTestCase {
     override func setUpWithError() throws {
         // Configure FreeToken
         _ = try FreeToken.shared.configure(
-            appToken: "app_tkn_3b39cb60-22cd-4877-b784-170b75f88a92",
+            appToken: "test-token",
             baseURL: URL(string: "http://localhost:3000/api/v1/"),
             logLevel: .debug
         )
