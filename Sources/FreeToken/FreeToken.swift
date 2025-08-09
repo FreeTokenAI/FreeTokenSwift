@@ -333,7 +333,7 @@ public class FreeToken: @unchecked Sendable {
 #endif
         
         await aiModelManager?.unloadModel()
-        await aiModelManager?.stateManager.setDownloadState(.notDownloaded)
+        await aiModelManager?.stateManager.reset()
         
         // Delete the whole directory
         do {
@@ -435,7 +435,10 @@ public class FreeToken: @unchecked Sendable {
                         return
                     }
                     
-                    let wasSuccess = try await modelManager.downloadIfNeeded(progress: progressPercent)
+                    let wasSuccess = try await modelManager.downloadIfNeeded { percentage in
+                        let newPercent = Double(percentage) * 100.0
+                        progressPercent?(newPercent)
+                    }
                     
                     if wasSuccess {
                         FreeToken.shared.logger("⬇️ Model \(aiModel.code) downloaded successfully", .info)
@@ -713,16 +716,16 @@ public class FreeToken: @unchecked Sendable {
     ///     - error: A closure for capturing any errors that occur during the call.
     ///
     ///     - Returns: Void
-    public func getMessageThread(id: String, success successCompletion: @escaping @Sendable (MessageThread) -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) -> Void) async {
+    public func getMessageThread(id: String, success successCompletion: @escaping @Sendable (MessageThread) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
-            errorCompletion(FreeTokenError.deviceNotRegistered)
+            await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }
         
         await messagesManager.getMessageThread(id: id) { messageThread, _ in
-            successCompletion(messageThread)
+            await successCompletion(messageThread)
         } failure: { error in
-            errorCompletion(error)
+            await errorCompletion(error)
         }
     }
     
@@ -801,6 +804,39 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    /// Token Counter
+    ///
+    ///
+    /// - Parameters:
+    ///    - text: The text to count tokens for
+    ///    - modelCode: Optional AI Model Code to use for token counting. If not provided, the default model will be used.
+    /// - Returns: The number of tokens in the provided text
+    public func countTokens(text: String, modelCode: Optional<String> = nil) async throws -> Int {
+        guard isDeviceRegistered() else {
+            FreeToken.shared.logger("🔴 Device not registered. Cannot count tokens.", .error)
+            return 0
+        }
+        
+        // Use the AI Model Manager to count tokens
+        let aiModelManager: AIModelManager?
+        
+        if let modelCode = modelCode {
+            if let modelManager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = modelManager
+            } else {
+                FreeToken.shared.logger("⏭️ Token counting called for model code \(modelCode) - model not loaded", .warning)
+                throw FreeTokenError.aiModelNotLoaded
+            }
+        } else {
+            // Use Default AI Model Manager
+            aiModelManager = self.aiModelManager
+        }
+        let message = Message(role: .user, content: text)
+        
+        return try await aiModelManager!.tokensCount(for: nil, messages: [message])
+    }
+    
+    
     /// Generate an AI Completion
     ///
     /// ```
@@ -861,7 +897,7 @@ public class FreeToken: @unchecked Sendable {
             deviceManager = self.deviceManager
         }
         
-        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, await aiModelManager?.stateManager.getLoadedState() == .loaded, deviceManager?.isTooHot() == false  {
+        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, deviceManager?.isTooHot() == false  {
             // Generate local completion
             await generateLocalCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
             return
@@ -974,11 +1010,6 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        guard await aiModelManager.stateManager.getLoadedState() == .loaded else {
-            await errorCompletion(FreeTokenError.aiModelNotLoaded)
-            return
-        }
-        
         guard deviceManager?.isTooHot() == false else {
             await errorCompletion(FreeTokenError.isTooHot)
             return
@@ -987,12 +1018,10 @@ public class FreeToken: @unchecked Sendable {
         let profiler = Profiler()
         
         do {
-            let uuid = UUID().uuidString
-            let message = Message(role: .user, content: "Complete the following: \(prompt)")
             let response: String
             let usage: TokenUsage?
             
-            (response, usage) = try await aiModelManager.sendMessagesToAI(messages: [message], runIdentifier: uuid, runLocation: .localRun, noContextCache: true)
+            (response, usage) = try await aiModelManager.sendTextToAI(text: prompt, runLocation: .localRun)
             let completion = Completion(response: response)
 
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: usage)
@@ -1016,15 +1045,8 @@ public class FreeToken: @unchecked Sendable {
         let preparedMessages: [Message]
         do {
             let promptTemplateConfig = deviceDetails!.aiModel.config.promptTemplateConfig
-            let contextWindowSize: Int
             
-            if let size = aiRunConfig?.contextWindowSize {
-                contextWindowSize = size
-            } else {
-                contextWindowSize = deviceDetails!.aiModel.config.defaultSettings.contextWindowSize
-            }
-            
-            preparedMessages = try MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig, contextWindowSize: contextWindowSize).prepareMessages()
+            preparedMessages = try MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig).prepareMessages()
         } catch {
             FreeToken.shared.logger("🔴 Error preparing messages for chat completion: \(error.localizedDescription)", .error)
             await errorCallback(error as! FreeTokenError)
@@ -1607,10 +1629,10 @@ public class FreeToken: @unchecked Sendable {
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
-            ToolCallMasking.self,
-            LoadAIModel.self,
-            DetermineAIRunLocation.self,
             GetMessageThread.self,
+            ToolCallMasking.self,
+            DetermineAIRunLocation.self,
+            LoadAIModel.self,
             RunAIModelLocally.self, // Order of these two steps is important!
             RunAIModelInCloud.self, // <---
             AddMessageToThread.self,
@@ -1718,6 +1740,62 @@ public class FreeToken: @unchecked Sendable {
             await successCompletion(isSuccess)
         case .failure(let error):
             await errorCompletion(error)
+        }
+    }
+    
+    /// Prewarm AI Cache for MessageThread
+    ///
+    /// ```
+    ///    await client.prewarmAIForMessageThread(messageThreadID: "msgthr-id")
+    /// ```
+    ///
+    /// Tip: Use this method when the initial hit of downloading the messages for a thread and loading the AI model is too slow and could be done at a more convienient time for the user.
+    ///
+    /// - Parameters:
+    ///    - messageThreadID: The ID of the message thread to prewarm the AI
+    /// - Returns: Void
+    public func prewarmAIForMessageThread(
+        messageThreadID: String,
+        modelCode: String? = nil,
+        runConfig: AIRunConfig? = nil,
+        success successCallback: (@Sendable () async -> Void)? = nil,
+        error errorCallback: (@Sendable (FreeTokenError) async -> Void)? = nil
+    ) async {
+        guard isDeviceRegistered() else {
+            FreeToken.shared.logger("🔴 Device not registered, cannot prewarm AI for message thread", .error)
+            return
+        }
+        
+        // Get the AI Model Manager by Model Code
+        let aiModelManager: AIModelManager?
+        if let modelCode = modelCode {
+            if let manager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = manager
+            } else {
+                // Model not downloaded
+                await errorCallback?(FreeTokenError.aiModelNotDownloaded)
+                return
+            }
+        } else {
+            // Use the default AI Model Manager
+            aiModelManager = self.aiModelManager
+            
+            guard deviceDetails?.aiModel.cloudOnly == false else {
+                await errorCallback?(FreeTokenError.isCloudOnlyModel)
+                return
+            }
+        }
+        
+        await self.getMessageThread(id: messageThreadID) { thread in
+            do {
+                let session = try await aiModelManager?.stateManager.loadSession(for: messageThreadID, with: thread.messages, runConfig: runConfig)
+                _ = try await session?.load()
+                await successCallback?()
+            } catch {
+                await errorCallback?(FreeTokenError.failedToLoadModel)
+            }
+        } error: { error in
+            await errorCallback?(error)
         }
     }
     
@@ -1833,7 +1911,7 @@ public class FreeToken: @unchecked Sendable {
         
         let eventType = profiler.eventType!.rawValue
         
-        FreeToken.shared.logger("Telemetry Stats - Event: \(eventType): Time: \(profiler.msDuration()!)ms", .info)
+        FreeToken.shared.logger("🛰️ Telemetry Stats - Event: \(eventType): Time: \(profiler.msDuration()!)ms", .info)
         
         Task.detached(priority: .background) {
             guard self.isDeviceRegistered() else {

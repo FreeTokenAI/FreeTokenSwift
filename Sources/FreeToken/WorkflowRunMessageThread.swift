@@ -139,18 +139,17 @@ extension FreeToken {
                 return
             }
             
-            if await context.aiModelManager?.stateManager.getLoadedState() == .loaded {
-                FreeToken.shared.logger("🧠 AI model already loaded, skipping load", .info)
-                await success(context)
-                return
-            }
-
-            // Kickoff async model load
-            Task.detached(priority: .background) {
-                _ = await FreeToken.shared.loadModel { loadedState in
-                    // Nothing to do here, the model is loaded
-                } error: { error in
-                    // Failed to load the model, nothing to do here
+            do {
+                _ = try await context.aiModelManager?.stateManager.loadSession(for: context.messageThreadID, with: context.messageThread!.messages, runConfig: context.aiRunConfig)
+            } catch {
+                if context.runLocation == .localRun {
+                    FreeToken.shared.logger("🔴 Failed to load AI model for local run: \(error)", .error)
+                    await failure(FreeTokenError.failedToLoadModel, context)
+                } else {
+                    // If we're in automatic mode, we can just skip loading the model and let it run in the cloud
+                    FreeToken.shared.logger("⚠️ Failed to load AI model, automatic run switching to cloud", .warning)
+                    context.cloudRun = true
+                    await success(context)
                 }
             }
             
@@ -242,14 +241,8 @@ extension FreeToken {
                     FreeToken.shared.logger("🔽 Model not downloaded, running in cloud", .info)
                     return true
                 } else {
-                    // Model downloaded, check if loaded and device conditions
-                    if await aiModelManager?.stateManager.getLoadedState() != .loaded {
-                        FreeToken.shared.logger("🧠 Model not loaded yet, running in cloud", .info)
-                        return true
-                    }
-                    
                     if self.deviceManager?.isTooHot() == true {
-                        FreeToken.shared.logger("😰 Device too hot, running in cloud", .warning)
+                        FreeToken.shared.logger("🔥 Device too hot, running in cloud", .warning)
                         return true
                     }
                     
@@ -363,11 +356,6 @@ extension FreeToken {
             let resultText: String
             let usage: TokenUsage?
             let messages = messageThread.messages
-            
-            FreeToken.shared.logger("🔍 WORKFLOW: Processing \(messages.count) messages in thread", .info)
-            for (index, msg) in messages.enumerated() {
-                FreeToken.shared.logger("🔍 WORKFLOW: Message \(index): role=\(msg.role), attachments=\(msg.attachments?.count ?? 0)", .info)
-            }
             
             let profiler = Profiler()
             do {

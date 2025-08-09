@@ -15,8 +15,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/johnmai-dev/Jinja",
       "state" : {
-        "revision" : "31c4dd39bcdc07eaa42a384bdc88ea599022b800",
-        "version" : "1.1.2"
+        "revision" : "bb238dd96fbe4c18014f3107c00edd6edb15428e",
+        "version" : "1.2.4"
       }
     },
     {
@@ -25,7 +25,7 @@
       "location" : "https://github.com/FreeTokenAI/LocalLLMClient",
       "state" : {
         "branch" : "release",
-        "revision" : "9f688506b8cd0664a5589c1af2622bab0f6c01b1"
+        "revision" : "5f67939a4a703cf5362bbe0b03447b0f591abc50"
       }
     },
     {
@@ -43,7 +43,7 @@
       "location" : "https://github.com/ml-explore/mlx-swift-examples",
       "state" : {
         "branch" : "main",
-        "revision" : "42b0d21a607b97c3b99d1e20626b7d9b14827b81"
+        "revision" : "55daf5b243f81b11d947acea0a7150b66e549a72"
       }
     },
     {
@@ -60,8 +60,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/apple/swift-collections.git",
       "state" : {
-        "revision" : "c1805596154bb3a265fd91b8ac0c4433b4348fb0",
-        "version" : "1.2.0"
+        "revision" : "8c0c0a8b49e080e54e5e328cc552821ff07cd341",
+        "version" : "1.2.1"
       }
     },
     {
@@ -87,8 +87,8 @@
       "kind" : "remoteSourceControl",
       "location" : "https://github.com/huggingface/swift-transformers",
       "state" : {
-        "revision" : "c2f302a74cca59cbde683b1425ab43c05685515a",
-        "version" : "0.1.21"
+        "revision" : "e5bf0627bd134cf8ddc407cda403ae84207af959",
+        "version" : "0.1.22"
       }
     }
   ],

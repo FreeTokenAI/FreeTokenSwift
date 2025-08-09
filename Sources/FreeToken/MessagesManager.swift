@@ -167,21 +167,6 @@ extension FreeToken {
             // Handle message based on encryption mode and attachments
             let hasImageAttachments = message.attachments?.contains { $0.type == .image } == true
             
-            // Debug logging for image attachments
-            if hasImageAttachments {
-                FreeToken.shared.logger("🔍 MESSAGE DEBUG: Message has \(message.attachments?.count ?? 0) total attachments", .info)
-                let imageCount = message.attachments?.filter { $0.type == .image }.count ?? 0
-                FreeToken.shared.logger("🔍 MESSAGE DEBUG: Message has \(imageCount) image attachments", .info)
-                
-                for (index, attachment) in (message.attachments ?? []).enumerated() {
-                    if attachment.type == .image {
-                        FreeToken.shared.logger("🔍 MESSAGE DEBUG: Image \(index): \(attachment.data.count) bytes, type: \(attachment.contentType)", .info)
-                    }
-                }
-            } else {
-                FreeToken.shared.logger("🔍 MESSAGE DEBUG: Message has NO image attachments", .info)
-            }
-            
             if encryptionManager.isEncryptionEnabled {
                 // Encrypted mode: use encrypted request (handles both content and images)
                 do {

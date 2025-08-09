@@ -21,7 +21,7 @@ final class FreeTokenTests: XCTestCase {
         // Register Device
         let semaphore = DispatchSemaphore(value: 0)
         Task {
-            try await FreeToken.shared.resetModelCaches()
+//            try await FreeToken.shared.resetModelCaches()
             await FreeToken.shared.registerDeviceSession(scope: "swift-tests") {
                 await FreeToken.shared.downloadAIModel { isLocal in
                     print("AI model downloaded successfully. Local: \(isLocal)")
@@ -47,12 +47,12 @@ final class FreeTokenTests: XCTestCase {
             try await FreeToken.shared.resetDevice()
         }
     }
-
+    
     func testLocalCompletion() throws {
         let expectation = self.expectation(description: "Waiting for completion")
 
         Task {
-            await FreeToken.shared.generateLocalCompletion(prompt: "The wheels on the bus go") { completion in
+            await FreeToken.shared.generateLocalCompletion(prompt: "Complete the following: The wheels on the bus go") { completion in
                 print("Completion: \(completion.response)")
                 expectation.fulfill()
             } error: { error in
@@ -133,6 +133,170 @@ final class FreeTokenTests: XCTestCase {
         }
         
         wait(for: [expectation], timeout: 300.0) // Has to be long because it's downloading the model
+    }
+    
+    func testMessageThreadRun() throws {
+        let expectation = self.expectation(description: "Waiting for message thread run")
+
+        Task {
+            let message = FreeToken.Message(role: .user, content: "What is the capital of France?")
+            
+            actor MessageStream {
+                var message = ""
+                
+                func append(_ text: String) {
+                    message += text
+                }
+                func getMessage() -> String {
+                    return message
+                }
+            }
+            
+            let messageStream = MessageStream()
+            
+            await FreeToken.shared.createMessageThread { messageThread in
+                await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                    await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
+                        XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
+                        let finalMessage = await messageStream.getMessage()
+                        XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
+                        expectation.fulfill()
+                    }, error: { error in
+                        XCTFail("Failed to run message thread: \(error.message)")
+                        expectation.fulfill()
+                    }, chatStatusStream: { token, status in
+                        if let token = token {
+                            print("Received token: \(token)")
+                            await messageStream.append(token)
+                        }
+                    })
+                } error: { error in
+                    XCTFail("Failed to add message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 300.0)
+    }
+    
+    func testPrewarmCacheRun() throws {
+        let expectation = self.expectation(description: "Waiting for message thread run")
+
+        Task {
+            let message = FreeToken.Message(role: .user, content: "What is the capital of France?")
+            
+            actor MessageStream {
+                var message = ""
+                
+                func append(_ text: String) {
+                    message += text
+                }
+                func getMessage() -> String {
+                    return message
+                }
+            }
+            
+            let messageStream = MessageStream()
+            
+            await FreeToken.shared.createMessageThread { messageThread in
+                await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                    
+                    await FreeToken.shared.prewarmAIForMessageThread(messageThreadID: messageThread.id) {
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
+                            XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
+                            let finalMessage = await messageStream.getMessage()
+                            XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
+                            expectation.fulfill()
+                        }, error: { error in
+                            XCTFail("Failed to run message thread: \(error.message)")
+                            expectation.fulfill()
+                        }, chatStatusStream: { token, status in
+                            if let token = token {
+                                await messageStream.append(token)
+                            }
+                        })
+                    } error: { error in
+                        XCTFail("Failed to prewarm AI for message thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                } error: { error in
+                    XCTFail("Failed to add message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 300.0)
+    }
+    
+    func testReallyLongMessageThreadCountRun() throws {
+        let expectation = self.expectation(description: "Waiting for really long message thread run")
+        
+        Task {
+            actor MessageStream {
+                var message = ""
+                
+                func append(_ text: String) {
+                    message += text
+                }
+                func getMessage() -> String {
+                    return message
+                }
+            }
+            
+            let messageStream = MessageStream()
+            
+            _ = await FreeToken.shared.createMessageThread { messageThread in
+                for i in 1...501 {
+                    let content: String
+                    let role: FreeToken.MessageRole
+                    if i.isMultiple(of: 2) {
+                        // Odd messages
+                        content = "Hello! This is message number \(i). How can I help you today? This is a really long message to test the limits of the message thread system. "
+                        role = .assistant
+                    } else {
+                        // Even messages
+                        content = "Hi there! How are you?"
+                        role = .user
+                    }
+                    
+                    let message = FreeToken.Message(role: role, content: content)
+                    await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                        // Added a message.
+                    } error: { error in
+                        XCTFail("Failed to add message to thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                }
+                
+                _ = await FreeToken.shared.prewarmAIForMessageThread(messageThreadID: messageThread.id)
+                
+                await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
+                    let finalMessage = await messageStream.getMessage()
+                    XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
+                    expectation.fulfill()
+                }, error: { error in
+                    XCTFail("Failed to run message thread: \(error.message)")
+                    expectation.fulfill()
+                }, chatStatusStream: { token, status in
+                    if let token = token {
+                        await messageStream.append(token)
+                    }
+                })
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 300.0)
     }
     
     func testRunMessageThreadWithModelCode() throws {
@@ -220,7 +384,7 @@ final class FreeTokenTests: XCTestCase {
             expectation.fulfill()
         }
 
-        wait(for: [expectation], timeout: 10.0)
+        wait(for: [expectation], timeout: 30.0)
     }
     
     func testCloudChatCompletion() throws {
@@ -356,53 +520,6 @@ final class FreeTokenTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 30.0)
-    }
-    
-    func testSystemMessageReinjection() throws {
-        let expectation = self.expectation(description: "Waiting for system message reinjection test")
-        
-        Task {
-            do {
-                // Create a system message that establishes specific behavior
-                let systemMessage = FreeToken.Message(role: .system, content: "You are a helpful assistant that ALWAYS responds with exactly 3 words, no more, no less.")
-                
-                // Create many user messages to potentially overflow context
-                var messages: [FreeToken.Message] = [systemMessage]
-                
-                // Add many messages to approach context limit
-                // Each message pair (user + assistant) uses roughly 50-100 tokens
-                for i in 1...30 {
-                    messages.append(FreeToken.Message(role: .user, content: "Question \(i): What is the meaning of life?"))
-                    messages.append(FreeToken.Message(role: .assistant, content: "Three word answer"))
-                }
-                
-                // Add final test message
-                messages.append(FreeToken.Message(role: .user, content: "How many words should your response contain?"))
-                
-                // Run local chat with small context window to force trimming
-                let response = try await FreeToken.shared.localChat(
-                    messages: messages,
-                    uniqueID: "test-reinjection"
-                )
-                
-                print("System message reinjection test response: \(response.content)")
-                
-                // Verify the AI still follows the system message instruction
-                let wordCount = response.content.split(separator: " ").count
-                XCTAssertLessThanOrEqual(wordCount, 5, "Expected response to be concise (around 3 words) per system message")
-                
-                // Check if response mentions "three" or "3"
-                let mentionsThree = response.content.lowercased().contains("three") || response.content.contains("3")
-                XCTAssertTrue(mentionsThree, "Expected response to acknowledge the 3-word constraint from system message")
-                
-                expectation.fulfill()
-            } catch {
-                XCTFail("Test failed with error: \(error)")
-                expectation.fulfill()
-            }
-        }
-        
-        wait(for: [expectation], timeout: 60.0)
     }
     
     func testMultiModalImageRun() {

@@ -18,8 +18,11 @@ extension FreeToken {
                 
         private let sufficientVRAM: Bool
         private let sufficientMetalSupport: Bool
+        private let memoryRequirement: Int
         
         init(memoryRequirement: Int) {
+            self.memoryRequirement = memoryRequirement
+
             #if os(macOS)
                 // CHeck available memory on macOS
                 let device = MTLCreateSystemDefaultDevice()
@@ -47,6 +50,14 @@ extension FreeToken {
             }
             
             sufficientMetalSupport = MTLCreateSystemDefaultDevice() != nil
+        }
+        
+        func availableMemoryForRequestedSize() -> Bool {
+            #if os(iOS)
+            return os_proc_available_memory() - memoryRequirement > 0
+            #else
+            return true // Assume sufficient memory on non-iOS platforms
+            #endif
         }
         
         func isTooHot() -> Bool {

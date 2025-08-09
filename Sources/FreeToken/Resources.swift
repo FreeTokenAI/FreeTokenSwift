@@ -960,8 +960,6 @@ extension FreeToken {
         internal static func fromServerResponse(_ showMessageResponse: Codings.ShowMessageResponse) async throws -> Message {
             let encryptionManager = FreeToken.shared.encryptionManager
             
-            FreeToken.shared.logger("🔍 SERVER RESPONSE DEBUG: Processing message with \(showMessageResponse.images?.count ?? 0) images", .info)
-            
             // Process attachments, fetching URLs if needed
             let processedAttachments: [MessageAttachment]?
             if let images = showMessageResponse.images {
@@ -1262,6 +1260,48 @@ extension FreeToken {
             self.topP = topP
             self.temperature = temperature
         }
+    }
+    
+    struct AIModelConfiguration {
+        var topK: Int
+        var topP: Float
+        var nCTX: Int
+        var temperature: Float
+        var maxTokenCount: Int
+        var penaltyLastN: Int32
+        var penaltyRepeat: Float
+        var penaltyFrequency: Float
+        var penaltyPresence: Float
+        var batchSize: Int
+        
+        
+        internal init(from modelOptions: Codings.AiModelConfigResponse.ModelOptions) {
+            self.topK = modelOptions.topK
+            self.topP = modelOptions.topP
+            self.nCTX = modelOptions.contextWindowSize
+            self.temperature = modelOptions.temperature
+            self.maxTokenCount = modelOptions.maxTokenCount
+            self.penaltyLastN = modelOptions.penaltyLastN
+            self.penaltyRepeat = modelOptions.penaltyRepeat
+            self.penaltyFrequency = modelOptions.penaltyFrequency
+            self.penaltyPresence = modelOptions.penaltyPresence
+            self.batchSize = modelOptions.batchSize
+        }
+        
+        func equals(_ other: AIModelConfiguration) -> Bool {
+            // Test if they are the same attribute by attribute
+            return self.topK == other.topK &&
+                   self.topP == other.topP &&
+                   self.nCTX == other.nCTX &&
+                   self.temperature == other.temperature &&
+                   self.maxTokenCount == other.maxTokenCount &&
+                   self.penaltyLastN == other.penaltyLastN &&
+                   self.penaltyRepeat == other.penaltyRepeat &&
+                   self.penaltyFrequency == other.penaltyFrequency &&
+                   self.penaltyPresence == other.penaltyPresence &&
+                   self.batchSize == other.batchSize
+        }
+            
     }
     
     public struct AIModel: Sendable {
