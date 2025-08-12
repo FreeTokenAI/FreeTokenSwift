@@ -702,4 +702,39 @@ final class FreeTokenTests: XCTestCase {
         
         wait(for: [expectation], timeout: 1000.0)
     }
+    
+    func testPrewarmForArbitraryId() throws {
+        let expectation = self.expectation(description: "Waiting for prewarm for arbitrary ID")
+        
+        Task {
+            let arbitraryId = "test-arbitrary-id"
+            let client = FreeToken.shared
+            
+            await FreeToken.shared.prewarmAIFor(runIdentifier: arbitraryId) {
+                print("✅ Prewarm completed for arbitrary ID: \(arbitraryId)")
+                
+                await client.createMessageThread { messageThread in
+                    let message = FreeToken.Message(role: .user, content: "What is the capital of France?")
+                    await client.addMessageToThread(id: messageThread.id, message: message) { message in
+                        await client.runMessageThread(id: messageThread.id, runLocation: .localRun, runIdentifier: arbitraryId, success: { resultMessage in
+                            XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
+                            expectation.fulfill()
+                        }, error: { error in
+                            XCTFail("Failed to run message thread: \(error.message)")
+                            expectation.fulfill()
+                        })
+                    } error: { error in
+                        XCTFail("Failed to add message to thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                } error: { error in
+                    XCTFail("Failed to prewarm AI for arbitrary ID: \(error.message)")
+                    expectation.fulfill()
+                }
+            }
+        }
+        
+        wait(for: [expectation], timeout: 90.0)
+    }
+    
 }

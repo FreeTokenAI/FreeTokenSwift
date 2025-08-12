@@ -13,6 +13,7 @@ extension FreeToken {
     final class RunMessageThreadContext: WorkflowContext, @unchecked Sendable {
         let messageThreadID: String
         let runLocation: FreeToken.RunLocation
+        let runIdentifier: String
         let deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?
         let aiModelManager: AIModelManager?
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
@@ -39,6 +40,7 @@ extension FreeToken {
         init(
             messageThreadID: String,
             runLocation: FreeToken.RunLocation,
+            runIdentifier: String?,
             documentSearchScope: String?,
             privateDocumentStoreIds: [String]?,
             deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?,
@@ -56,6 +58,7 @@ extension FreeToken {
         ) {
             self.messageThreadID = messageThreadID
             self.runLocation = runLocation
+            self.runIdentifier = runIdentifier != nil ? runIdentifier! : messageThreadID
             self.documentSearchScope = documentSearchScope
             self.privateDocumentStoreIds = privateDocumentStoreIds
             self.deviceDetails = deviceDetails
@@ -140,7 +143,7 @@ extension FreeToken {
             }
             
             do {
-                _ = try await context.aiModelManager?.stateManager.loadSession(for: context.messageThreadID, with: context.messageThread!.messages, runConfig: context.aiRunConfig)
+                _ = try await context.aiModelManager?.stateManager.loadSession(for: context.runIdentifier, with: context.messageThread!.messages, runConfig: context.aiRunConfig)
             } catch {
                 if context.runLocation == .localRun {
                     FreeToken.shared.logger("🔴 Failed to load AI model for local run: \(error)", .error)
@@ -361,8 +364,12 @@ extension FreeToken {
             do {
                 let aiModelManager = context.aiModelManager!
                 
+                for message in messages {
+                    // Ensure all messages are properly formatted
+                    print("🔍 Message: \(message.content) - Role: \(message.role)")
+                }
                 FreeToken.shared.logger("🏁 Running message thread locally with ID: \(context.messageThreadID)", .info)
-                (resultText, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: messageThread.id, runLocation: context.runLocation, aiRunConfig: aiRunConfig) { tokens in
+                (resultText, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: context.runIdentifier, runLocation: context.runLocation, aiRunConfig: aiRunConfig) { tokens in
                     await self.chatStatusStream?(tokens, .streaming_tokens)
                     // TODO: Try to start handling tool calls before the AI completes?
                 }

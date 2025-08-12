@@ -1557,6 +1557,7 @@ public class FreeToken: @unchecked Sendable {
     public func runMessageThread(
         id messageThreadID: String,
         runLocation: RunLocation = .automatic,
+        runIdentifier: Optional<String> = nil,
         documentSearchScope: Optional<String> = nil,
         privateDocumentStoreIds: Optional<[String]> = nil,
         aiRunConfig: Optional<AIRunConfig> = nil,
@@ -1611,6 +1612,7 @@ public class FreeToken: @unchecked Sendable {
         let context = RunMessageThreadContext(
             messageThreadID: messageThreadID,
             runLocation: effectiveRunLocation,
+            runIdentifier: runIdentifier,
             documentSearchScope: documentSearchScope,
             privateDocumentStoreIds: privateDocumentStoreIds,
             deviceDetails: deviceDetails,
@@ -1743,6 +1745,61 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    /// Prewarm AI Cache for a specific run identifier, useful for preparing the AI model for a specific task or run.
+    ///
+    /// ```
+    ///    await client.prewarmAIFor(runIdentifier: "run-id") {
+    ///        // Successfully prewarmed AI for run identifier
+    ///    } error: {
+    ///        // Handle error during prewarming
+    ///    }
+    /// ```
+    ///
+    /// Tip: Use this to prewarm a cache when convienient, then use this same run identifier when calling any run methods like `runMessageThread`.
+    ///
+    /// - Parameters:
+    ///   - runIdentifier: The identifier for the run to prewarm the AI model for
+    ///   - modelCode: Optional AI Model Code to prewarm a specific model, if not provided the default AI Model will be used
+    ///   - runConfig: Optional configuration for the AI run
+    ///   - success: A closure to capture the result of the prewarming operation
+    ///   - error: A closure to capture any errors that occur during the call
+    public func prewarmAIFor(runIdentifier: String, modelCode: String? = nil, runConfig: AIRunConfig? = nil, success successCallback: (@Sendable () async -> Void)? = nil, error errorCallback: (@Sendable (FreeTokenError) async -> Void)? = nil) async {
+        guard isDeviceRegistered() else {
+            FreeToken.shared.logger("🔴 Device not registered, cannot prewarm AI for run identifier", .error)
+            return
+        }
+        
+        // Get the AI Model Manager by Model Code
+        let aiModelManager: AIModelManager?
+        if let modelCode = modelCode {
+            if let manager = aiModelsManager.getManager(for: modelCode) {
+                aiModelManager = manager
+            } else {
+                // Model not downloaded
+                await errorCallback?(FreeTokenError.aiModelNotDownloaded)
+                return
+            }
+        } else {
+            // Use the default AI Model Manager
+            aiModelManager = self.aiModelManager
+            
+            guard deviceDetails?.aiModel.cloudOnly == false else {
+                await errorCallback?(FreeTokenError.isCloudOnlyModel)
+                return
+            }
+        }
+        
+        do {
+            let session = try await aiModelManager?.stateManager.loadSession(for: runIdentifier, runConfig: runConfig)
+            _ = try await session?.load()
+            await successCallback?()
+        } catch {
+            await errorCallback?(FreeTokenError.failedToLoadModel)
+        }
+    }
+        
+    
+    
     /// Prewarm AI Cache for MessageThread
     ///
     /// ```
@@ -1862,7 +1919,7 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: FreeToken.Message object
     /// - Throws: FreeTokenError if the device is not registered or if there is an error during the local chat
-    public func localChat(modelCode: String? = nil, messages: [Message], uniqueID: String? = nil, aiRunConfig: AIRunConfig? = nil) async throws -> Message {
+    public func localChat(modelCode: String? = nil, messages: [Message], runIdentifier: String? = nil, aiRunConfig: AIRunConfig? = nil) async throws -> Message {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
         }
@@ -1883,19 +1940,19 @@ public class FreeToken: @unchecked Sendable {
             }
         }
                 
-        let runIdentifier: String
+        let runId: String
         
-        if uniqueID == nil {
-            runIdentifier = UUID().uuidString
+        if runIdentifier == nil {
+            runId = UUID().uuidString
         } else {
-            runIdentifier = uniqueID!
+            runId = runIdentifier!
         }
         
         let profiler = Profiler()
         do {
             let response: String
             let usage: TokenUsage?
-            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runIdentifier, runLocation: .localRun, aiRunConfig: aiRunConfig)
+            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runId, runLocation: .localRun, aiRunConfig: aiRunConfig)
             profiler.end(eventType: .generateLocalChatCompletion, isSuccess: true, tokenStats: usage)
             let message = Message(role: .assistant, content: response, tokenUsage: usage)
             
