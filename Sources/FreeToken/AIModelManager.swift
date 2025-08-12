@@ -252,13 +252,6 @@ extension FreeToken {
                     return
                 }
                 
-                let messageDelta = allThreadMessages.count - messages.count
-                
-                guard messageDelta > 1 else {
-                    // No need to catch up, we are already in sync
-                    return
-                }
-                
                 self.messages = allThreadMessages
                 
                 if (try await llmSession().messageAwareCacheManager) != nil {
@@ -273,7 +266,7 @@ extension FreeToken {
                     // Take the new optimized array and use:
                     try await llmSession().messages = llmMessages
                     
-                    FreeToken.shared.logger("🔄 Catching up session cache with \(messageDelta) messages", .info)
+                    FreeToken.shared.logger("🔄 Caught up session cache", .info)
                 } else {
                     // Just add all messages
                     try await llmSession().messages = llmMessages()
