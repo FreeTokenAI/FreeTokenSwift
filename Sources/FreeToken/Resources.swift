@@ -602,6 +602,17 @@ extension FreeToken {
         struct TokenUsageRequest: Encodable {
             let totalTokens: Int
             let tokensPerSecond: Float
+            let inputTokens: Int
+            let outputTokens: Int
+            let modelCode: String
+            
+            enum CodingKeys: String, CodingKey {
+                case totalTokens = "total_tokens"
+                case tokensPerSecond = "tokens_per_second"
+                case inputTokens = "input_tokens"
+                case outputTokens = "output_tokens"
+                case modelCode = "model_code"
+            }
         }
         
         struct TelemetryDataRequest: Encodable, Sendable {
@@ -613,6 +624,7 @@ extension FreeToken {
             let isSuccess: Optional<Bool>
             let errorMessage: Optional<String>
             let tokenStats: Optional<TokenUsageRequest>
+            let telemetryDataVersion: Int
             
             enum CodingKeys: String, CodingKey {
                 case eventDurationInMilliseconds = "event_duration_in_milliseconds"
@@ -621,6 +633,7 @@ extension FreeToken {
                 case isSuccess = "is_success"
                 case errorMessage = "error_message"
                 case tokenStats = "token_stats"
+                case telemetryDataVersion = "telemetry_data_version"
             }
         }
         
@@ -1199,7 +1212,7 @@ extension FreeToken {
         }
                 
         func asCodable() -> Codings.TokenUsageRequest {
-            return Codings.TokenUsageRequest(totalTokens: self.totalTokens, tokensPerSecond: self.tokensPerSecond)
+            return Codings.TokenUsageRequest(totalTokens: self.totalTokens, tokensPerSecond: self.tokensPerSecond, inputTokens: self.inputTokens, outputTokens: self.outputTokens, modelCode: self.modelCode)
         }
     }
     

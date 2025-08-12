@@ -32,7 +32,6 @@ public class FreeToken: @unchecked Sendable {
 #elseif os(macOS)
     let clientType = "macOS"
 #endif
-    let telemetryDataVersion = 1
     let httpClient = HTTPClient()
     let messagesManager: MessagesManager
     let aiModelsManager: AIModelsManager = AIModelsManager()
@@ -1965,7 +1964,7 @@ public class FreeToken: @unchecked Sendable {
     
     // Internal Method
     func sendTelemetry(profiler: Profiler) {
-        let eventData = Codings.TelemetryDataRequest(eventDurationInMilliseconds: profiler.msDuration(), eventTypeId: profiler.eventTypeID, eventObjectType: profiler.eventObjectType, isSuccess: profiler.isSuccess, errorMessage: profiler.errorMessage, tokenStats: profiler.tokenStats?.asCodable())
+        let eventData = Codings.TelemetryDataRequest(eventDurationInMilliseconds: profiler.msDuration(), eventTypeId: profiler.eventTypeID, eventObjectType: profiler.eventObjectType, isSuccess: profiler.isSuccess, errorMessage: profiler.errorMessage, tokenStats: profiler.tokenStats?.asCodable(), telemetryDataVersion: 1)
         
         let eventType = profiler.eventType!.rawValue
         
@@ -1977,7 +1976,7 @@ public class FreeToken: @unchecked Sendable {
                 return
             }
             
-            let request = Codings.TelemetryCreateRequest(eventType: eventType, eventData: eventData, version: self.telemetryDataVersion)
+            let request = Codings.TelemetryCreateRequest(eventType: eventType, eventData: eventData, version: profiler.telemetryDataVersion)
             
             await self.postData(path: "telemetries", data: request, responseType: Codings.TelemetryCreateResponse.self) { result in
                 switch result {

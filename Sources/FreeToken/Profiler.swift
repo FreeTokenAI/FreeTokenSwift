@@ -12,13 +12,14 @@ extension FreeToken {
         private let startTime: DispatchTime
         private var endTime: DispatchTime?
         
-        public var eventType: EventType?
-        public var errorMessage: String?
-        public var eventTypeID: String?
-        public var isSuccess: Bool?
-        public var tokenStats: TokenUsage?
+        let telemetryDataVersion = 1
+        var eventType: EventType?
+        var errorMessage: String?
+        var eventTypeID: String?
+        var isSuccess: Bool?
+        var tokenStats: TokenUsage?
         
-        public var eventObjectType: String {
+        var eventObjectType: String {
             get {
                 if eventType != nil {
                     switch eventType! {
@@ -46,7 +47,7 @@ extension FreeToken {
             }
         }
         
-        public enum EventType: String {
+        enum EventType: String {
             case unknown = "unknown"
             case registerDeviceSession = "register_device_session"
             case downloadModel = "download_model"
@@ -70,7 +71,7 @@ extension FreeToken {
             self.startTime = DispatchTime.now()
         }
         
-        public func end(eventType: EventType, eventTypeID: Optional<String> = nil, isSuccess: Optional<Bool> = nil, errorMessage: Optional<String> = nil, tokenStats: Optional<TokenUsage> = nil) {
+        func end(eventType: EventType, eventTypeID: Optional<String> = nil, isSuccess: Optional<Bool> = nil, errorMessage: Optional<String> = nil, tokenStats: Optional<TokenUsage> = nil) {
             endTime = DispatchTime.now()
             self.eventType = eventType
             self.eventTypeID = eventTypeID
@@ -81,7 +82,7 @@ extension FreeToken {
             self.sendTelemtry()
         }
         
-        public func msDuration() -> Double? {            
+        func msDuration() -> Double? {
             if endTime != nil {
                 let nanoTime = endTime!.uptimeNanoseconds - startTime.uptimeNanoseconds
                 return Double(nanoTime) / 1_000_000
