@@ -643,4 +643,63 @@ final class FreeTokenTests: XCTestCase {
         
         wait(for: [expectation], timeout: 180.0)
     }
+    
+    func testBackAndForthConversation() {
+        let expectation = self.expectation(description: "Waiting for back and forth conversation")
+        
+        Task {
+            await FreeToken.shared.createMessageThread { mt in
+                let message = FreeToken.Message(role: .user, content: "What is it like to be a tourist in Italy?")
+                
+                await FreeToken.shared.addMessageToThread(id: mt.id, message: message) { message1 in
+                    await FreeToken.shared.runMessageThread(id: mt.id, runLocation: .localRun) { response in
+                        let message = FreeToken.Message(role: .user, content: "What is it like to visit Lake Como?")
+                        print("Response 1: \(response.content)")
+                        
+                        await FreeToken.shared.addMessageToThread(id: mt.id, message: message) { message2 in
+                            await FreeToken.shared.runMessageThread(id: mt.id, runLocation: .localRun) { response2 in
+                                print("Response 2: \(response2.content)")
+                                
+                                let message = FreeToken.Message(role: .user, content: "What about being a tourist in Rome?")
+                                
+                                await FreeToken.shared.addMessageToThread(id: mt.id, message: message) { message3 in
+                                    await FreeToken.shared.runMessageThread(id: mt.id, runLocation: .localRun) { response3 in
+                                        print("Response 3: \(response3.content)")
+                                        XCTAssertTrue(response3.content.contains("Rome"), "Expected response to mention 'Rome'")
+                                        expectation.fulfill()
+                                    } error: { error in
+                                        XCTFail("Failed to run message thread: \(error.message)")
+                                        expectation.fulfill()
+                                    }
+                                } error: { error in
+                                    XCTFail("Failed to add third message to thread: \(error.message)")
+                                    expectation.fulfill()
+                                }
+                            } error: { error in
+                                XCTFail("Failed to run message thread: \(error.message)")
+                                expectation.fulfill()
+                            }
+                        } error: { error in
+                            XCTFail("Failed to add second message to thread: \(error.message)")
+                            expectation.fulfill()
+                        }
+                    } error: { error in
+                        XCTFail("Failed to run message thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                } error: { error in
+                    XCTFail("Failed to add first message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { err in
+                XCTFail("Failed to create message thread: \(err.message)")
+                expectation.fulfill()
+            }
+
+            
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 1000.0)
+    }
 }

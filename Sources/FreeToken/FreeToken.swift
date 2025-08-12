@@ -1813,6 +1813,7 @@ public class FreeToken: @unchecked Sendable {
     /// - Returns: Void
     public func unloadModel(modelCode: String? = nil) async {
         
+        FreeToken.shared.logger("Unloading model\(modelCode != nil ? " with code (\(modelCode!))" : "")", .info)
         // Get the AI Model Manager
         let aiModelManager: AIModelManager?
         if let modelCode = modelCode {

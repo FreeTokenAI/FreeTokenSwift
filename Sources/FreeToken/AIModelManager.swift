@@ -261,7 +261,7 @@ extension FreeToken {
                 
                 self.messages = allThreadMessages
                 
-                if let cacheManager = try await llmSession().messageAwareCacheManager {
+                if (try await llmSession().messageAwareCacheManager) != nil {
                     // Coming from behind - a few messages were generated somewhere else (cloud or another model) and now the user wants to continue the conversation on this model in this session. It's behind and needs to be caught up.
                     
                     let prioritizedMessages = try await middleOutMessages(messages: allThreadMessages) { messages in
@@ -271,7 +271,7 @@ extension FreeToken {
                     let llmMessages = llmMessages(messages: prioritizedMessages)
 
                     // Take the new optimized array and use:
-                    await cacheManager.updateTrackedMessages(llmMessages)
+                    try await llmSession().messages = llmMessages
                     
                     FreeToken.shared.logger("🔄 Catching up session cache with \(messageDelta) messages", .info)
                 } else {
