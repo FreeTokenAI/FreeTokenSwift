@@ -30,7 +30,7 @@ final class FreeTokenTests: XCTestCase {
                     XCTFail("Failed to download AI model: \(error.message)")
                 } progressPercent: { progressPercent in
                     // NOTE: This is not getting called during the test download
-                    print("Download progress: \(progressPercent)%")
+                    print("Download progress: \(progressPercent * 100.0)%")
                 }
             } error: { error in
                 XCTFail("Failed to register device session: \(error.message)")
@@ -61,23 +61,6 @@ final class FreeTokenTests: XCTestCase {
         }
 
         wait(for: [expectation], timeout: 60.0)
-    }
-    
-    func testGenerateCompletion() throws {
-        let expectation = self.expectation(description: "Waiting for completion")
-
-        Task {
-            await FreeToken.shared.generateCompletion(prompt: "The wheels on the bus go") { completion in
-                print("Completion: \(completion.response)")
-                XCTAssertTrue(completion.response.count > 0, "Expected non-empty completion response")
-                expectation.fulfill()
-            } error: { error in
-                XCTFail(error.message)
-                expectation.fulfill()
-            }
-        }
-
-        wait(for: [expectation], timeout: 30.0)
     }
     
     func testLocalCompltionWithModelCode() throws {
@@ -166,7 +149,6 @@ final class FreeTokenTests: XCTestCase {
                         expectation.fulfill()
                     }, chatStatusStream: { token, status in
                         if let token = token {
-                            print("Received token: \(token)")
                             await messageStream.append(token)
                         }
                     })

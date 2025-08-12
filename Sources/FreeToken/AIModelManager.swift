@@ -126,13 +126,21 @@ extension FreeToken {
             var session: LLMSession? = nil
             let config: AIModelConfiguration
             let model: LLMSession.DownloadModel
+            let deviceManager: DeviceManager
+            let queue: AITaskQueue
+            let sessionsManager: AISessionsManager
+            let sessionID: String
             var messages: [Message]
             private var _tempSession: LLMSession? = nil
 
-            init(messages: [Message], model: LLMSession.DownloadModel, config: AIModelConfiguration) {
+            init(messages: [Message], model: LLMSession.DownloadModel, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
                 self.messages = messages
                 self.config = config
                 self.model = model
+                self.deviceManager = deviceManager
+                self.queue = queue
+                self.sessionsManager = sessionsManager
+                self.sessionID = sessionID
             }
             
             func load() async throws {
@@ -273,20 +281,42 @@ extension FreeToken {
                 }
             }
             
-            func generate() async throws -> AsyncThrowingStream<String, any Error> {
+            func generate(runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
                 // Kickoff an AITaskQueue
                 try await optimizeKVCache()
                 
                 // Generate the response using LLMSession
-                return try await llmSession().streamResponse()
+                return try await queue.enqueue(runLocation: runLocation) {
+                    if self.deviceManager.isTooHot() {
+                        throw FreeTokenError.isTooHot
+                    }
+                    
+                    if self.deviceManager.availableMemoryForRequestedSize() == false {
+                        // Clear other sessions
+                        await self.sessionsManager.removeAllSessions(but: self.sessionID)
+                    }
+                    
+                    return try await self.llmSession().streamResponse()
+                }
             }
             
-            func generateCompletion(text: String) async throws -> AsyncThrowingStream<String, any Error> {
+            func generateCompletion(text: String, runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
                 // Generate a completion for a single text input
                 try await optimizeKVCache()
                 
-                // Use LLMSession to generate the completion
-                return try await llmSession().streamResponse(to: text)
+                return try await queue.enqueue(runLocation: runLocation) {
+                    if self.deviceManager.isTooHot() {
+                        throw FreeTokenError.isTooHot
+                    }
+                    
+                    if self.deviceManager.availableMemoryForRequestedSize() == false {
+                        // Clear other sessions
+                        await self.sessionsManager.removeAllSessions(but: self.sessionID)
+                    }
+                    
+                    // Use LLMSession to generate the completion
+                    return try await self.llmSession().streamResponse(to: text)
+                }
             }
             
             // Goal: Optimize the KV cache by removing old messages but keeping the system message and recent messages
@@ -452,7 +482,7 @@ extension FreeToken {
                     self.sessions.removeAll()
                 }
                 
-                let session = AISessionManager(messages: preparedMessages, model: model, config: config)
+                let session = AISessionManager(messages: preparedMessages, model: model, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
                 if isTemporary == false {
                     self.sessions[id] = session
                 }
@@ -468,6 +498,11 @@ extension FreeToken {
             
             func removeAllSessions() {
                 self.sessions.removeAll()
+            }
+            
+            func removeAllSessions(but id: String) {
+                // Remove all sessions except the one with the given ID
+                self.sessions = self.sessions.filter { $0.key == id }
             }
             
             func downloadModel(onProgress: Optional<@Sendable (Double) async -> Void>) async throws {
@@ -530,14 +565,8 @@ extension FreeToken {
                 ).prepareMessages()
                 
                 let session = try await sessionsManager.loadSession(for: id, with: preparedMessages, isTemporary: isTemporary, runConfig: runConfig)
-                
-                return try await queue.enqueue(runLocation: runLocation) {
-                    if await sessionsManager.deviceTooHot() {
-                        throw FreeTokenError.isTooHot
-                    }
                     
-                    return try await session.generate()
-                }
+                return try await session.generate(runLocation: runLocation)
             }
             
             func generateCompletion(text: String) async throws -> AsyncThrowingStream<String, any Error> {
@@ -547,14 +576,8 @@ extension FreeToken {
                 let session = try await sessionsManager.loadSession(for: "completion-session", isTemporary: true)
                 
                 try await session.load()
-                
-                return try await queue.enqueue(runLocation: .localRun) {
-                    if await sessionsManager.deviceTooHot() {
-                        throw FreeTokenError.isTooHot
-                    }
-                    
-                    return try await session.generateCompletion(text: text)
-                }
+                                    
+                return try await session.generateCompletion(text: text, runLocation: .localRun)
             }
             
             func tokenCountFor(id: String? = nil, messages: [Message]) async throws -> Int {
@@ -655,7 +678,7 @@ extension FreeToken {
                 do {
                     let maxTokenCount = await aiResults.maxTokenCount
                     FreeToken.shared.logger("🧠 Beginning AI Generation for completion", .info)
-                    for try await value in try await session.generateCompletion(text: text) {
+                    for try await value in try await session.generateCompletion(text: text, runLocation: runLocation) {
                         if Task.isCancelled { break }
                         if await aiResults.startTime == nil {
                             await aiResults.setStartTime(DispatchTime.now())
@@ -736,7 +759,7 @@ extension FreeToken {
                 do {
                     let maxTokenCount = await aiResults.maxTokenCount
                     FreeToken.shared.logger("🧠 Beginning AI Generation for \(runIdentifier)", .info)
-                    for try await value in try await session.generate() {
+                    for try await value in try await session.generate(runLocation: runLocation) {
                         if Task.isCancelled { break }
                         if await aiResults.startTime == nil {
                             await aiResults.setStartTime(DispatchTime.now())

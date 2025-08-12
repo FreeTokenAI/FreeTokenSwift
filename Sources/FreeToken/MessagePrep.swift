@@ -80,7 +80,6 @@ extension FreeToken {
             if promptTemplateConfig.messagesMustAlternate {
                 
                 if messages.count <= 1 {
-                    FreeToken.shared.logger("⚠️ Messages must alternate but one or less messages provided. Skipping check.", .warning)
                     return
                 }
                 
