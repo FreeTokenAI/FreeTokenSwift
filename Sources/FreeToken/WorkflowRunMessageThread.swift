@@ -364,10 +364,6 @@ extension FreeToken {
             do {
                 let aiModelManager = context.aiModelManager!
                 
-                for message in messages {
-                    // Ensure all messages are properly formatted
-                    print("🔍 Message: \(message.content) - Role: \(message.role)")
-                }
                 FreeToken.shared.logger("🏁 Running message thread locally with ID: \(context.messageThreadID)", .info)
                 (resultText, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: context.runIdentifier, runLocation: context.runLocation, aiRunConfig: aiRunConfig) { tokens in
                     await self.chatStatusStream?(tokens, .streaming_tokens)
