@@ -69,7 +69,7 @@ final class PrivateDocumentStoreTests: XCTestCase {
                     print("📁 Created store: \(storeId)")
                     
                     Task {
-                        try await freeTokenRef.createDocument(content: "This is a test document for the private document store.", searchScope: "test-document") { document in
+                        try await freeTokenRef.createDocument(content: "This is a test document for the private document store.", searchScope: "test-document", privateDocumentStoreID: storeId) { document in
                             XCTAssertFalse(document.id.isEmpty, "Document ID should not be empty")
                             XCTAssertEqual(document.content, "This is a test document for the private document store.")
                             print("✅ Created document in private store: \(document.id)")
