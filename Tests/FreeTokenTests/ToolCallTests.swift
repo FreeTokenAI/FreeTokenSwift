@@ -111,6 +111,36 @@ final class ToolCallTests: XCTestCase {
                 XCTFail("Failed to create message thread: \(error.message)")
                 expectation.fulfill()
             }
+            
+            
+            await FreeToken.shared.runMessageThread(
+              id: "msg-thr-id",
+              runLocation: .localRun,
+              success: { resultMessage in
+                // Successfully ran the message thread on the local device
+                print("Message thread result: \(resultMessage.content)")
+            }, error: { error in
+                // If the run location is not supported on the device,
+                // or there are not enough resources, an error will be returned
+            }, toolCallback: { toolCalls in
+              // Iterate through the tool calls and concatenate the responses
+              return toolCalls.map { toolCall in
+                // Handle each tool call based on its name
+                let response: String
+                if toolCall.name == "get_current_weather" {
+                  // Execute the tool call with the parameters provided by the AI model
+                    let location = toolCall.arguments["location"] ?? "Unknown location"
+                    let format = toolCall.arguments["format"] ?? "celsius"
+                  
+                  // Call your weather API or perform the action to get the weather
+                  response = "The current weather in \(location) is 20 degrees \(format)."
+                } else {
+                    response = ""
+                }
+                
+                return response
+              }.joined(separator: "\n")
+            })
         }
 
         wait(for: [expectation], timeout: 30.0) // Allow some time for local generation

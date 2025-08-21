@@ -30,7 +30,7 @@ final class FreeTokenTests: XCTestCase {
                     XCTFail("Failed to download AI model: \(error.message)")
                 } progressPercent: { progressPercent in
                     // NOTE: This is not getting called during the test download
-                    print("Download progress: \(progressPercent * 100.0)%")
+                    print("Download progress - TEST: \(progressPercent * 100.0)%")
                 }
             } error: { error in
                 XCTFail("Failed to register device session: \(error.message)")
@@ -67,7 +67,7 @@ final class FreeTokenTests: XCTestCase {
         let expectation = self.expectation(description: "Waiting for local completion with model code")
 
         Task {
-            let modelCode = "llama3.2_3b_instruct"
+            let modelCode = "gemma3_4b_it"
             
             await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
                 await FreeToken.shared.generateLocalCompletion(prompt: "The wheels on the bus go", modelCode: modelCode) { completion in
@@ -93,7 +93,7 @@ final class FreeTokenTests: XCTestCase {
         let expectation = self.expectation(description: "Waiting for local chat with model code")
         
         Task {
-            let modelCode = "llama3.2_3b_instruct"
+            let modelCode = "gemma3_4b_it"
             
             await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
                 let messages = [FreeToken.Message(role: .user, content: "What is the capital of France?")]
@@ -285,7 +285,7 @@ final class FreeTokenTests: XCTestCase {
         let expectation = self.expectation(description: "Waiting for run message thread with model code")
 
         Task {
-            let modelCode = "llama3.2_3b_instruct"
+            let modelCode = "gemma3_4b_it"
             
             await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
                 let message = FreeToken.Message(role: .user, content: "What is the capital of France?")
@@ -305,7 +305,7 @@ final class FreeTokenTests: XCTestCase {
                 
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                        await FreeToken.shared.runMessageThread(id: messageThread.id, modelCode: modelCode, success: { resultMessage in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, privateDocumentStoreIds: ["foo-bar", "baz"], modelCode: modelCode, success: { resultMessage in
                             XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
                             let finalMessage = await messageStream.getMessage()
                             XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
@@ -315,7 +315,6 @@ final class FreeTokenTests: XCTestCase {
                             expectation.fulfill()
                         }, chatStatusStream: { token, status in
                             if let token = token {
-                                print("Received token: \(token)")
                                 await messageStream.append(token)
                             }
                         })
@@ -717,6 +716,68 @@ final class FreeTokenTests: XCTestCase {
         }
         
         wait(for: [expectation], timeout: 90.0)
+    }
+    
+    func testDoubleDownload() throws {
+        let expectation = self.expectation(description: "Waiting for double download")
+        
+        Task {
+            await FreeToken.shared.downloadAIModel { state in
+                print("✅ First time model downloaded successfully")
+                // Now try to download the same model again, it should happen near instantaneiously
+                let time = DispatchTime.now()
+                await FreeToken.shared.downloadAIModel { state in
+                    // Test if the model completion handler was called within 3 seconds
+                    print("✅ Second time model downloaded successfully")
+                    let elapsed = DispatchTime.now().uptimeNanoseconds - time.uptimeNanoseconds
+                    XCTAssert(elapsed < 3_000_000_000, "Model download took too long: \(elapsed) nanoseconds")
+                    expectation.fulfill()
+                } error: { error in
+                    XCTFail("Failed to download model second time: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                // Error
+                XCTFail("Failed to download model second time: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 300.0)
+    }
+    
+    func testDoubleDownloadWithModelCode() throws {
+        let expectation = self.expectation(description: "Waiting for double download")
+        
+        let modelCode = "gemma3_4b_it"
+        
+        Task {
+            await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
+                print("🎉 First time model downloaded successfully")
+                // Now try to download the same model again, it should happen near instantaneiously
+                let time = DispatchTime.now()
+                await FreeToken.shared.downloadAIModel(modelCode: modelCode) { state in
+                    // Test if the model completion handler was called within 3 seconds
+                    print("🥳 Second time model downloaded successfully")
+                    let elapsed = DispatchTime.now().uptimeNanoseconds - time.uptimeNanoseconds
+                    XCTAssert(elapsed < 3_000_000_000, "Model download took too long: \(elapsed) nanoseconds")
+                    expectation.fulfill()
+                } error: { error in
+                    XCTFail("Failed to download model second time: \(error.message)")
+                    expectation.fulfill()
+                } progressPercent: { progressPercent in
+                    print("🌎 Downloading model #2: \(modelCode): \(progressPercent)%")
+                }
+            } error: { error in
+                // Error
+                XCTFail("Failed to download model second time: \(error.message)")
+                expectation.fulfill()
+            } progressPercent: { progressPercent in
+                print("🌎 Downloading model #1: \(modelCode): \(progressPercent)%")
+            }
+        }
+        
+        wait(for: [expectation], timeout: 300.0)
     }
     
 }

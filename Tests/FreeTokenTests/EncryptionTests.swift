@@ -115,6 +115,7 @@ final class EncryptionTests: XCTestCase {
     }
     
     func testCustomEncryptionWithScopes() async throws {
+
         
         try freeToken.enableCustomEncryption(
             encrypt: { text, scope in
@@ -181,6 +182,7 @@ final class EncryptionTests: XCTestCase {
     
     func testInvalidBase64Key() async throws {
         // Test setting an invalid base64 key
+        
         do {
             try freeToken.encryptionManager.setEncryptionKey("not-valid-base64!", scope: .userPrivate)
             XCTFail("Expected setEncryptionKey to throw an error")

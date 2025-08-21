@@ -7,10 +7,7 @@ let package = Package(
     name: "FreeToken",
     platforms: [
         .macOS(.v15),
-        .iOS(.v17),
-        .watchOS(.v11),
-        .tvOS(.v18),
-        .visionOS(.v2)
+        .iOS(.v17)
     ],
     products: [
         .library(
@@ -19,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.20"),
-        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", branch: "release"),
+        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", revision: "a81d393"),
         .package(url: "https://github.com/LaunchDarkly/swift-eventsource.git", from: "3.3.0")
     ],
     targets: [

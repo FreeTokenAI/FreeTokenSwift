@@ -125,7 +125,7 @@ extension FreeToken {
             
             var session: LLMSession? = nil
             let config: AIModelConfiguration
-            let model: LLMSession.DownloadModel
+            let model: LLMSession.LocalModel
             let deviceManager: DeviceManager
             let queue: AITaskQueue
             let sessionsManager: AISessionsManager
@@ -133,7 +133,7 @@ extension FreeToken {
             var messages: [Message]
             private var _tempSession: LLMSession? = nil
 
-            init(messages: [Message], model: LLMSession.DownloadModel, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
+            init(messages: [Message], model: LLMSession.LocalModel, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
                 self.messages = messages
                 self.config = config
                 self.model = model
@@ -393,30 +393,99 @@ extension FreeToken {
         actor AISessionsManager {
             // Goal: Manage multiple AI sessions, evacuation & overall memory state
             
-            private let model: LLMSession.DownloadModel
+            private let downloadManager: ModelDownloadManager
+            private var model: LLMSession.LocalModel?
+            private var modelPath: String? = nil
             private var sessions: [String: AISessionManager] = [:]
             private let queue = AITaskQueue()
             private let config: AIModelConfiguration
             private let clientConfig: Codings.ShowClientConfig
             private let deviceManager: DeviceManager
             private let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
-            private var downloadState: DownloadState = .notDownloaded
+            private let modelTypes: Codings.AvailableModelTypesResponse
             
             init(config: AIModelConfiguration, modelTypes: Codings.AvailableModelTypesResponse, clientConfig: Codings.ShowClientConfig, deviceManager: DeviceManager, promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
                 self.config = config
                 self.clientConfig = clientConfig
                 self.deviceManager = deviceManager
                 self.promptTemplateConfig = promptTemplateConfig
+                self.modelTypes = modelTypes
+                
+                if let downloadOptions = modelTypes.mlx {
+                    // If it's MLX, use MLX downloader
+                    downloadManager = ModelDownloadManager.mlx(modelRepo: downloadOptions.repo)
+                } else {
+                    let downloadOptions = modelTypes.llamaCpp
+                    downloadManager = ModelDownloadManager.llama(modelRepo: downloadOptions.repo, modelFileName: downloadOptions.modelFileName!, mmprojFileName: downloadOptions.mmproj)
+                }
+            }
+            
+            // Get download state
+            func getDownloadState() async -> DownloadState {
+                let state = self.downloadManager.downloadState()
+                
+                if state == nil {
+                    FreeToken.shared.logger("🔴 AI model download state is nil, assuming not downloaded", .error)
+                    return .notDownloaded
+                }
+                
+                switch state! {
+                case .completed:
+                    return .downloaded
+                case .downloading:
+                    return .downloading
+                case .failed:
+                    return .failed(error: "Model download failed")
+                case .partial:
+                    return .failed(error: "Model partially downloaded, but failed")
+                case .pending:
+                    FreeToken.shared.logger("🔵 AI model download is pending - or not verified.", .info)
+                    return .notDownloaded
+                }
+            }
+            
+            func reset() async {
+                FreeToken.shared.logger("🔄 Resetting AI sessions manager...", .info)
+                removeAllSessions()
+            }
+            
+            // Goal: Load a temporary sesison and run one small message.
+            // Why: This will make sure the model loads potentialy for the first time on the device, which can take a while
+            func prewarm() async throws {
+                FreeToken.shared.logger("😎 Prewarming AI model...", .info)
+                
+                _ = try await generateForId("prewarm-session", messages: [Message(role: .user, content: "Answer with only one number: What's 2+2?")], runLocation: .localRun, isTemporary: true)
+            }
+            
+            func loadModel() async throws {
+                guard await getDownloadState() == .downloaded else {
+                    FreeToken.shared.logger("🔴 AI model not downloaded yet", .error)
+                    throw FreeTokenError.aiModelNotDownloaded
+                }
+
+                // Set the destination directory Application Support/FreeToken/Models/<modelRepo>
+#if os(iOS) || os(tvOS) || os(watchOS)
+                let modelBaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                    .appendingPathComponent("FreeToken")
+                    .appendingPathComponent("Models")
+#else
+                let modelBaseURL = FileManager.default.homeDirectoryForCurrentUser
+                    .appendingPathComponent(".FreeToken") // Use a shared directory just in case they have more than one FreeToken supported app
+                    .appendingPathComponent("Models")
+#endif
 
                 if let downloadOptions = modelTypes.mlx {
-                    model = LLMSession.DownloadModel.mlx(id: downloadOptions.repo, parameter: .init(
-                        maxTokens: config.maxTokenCount, temperature: config.temperature, topP: config.topP, repetitionPenalty: config.penaltyRepeat, repetitionContextSize: Int(config.penaltyLastN), options: .init(verbose: true)
-                    ))
+                    let mlxModel = modelBaseURL.appendingPathComponent(downloadOptions.repo.replacingOccurrences(of: "/", with: "_"))
+                    model = LLMSession.LocalModel.mlx(url: mlxModel, parameter: .init(
+                        maxTokens: config.maxTokenCount, temperature: config.temperature, topP: config.topP, repetitionPenalty: config.penaltyRepeat, repetitionContextSize: Int(config.penaltyLastN), options: .init(verbose: true)))
                 } else {
                     // Use LlamaCpp by default
                     let downloadOptions = modelTypes.llamaCpp
-                    
-                    model = LLMSession.DownloadModel.llama(id: downloadOptions.repo, model: downloadOptions.modelFileName!, mmproj: downloadOptions.mmproj, parameter: .init(
+                    let modelURL = modelBaseURL.appendingPathComponent(downloadOptions.repo.replacingOccurrences(of: "/", with: "_"))
+                    let modelFileURL = modelURL.appendingPathComponent(downloadOptions.modelFileName!)
+                    let mmprojURL: URL? = downloadOptions.mmproj != nil ? modelURL.appendingPathComponent(downloadOptions.mmproj!) : nil
+
+                    model = LLMSession.LocalModel.llama(url: modelFileURL, mmprojURL: mmprojURL, parameter: .init(
                         context: config.nCTX,
                         batch: config.batchSize,
                         temperature: config.temperature,
@@ -429,26 +498,17 @@ extension FreeToken {
                 }
             }
             
-            // Get download state
-            func getDownloadState() async -> DownloadState {
-                return self.downloadState
-            }
-            
-            func reset() async {
-                FreeToken.shared.logger("🔄 Resetting AI sessions manager...", .info)
-                removeAllSessions()
-                self.downloadState = .notDownloaded
-            }
-            
-            // Goal: Load a temporary sesison and run one small message.
-            // Why: This will make sure the model loads potentialy for the first time on the device, which can take a while
-            func prewarm() async throws {
-                FreeToken.shared.logger("😎 Prewarming AI model...", .info)
-                
-                _ = try await generateForId("prewarm-session", messages: [Message(role: .user, content: "Answer with only one number: What's 2+2?")], runLocation: .localRun , isTemporary: true)
-            }
-            
             func loadSession(for id: String, with messages: [Message] = [], isTemporary: Bool = false, runConfig: AIRunConfig? = nil) async throws -> AISessionManager {
+                guard await getDownloadState() == .downloaded else {
+                    throw FreeTokenError.aiModelNotDownloaded
+                }
+                
+                if model == nil {
+                    try await loadModel()
+                }
+                
+                let model = self.model!
+                
                 // Convert RunConfig to AIModelConfiguration if provided
                 var config: AIModelConfiguration
                 
@@ -505,20 +565,19 @@ extension FreeToken {
                 self.sessions = self.sessions.filter { $0.key == id }
             }
             
-            func downloadModel(onProgress: Optional<@Sendable (Double) async -> Void>) async throws {
-                self.downloadState = .downloading
-                
-                do {
-                    _ = try await model.downloadModel(onProgress: { percent in
-                        await onProgress?(percent)
-                    })
-                } catch {
-                    self.downloadState = .failed(error: error.localizedDescription)
-                    FreeToken.shared.logger("❌ AI model download failed: \(error.localizedDescription)", .error)
-                    throw FreeTokenError.aiModelDownload
-                }
-                
-                self.downloadState = .downloaded
+            func downloadModel(
+                onProgress: Optional<@Sendable (Double) -> Void>,
+                success: @escaping @Sendable () async -> Void,
+                failure: @escaping @Sendable (FreeToken.FreeTokenError) async -> Void
+            ) async throws {
+                try await downloadManager.download(
+                    progress: onProgress,
+                    success: { modelPath in
+                        FreeToken.shared.logger("✅ Model downloaded successfully to \(modelPath)", .info)
+                        await success()
+                    },
+                    failure: failure
+                )
             }
             
             func catchUpFor(id: String, allThreadMessages: [Message]) async throws {
@@ -611,11 +670,10 @@ extension FreeToken {
             self.stateManager = AISessionsManager(config: self.modelConfig, modelTypes: modelConfig.modelTypes!, clientConfig: self.clientConfig, deviceManager: self.deviceManager, promptTemplateConfig: self.promptTemplateConfig)
         }
         
-        func downloadIfNeeded(progress progressCallback: Optional<@Sendable (_ percentage: Double) -> Void> = nil) async throws -> Bool {
+        func downloadIfNeeded(progress progressCallback: Optional<@Sendable (_ percentage: Double) -> Void> = nil, success: @escaping @Sendable () async -> Void, failure: @escaping @Sendable (Error) async -> Void) async throws {
             let profiler = Profiler()
             if await self.stateManager.getDownloadState() == .downloading {
                 FreeToken.shared.logger("Currently downloading AI model - Cannot download more than once", .info)
-                return false
             }
             
             switch verifyClientVersionSupported() {
@@ -624,14 +682,13 @@ extension FreeToken {
             case .failure(_):
                 FreeToken.shared.logger("Client version is NOT compatible with AI model", .error)
                 profiler.end(eventType: .downloadModel, eventTypeID: modelCode, isSuccess: false, errorMessage: "Client version is not compatible with AI model.")
-                return false
+                throw FreeTokenError.clientAIVersionMismatch
             }
             
             do {
-                _ = try await stateManager.downloadModel(onProgress: progressCallback)
-                return true
+                _ = try await stateManager.downloadModel(onProgress: progressCallback, success: success, failure: failure)
             } catch {
-                return false
+                await failure(error)
             }
         }
         

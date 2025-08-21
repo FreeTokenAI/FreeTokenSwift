@@ -102,6 +102,17 @@ extension FreeToken {
         case customDecryptionClosureNotSet
         case decryptionFailed
         
+        // MARK: - DownloadManager Errors:
+        case downloadSessionNotFound(String)
+        case downloadSessionFailed(sessionID: String, failedCount: Int, totalCount: Int)
+        case downloadSessionInvalidState(String)
+        case downloadSessionRecoveryFailed(sessionID: String, reason: String)
+        case downloadSessionBackgroundProcessingFailed(String)
+        case downloadSessionDestinationNotWritable(String)
+        case downloadSessionLimitExceeded(Int)
+        case downloadHashVerificationFailed(url: String, expected: String, actual: String)
+        case failedToFetchModelFiles(String)
+        
         // MARK: - Custom Error:
         case error(message: String, code: Int? = nil)
     }
@@ -195,6 +206,16 @@ extension FreeToken.FreeTokenError {
         case .customEncryptionClosureNotSet: return "customEncryptionClosureNotSet"
         case .customDecryptionClosureNotSet: return "customDecryptionClosureNotSet"
         case .decryptionFailed: return "decryptionFailed"
+        
+        case .downloadSessionNotFound(_): return "downloadSessionNotFound"
+        case .downloadSessionFailed(_, _, _): return "downloadSessionFailed"
+        case .downloadSessionInvalidState(_): return "downloadSessionInvalidState"
+        case .downloadSessionRecoveryFailed(_, _): return "downloadSessionRecoveryFailed"
+        case .downloadSessionBackgroundProcessingFailed(_): return "downloadSessionBackgroundProcessingFailed"
+        case .downloadSessionDestinationNotWritable(_): return "downloadSessionDestinationNotWritable"
+        case .downloadSessionLimitExceeded(_): return "downloadSessionLimitExceeded"
+        case .downloadHashVerificationFailed(_, _, _): return "downloadHashVerificationFailed"
+        case .failedToFetchModelFiles(_): return "failedToFetchModelFiles"
         
         case .error(_, _):
             return "error"
@@ -303,6 +324,16 @@ extension FreeToken.FreeTokenError {
         case .customEncryptionClosureNotSet: return "Custom encryption closure is not set"
         case .customDecryptionClosureNotSet: return "Custom decryption closure is not set"
         case .decryptionFailed: return "Decryption failed"
+        
+        case .downloadSessionNotFound(let id): return "Download session '\(id)' not found. Check if the session was created or if it was automatically cleaned up due to age (30+ days)."
+        case .downloadSessionFailed(let id, let failed, let total): return "Download session '\(id)' failed with \(failed) out of \(total) downloads unsuccessful. Check network connectivity and retry failed downloads individually."
+        case .downloadSessionInvalidState(let description): return "Invalid session state: \(description). This may indicate a concurrency issue or corrupted session data."
+        case .downloadSessionRecoveryFailed(let id, let reason): return "Failed to recover session '\(id)': \(reason). The session may need to be recreated."
+        case .downloadSessionBackgroundProcessingFailed(let message): return "Background download processing failed: \(message). Ensure background app refresh is enabled for this app."
+        case .downloadSessionDestinationNotWritable(let path): return "Destination path is not writable: \(path). Check file permissions and available disk space."
+        case .downloadSessionLimitExceeded(let limit): return "Maximum concurrent session limit exceeded (\(limit) sessions). Complete or remove existing sessions before creating new ones."
+        case .downloadHashVerificationFailed(let url, let expected, let actual): return "Hash verification failed for \(url). Expected: \(expected), Actual: \(actual). The file may be corrupted or tampered with."
+        case .failedToFetchModelFiles(let message): return "Failed to fetch model files: \(message)"
 
         case .error(let message, _):
             return message
@@ -384,6 +415,16 @@ extension FreeToken.FreeTokenError {
         case .customEncryptionClosureNotSet: return 7003
         case .customDecryptionClosureNotSet: return 7004
         case .decryptionFailed: return 7005
+        
+        case .downloadSessionNotFound(_): return 8000
+        case .downloadSessionFailed(_, _, _): return 8001
+        case .downloadSessionInvalidState(_): return 8002
+        case .downloadSessionRecoveryFailed(_, _): return 8003
+        case .downloadSessionBackgroundProcessingFailed(_): return 8004
+        case .downloadSessionDestinationNotWritable(_): return 8005
+        case .downloadSessionLimitExceeded(_): return 8006
+        case .downloadHashVerificationFailed(_, _, _): return 8007
+        case .failedToFetchModelFiles(_): return 8008
             
         case .error(_, let code):
             return code

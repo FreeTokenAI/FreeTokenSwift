@@ -119,8 +119,9 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - appToken: A `String` representing the API key used for authentication of your client.
     ///     - baseURL: Optional base URL for the API (e.g., `https://api.example.com/`). Defaults to `nil`.
+    ///     - sharedPublicEncryptionKey: Optional shared public encryption key for encrypting and decrypting public documents. Defaults to `nil`.
+    ///     - userPrivateEncryptionKey: Optional user private encryption key for encrypting and decrypting messages and private documents. Defaults to `nil`.
     ///     - logLevel: Optional log level for the client. Default is `.info`
-    ///
     /// - Returns: A configured `FreeToken` instance.
     public func configure(
         appToken: String,
@@ -298,9 +299,11 @@ public class FreeToken: @unchecked Sendable {
     ///
     public func resetModelCaches() async throws {
         try? await resetEmbeddingModelCache()
-        await deleteAIModelCache()
+        DownloadManager.shared.cancelAllDownloads()
+        DownloadManager.shared.removeAllPersistedDownloadSessions()
+        await deleteAIModelCache()        
     }
-    
+
     /// Removes the Embedding Model Cache from the local device
     ///
     /// > Note: Use this if you get embedding model errors.  This will remove the model from the device.
@@ -325,14 +328,17 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// - Returns: Void
     public func deleteAIModelCache() async {
-#if os(macOS) || os(Linux)
-        let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser.appending(path: ".localllmclient")
+#if os(macOS)
+        let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".FreeToken")
+            .appendingPathComponent("Models")
 #else
-        let defaultRootDirectory = URL.documentsDirectory.appending(path: ".localllmclient")
+        let defaultRootDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FreeToken")
+            .appendingPathComponent("Models")
 #endif
         
         await aiModelManager?.unloadModel()
-        await aiModelManager?.stateManager.reset()
         
         // Delete the whole directory
         do {
@@ -400,11 +406,10 @@ public class FreeToken: @unchecked Sendable {
             }
             
             do {
-                let wasSuccess = try await modelManager.downloadIfNeeded(progress: progressPercent)
-                if wasSuccess {
+                try await modelManager.downloadIfNeeded(progress: progressPercent) {
                     FreeToken.shared.logger("⬇️ Model \(modelManager.modelCode) downloaded successfully", .info)
                     await successCallback(.downloaded)
-                } else {
+                } failure: { error in
                     FreeToken.shared.logger("🔴 Model \(modelManager.modelCode) did not download successfully", .error)
                     await errorCallback(FreeTokenError.aiModelDownload)
                 }
@@ -434,15 +439,13 @@ public class FreeToken: @unchecked Sendable {
                         return
                     }
                     
-                    let wasSuccess = try await modelManager.downloadIfNeeded { percentage in
-                        let newPercent = Double(percentage) * 100.0
-                        progressPercent?(newPercent)
-                    }
-                    
-                    if wasSuccess {
+                    try await modelManager.downloadIfNeeded { percentage in
+                        // progressCallback reports a value in 0.0...1.0 — forward it unchanged
+                        progressPercent?(percentage)
+                    } success: {
                         FreeToken.shared.logger("⬇️ Model \(aiModel.code) downloaded successfully", .info)
                         await successCallback(.downloaded)
-                    } else {
+                    } failure: { _ in
                         FreeToken.shared.logger("🔴 Model \(aiModel.code) did not download successfully", .error)
                         await errorCallback(FreeTokenError.aiModelDownload)
                     }
@@ -2180,6 +2183,74 @@ public class FreeToken: @unchecked Sendable {
 
         // Send the DELETE request
         httpClient.delete(from: endpoint, headers: headers, completion: completion)
+    }
+    
+    // MARK: - Background Download Integration
+    
+    /// Handle background download events from AppDelegate
+    /// 
+    /// Call this method from your AppDelegate's `application(_:handleEventsForBackgroundURLSession:completionHandler:)` 
+    /// to properly handle background downloads managed by FreeToken.
+    ///
+    /// ## Usage (iOS only)
+    /// Add this to your iOS AppDelegate.swift:
+    /// ```swift
+    /// func application(_ application: UIApplication,
+    ///                 handleEventsForBackgroundURLSession identifier: String,
+    ///                 completionHandler: @escaping () -> Void) {
+    ///     FreeToken.handleBackgroundDownloads(
+    ///         identifier: identifier,
+    ///         completionHandler: completionHandler
+    ///     )
+    /// }
+    /// ```
+    ///
+    /// - Parameters:
+    ///   - identifier: The session identifier provided by the system
+    ///   - completionHandler: The completion handler that must be called when processing is complete
+    /// - Note: On macOS/other platforms, the completion handler is called immediately as background processing differs
+    public static func handleBackgroundDownloads(
+        identifier: String,
+        completionHandler: @escaping () -> Void
+    ) {
+        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+        // iOS-family platforms support background URLSession completion handlers
+        DownloadManager.shared.handleBackgroundEvents(
+            identifier: identifier,
+            completionHandler: completionHandler
+        )
+        #else
+        // macOS and other platforms: background sessions work differently
+        // Just call the completion handler immediately to satisfy the contract
+        FreeToken.shared.logger("🔄 Background downloads handled differently on this platform. Calling completion handler immediately.", .info)
+        completionHandler()
+        #endif
+    }
+    
+    /// Attaches or reattaches the background download session
+    /// 
+    /// Call this method early in your app launch (AppDelegate.didFinishLaunching or SwiftUI App.init)
+    /// to ensure background downloads can resume and pending delegate callbacks are received.
+    /// 
+    /// Example usage:
+    /// ```swift
+    /// // In AppDelegate
+    /// func application(_ application: UIApplication, 
+    ///                didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]?) -> Bool {
+    ///     FreeToken.attachDownloadSession()
+    ///     return true
+    /// }
+    /// 
+    /// // In SwiftUI App
+    /// @main
+    /// struct MyApp: App {
+    ///     init() {
+    ///         FreeToken.attachDownloadSession()
+    ///     }
+    /// }
+    /// ```
+    public static func attachDownloadSession() {
+        DownloadManager.shared.attachSession()
     }
 
 }
