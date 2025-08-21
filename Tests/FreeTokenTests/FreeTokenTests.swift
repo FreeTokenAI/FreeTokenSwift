@@ -780,4 +780,112 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 300.0)
     }
     
+    func testSerialAIQueue() throws {
+        let franceExpectation = self.expectation(description: "Waiting for France queue")
+        let italyExpectation = self.expectation(description: "Waiting for Italy queue")
+        let checkExpectation = self.expectation(description: "Waiting for check queue")
+        
+        actor TestResult {
+            let country: String
+            var beginTime: Date?
+            var endTime: Date?
+            
+            init(country: String) {
+                self.country = country
+            }
+            
+            func setBeginTime(_ time: Date) {
+                self.beginTime = time
+            }
+            func setEndTime(_ time: Date) {
+                self.endTime = time
+            }
+        }
+        
+        actor ResultCollector {
+            var results: [TestResult] = []
+            
+            func addResult(_ result: TestResult) {
+                results.append(result)
+            }
+            
+            func getResults() -> [TestResult] {
+                return results
+            }
+        }
+        
+        let resultCollector = ResultCollector()
+        // Make sure the AIModelManager is only allowing one AI run at a time
+        Task {
+            print("🇫🇷 Starting France Test (1)")
+            let franceResult = TestResult(country: "France")
+            do {
+                _ = try await FreeToken.shared.localChat(messages: [.init(role: .user, content: "What is the capital of France?")], runIdentifier: "france-test") { token in
+                    await franceResult.setBeginTime(Date()) // Capture start time at after the first token is generated.
+                }
+            } catch {
+                XCTFail("Failed to get Italy completion: \(error.localizedDescription)")
+                franceExpectation.fulfill()
+            }
+            
+            await franceResult.setEndTime(Date())
+            await resultCollector.addResult(franceResult)
+            franceExpectation.fulfill()
+        }
+        
+        Task {
+            print("🇮🇹 Starting Italy Test (2)")
+            
+            let italyResult = TestResult(country: "Italy")
+            do {
+                try await Task.sleep(nanoseconds: 1_000_000) // Ensure France has started before Italy
+                _ = try await FreeToken.shared.localChat(messages: [.init(role: .user, content: "What is the capital of Italy?")], runIdentifier: "italy-test") { token in
+                    await italyResult.setBeginTime(Date()) // Capture start time at after the first token is generated.
+                }
+            } catch {
+                XCTFail("Failed to get Italy completion: \(error.localizedDescription)")
+                italyExpectation.fulfill()
+            }
+        
+            await italyResult.setEndTime(Date())
+            await resultCollector.addResult(italyResult)
+            italyExpectation.fulfill()
+        }
+        
+        Task {
+            // Check that expectations were met that the queues ran in serial - start dates and end dates should not overlap
+            var results = await resultCollector.getResults()
+            
+            print("Checking for results...")
+            while results.count < 2 {
+                try? await Task.sleep(nanoseconds: 100_000_000) // Wait 100ms
+                results = await resultCollector.getResults()
+            }
+                        
+            let franceResult = results.first { $0.country == "France" }
+            let italyResult = results.first { $0.country == "Italy" }
+            
+            if
+                let franceResult = franceResult,
+                let franceBegin = await franceResult.beginTime,
+                let franceEnd = await franceResult.endTime,
+                let italyResult = italyResult,
+                let italyBegin = await italyResult.beginTime
+            {
+                // Check that France started before Italy
+                XCTAssertTrue(franceBegin < italyBegin, "France should start before Italy")
+                
+                // Check that France ended before Italy
+                XCTAssertTrue(franceEnd < italyBegin, "France should end before Italy starts")
+                
+                checkExpectation.fulfill()
+            } else {
+                XCTFail("Failed to find results for France or Italy")
+                checkExpectation.fulfill()
+            }
+        }
+        
+        wait(for: [franceExpectation, italyExpectation, checkExpectation], timeout: 60.0)
+    }
+    
 }

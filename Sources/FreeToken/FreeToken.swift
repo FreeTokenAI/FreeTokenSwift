@@ -1912,16 +1912,24 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Note: This method does not manage context window size, be careful when using this method with large messages or many messages.
     ///
-    /// > Warning: You must run ``downloadAIModel(completion:)`` prior to using this method. This will not work on devices
+    /// > Warning: You must run ``downloadAIModel`` prior to using this method. This will not work on devices
     /// > that do not support AI.
     ///
     /// - Parameters:
-    ///     - messages: An array of Message objects to send to the AI
-    ///     - uniqueID: Optional unique ID for the chat session. This ID helps keep the chat persistent in the device memory between runs.
-    ///
+    ///   - modelCode: Optional AI Model Code to use a specific model, if not provided the default AI Model will be used
+    ///   - messages: An array of Message objects to send to the AI
+    ///   - runIdentifier: Optional unique ID for the chat session. This ID helps keep the chat persistent in the device memory between runs.
+    ///   - aiRunConfig: Optional configuration for the AI Model run, such as temperature
+    ///   - outputStream: Optional closure to capture output stream as they are generated
     /// - Returns: FreeToken.Message object
     /// - Throws: FreeTokenError if the device is not registered or if there is an error during the local chat
-    public func localChat(modelCode: String? = nil, messages: [Message], runIdentifier: String? = nil, aiRunConfig: AIRunConfig? = nil) async throws -> Message {
+    public func localChat(
+        modelCode: String? = nil,
+        messages: [Message],
+        runIdentifier: String? = nil,
+        aiRunConfig: AIRunConfig? = nil,
+        outputStream: Optional<@Sendable (String) async -> Void> = nil
+    ) async throws -> Message {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
         }
@@ -1954,7 +1962,7 @@ public class FreeToken: @unchecked Sendable {
         do {
             let response: String
             let usage: TokenUsage?
-            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runId, runLocation: .localRun, aiRunConfig: aiRunConfig)
+            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runId, runLocation: .localRun, aiRunConfig: aiRunConfig, tokenStream: outputStream)
             profiler.end(eventType: .generateLocalChatCompletion, isSuccess: true, tokenStats: usage)
             let message = Message(role: .assistant, content: response, tokenUsage: usage)
             

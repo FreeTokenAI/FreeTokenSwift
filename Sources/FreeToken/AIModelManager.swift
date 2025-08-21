@@ -25,7 +25,6 @@ extension FreeToken {
         let modelConfig: AIModelConfiguration
         let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
         let availableModelTypes: Codings.AvailableModelTypesResponse
-        let taskQueue: AITaskQueue
         let deviceManager: DeviceManager
         
         private let clientConfig: Codings.ShowClientConfig
@@ -62,30 +61,6 @@ extension FreeToken {
         
         // Note: Vision support checking is handled via error catching during inference
         // since LLMSession doesn't expose a public supportsVision property
-        
-        actor AITaskQueue {
-            private var isRunning = false
-            
-            func enqueue<T: Sendable>(runLocation: RunLocation, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
-                let startTime = DispatchTime.now()
-                
-                while isRunning {
-                    try await Task.sleep(nanoseconds: 10_000_000) // 10ms
-                    FreeToken.shared.logger("⏰ Waiting for AI task queue to be free...", .info)
-                    if runLocation == .automatic, DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds > 30_000_000 { // 30 seconds
-                        FreeToken.shared.logger("⏰ AI task queue timeout reached, aborting operation", .error)
-                        throw FreeTokenError.aiQueueTimeout
-                    }
-                }
-                
-                isRunning = true
-                FreeToken.shared.logger("🚀 Executing AI task in queue...", .info)
-                defer { isRunning = false }
-                let result = try await operation()
-                
-                return result
-            }
-        }
         
         actor AIResults {
             var startTime: DispatchTime? = nil
@@ -201,6 +176,12 @@ extension FreeToken {
                 if let session = self.session {
                     return session
                 } else {
+                    // Test for available memory, prune all other sessions if not enough memory.
+                    if self.deviceManager.availableMemoryForRequestedSize() == false {
+                        FreeToken.shared.logger("⚠️ Device memory is low, removing all resident LLM sessions to free up memory", .warning)
+                        await self.sessionsManager.removeAllSessions(but: self.sessionID)
+                    }
+                    
                     // Initialize a new LLMSession
                     let availableContextTokens = (config.nCTX - config.maxTokenCount) - Int(Double(config.nCTX) * 0.1) // 10% buffer
                     let initTokenCount = try await self.tokenCount(for: messages, tempSession: true)
@@ -282,40 +263,50 @@ extension FreeToken {
             }
             
             func generate(runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
-                // Kickoff an AITaskQueue
                 try await optimizeKVCache()
-                
-                // Generate the response using LLMSession
-                return try await queue.enqueue(runLocation: runLocation) {
-                    if self.deviceManager.isTooHot() {
-                        throw FreeTokenError.isTooHot
+                // We return a stream whose production is serialized by the queue for its entire lifetime.
+                return AsyncThrowingStream<String, any Error> { continuation in
+                    Task {
+                        do {
+                            try await self.queue.enqueue(runLocation: runLocation) {
+                                if self.deviceManager.isTooHot() {
+                                    throw FreeTokenError.isTooHot
+                                }
+                                let underlying = try await self.llmSession().streamResponse()
+                                for try await token in underlying {
+                                    continuation.yield(token)
+                                }
+                                continuation.finish()
+                            } as Void
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
                     }
-                    
-                    if self.deviceManager.availableMemoryForRequestedSize() == false {
-                        // Clear other sessions
-                        await self.sessionsManager.removeAllSessions(but: self.sessionID)
-                    }
-                    
-                    return try await self.llmSession().streamResponse()
                 }
             }
-            
+
             func generateCompletion(text: String, runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
-                // Generate a completion for a single text input
                 try await optimizeKVCache()
-                
-                return try await queue.enqueue(runLocation: runLocation) {
-                    if self.deviceManager.isTooHot() {
-                        throw FreeTokenError.isTooHot
+                return AsyncThrowingStream<String, any Error> { continuation in
+                    Task {
+                        do {
+                            try await self.queue.enqueue(runLocation: runLocation) {
+                                if self.deviceManager.isTooHot() {
+                                    throw FreeTokenError.isTooHot
+                                }
+                                if self.deviceManager.availableMemoryForRequestedSize() == false {
+                                    await self.sessionsManager.removeAllSessions(but: self.sessionID)
+                                }
+                                let underlying = try await self.llmSession().streamResponse(to: text)
+                                for try await token in underlying {
+                                    continuation.yield(token)
+                                }
+                                continuation.finish()
+                            } as Void
+                        } catch {
+                            continuation.finish(throwing: error)
+                        }
                     }
-                    
-                    if self.deviceManager.availableMemoryForRequestedSize() == false {
-                        // Clear other sessions
-                        await self.sessionsManager.removeAllSessions(but: self.sessionID)
-                    }
-                    
-                    // Use LLMSession to generate the completion
-                    return try await self.llmSession().streamResponse(to: text)
                 }
             }
             
@@ -397,7 +388,7 @@ extension FreeToken {
             private var model: LLMSession.LocalModel?
             private var modelPath: String? = nil
             private var sessions: [String: AISessionManager] = [:]
-            private let queue = AITaskQueue()
+            private let queue = AITaskQueue.shared
             private let config: AIModelConfiguration
             private let clientConfig: Codings.ShowClientConfig
             private let deviceManager: DeviceManager
@@ -536,12 +527,6 @@ extension FreeToken {
                     return existingSession
                 }
                 
-                if deviceHasEnoughMemoryForNewSession() == false {
-                    // Prune all other sessions and try again
-                    FreeToken.shared.logger("⚠️ Device memory is low, removing all existing LLM sessions to free up memory", .warning)
-                    self.sessions.removeAll()
-                }
-                
                 let session = AISessionManager(messages: preparedMessages, model: model, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
                 if isTemporary == false {
                     self.sessions[id] = session
@@ -664,7 +649,6 @@ extension FreeToken {
             self.modelConfig = AIModelConfiguration(from: modelConfig.config.defaultSettings)
             self.promptTemplateConfig = modelConfig.config.promptTemplateConfig
             self.availableModelTypes = modelConfig.modelTypes!
-            self.taskQueue = AITaskQueue()
             self.deviceManager = DeviceManager(memoryRequirement: clientConfig.requiredMemoryBytes)
             
             self.stateManager = AISessionsManager(config: self.modelConfig, modelTypes: modelConfig.modelTypes!, clientConfig: self.clientConfig, deviceManager: self.deviceManager, promptTemplateConfig: self.promptTemplateConfig)
