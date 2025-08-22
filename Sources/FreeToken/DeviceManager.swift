@@ -54,14 +54,19 @@ extension FreeToken {
         
         func availableMemoryForRequestedSize() -> Bool {
             #if os(iOS)
-            return os_proc_available_memory() - memoryRequirement > 0
+            let availableMemory = Int(Double(os_proc_available_memory()) * 0.75) // Only use 75% of available memory
+            let remainingMemory = availableMemory - memoryRequirement
+            
+            FreeToken.shared.logger("📲 Memory Test results: Available memory: \(availableMemory) bytes, Required memory: \(memoryRequirement) bytes, Remaining memory after allocation: \(remainingMemory) bytes", .debug)
+            
+            return remainingMemory > 0
             #else
             return true // Assume sufficient memory on non-iOS platforms
             #endif
         }
         
         func isTooHot() -> Bool {
-            #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS) || os(ipadOS)
+            #if os(iOS)
                 // Check if the device is overheating
                 let thermalState = ProcessInfo.processInfo.thermalState
                 switch thermalState {
@@ -77,7 +82,7 @@ extension FreeToken {
                     return false
                 }
             #else
-                // Assume this is not a mobile device, or heating is not a problem.
+                // Assume this is not a mobile device, heating is not a problem.
                 return false
             #endif
         }

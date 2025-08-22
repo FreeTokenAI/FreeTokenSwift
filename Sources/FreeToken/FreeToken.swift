@@ -349,6 +349,36 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
+    /// Get download state of any AI model by code
+    ///
+    /// - Parameters:
+    ///  - modelCode: Optional String that represents the AI model code to check. If not provided, uses the default AI model for the Agent.
+    /// - Returns: A `Bool` indicating whether the AI model is downloaded.
+    /// - Throws: `FreeTokenError` if the device is not registered.
+    func getAIModelDownloadState(modelCode: String? = nil) async throws -> ModelDownloadState {
+        guard isDeviceRegistered() else {
+            throw FreeTokenError.deviceNotRegistered
+        }
+        
+        var resolvedModelCode = modelCode
+        
+        if resolvedModelCode == nil {
+            resolvedModelCode = aiModelManager?.modelCode
+        }
+        
+        guard let unwrappedModelCode = resolvedModelCode else {
+            FreeToken.shared.logger("🔴 AI Model code is nil", .error)
+            throw FreeTokenError.unknownAIModelCode
+        }
+        
+        guard let modelManager = aiModelsManager.getManager(for: unwrappedModelCode) else {
+            FreeToken.shared.logger("🔴 AI Model Manager not found for code \(unwrappedModelCode)", .error)
+            throw FreeTokenError.unknownAIModelCode
+        }
+        
+        return await modelManager.stateManager.getDownloadState()
+    }
+    
     /// Download the AI model for this specific device
     ///
     /// ```

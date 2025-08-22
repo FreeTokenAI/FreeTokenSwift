@@ -4,9 +4,10 @@
 //
 //  Created by Vince Francesi on 7/15/25.
 //
+import Foundation
 
 extension FreeToken {
-    class AIModelsManager {
+    class AIModelsManager: @unchecked Sendable {
         private var aiModelManagers: [AIModelManagerWrapper] = []
         var defaultManager: AIModelManager? {
             get {
@@ -30,6 +31,39 @@ extension FreeToken {
         struct AIModelInitializeOptions {
             let modelConfig: Codings.AiModelResponse
             let clientVersion: String
+        }
+        
+        init() {
+            MemoryPressureManager.shared.register(minLevel: .warning) { level in
+                switch level {
+                case .warning:
+                    Task(priority: .high) {
+                        if let latestModelCode = await self.latestUsedModelCode() {
+                            FreeToken.shared.logger("🟠 Memory state is warning. Unloading all non-default model managers except the latest used one: \(latestModelCode).", .warning)
+                            await self.unloadAllModels(except: latestModelCode)
+                        }
+                    }
+                case .critical:
+                    Task(priority: .high) {
+                        FreeToken.shared.logger("🔴 Memory state is critical. Unloading all model managers and removing from memory.", .warning)
+                        await self.unloadAllModels()
+                        
+                        var removeIndex: [Int] = []
+                        for (i, wrapper) in self.aiModelManagers.enumerated() {
+                            if !wrapper.isDefault {
+                                removeIndex.append(i)
+                            }
+                        }
+                        
+                        for index in removeIndex.reversed() {
+                            self.aiModelManagers.remove(at: index)
+                        }
+                    }
+                default:
+                    // No action needed for .normal
+                    FreeToken.shared.logger("🟢 Memory state is normal. No action needed.", .info)
+                }
+            }
         }
         
         func addManager(modelConfig: Codings.AiModelResponse, clientVersion: String, isDefault: Bool) throws -> AIModelManager {
@@ -86,11 +120,48 @@ extension FreeToken {
             aiModelManagers.removeAll()
         }
         
-        func unloadAllOtherModels(except modelCode: String) async {
-            for wrapper in aiModelManagers {
-                if wrapper.modelCode != modelCode {
-                    await wrapper.aiModelManager.unloadModel()
+        func unloadAllModels(except modelCode: String? = nil) async {
+            let modelCode = modelCode ?? defaultManager?.modelCode
+            
+            if let modelCode = modelCode {
+                for wrapper in aiModelManagers {
+                    if wrapper.modelCode != modelCode {
+                        await wrapper.aiModelManager.unloadModel()
+                    }
                 }
+            }
+        }
+        
+        func latestUsedModelCode() async -> String?  {
+            // Sort the managers by last used date, descending
+            var managers: [String: [ String: Any ]] = [:]
+            
+            for wrapper in aiModelManagers {
+                if let lastUsed = await wrapper.aiModelManager.lastUsedAt() {
+                    managers[wrapper.modelCode] = [
+                        "manager": wrapper,
+                        "lastUsed": lastUsed
+                    ]
+                }
+            }
+            
+            let sortedManagers = managers.sorted { first, second in
+                guard let firstDate = first.value["lastUsed"] as? Date,
+                      let secondDate = second.value["lastUsed"] as? Date else {
+                    return false
+                }
+                return firstDate > secondDate
+            }
+            
+            if let latest = sortedManagers.first,
+               let latestManager = latest.value["manager"] as? AIModelManagerWrapper {
+                // Unload all other models except the latest used one
+                
+                // Optionally, you can also load the latest model if needed
+                // await latestManager.loadModel()
+                return latestManager.modelCode
+            } else {
+                return nil
             }
         }
         

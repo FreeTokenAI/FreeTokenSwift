@@ -19,8 +19,8 @@ extension FreeToken {
         /// The URL being downloaded
         let url: URL
         
-    /// Where the downloaded file will be saved (mutable to allow post-download renaming)
-    var destinationPath: String
+        /// Where the downloaded file will be saved (mutable to allow post-download renaming)
+        var destinationPath: String
         
         /// Expected SHA-256 hash for integrity verification (optional)
         let expectedSHA256: String?
@@ -196,7 +196,8 @@ extension FreeToken {
         let url: URL
         
         /// Destination path for the file
-        let destinationPath: String
+    /// Destination path for the file (persisted as RELATIVE to base root when possible)
+    let destinationPath: String
         
         /// Expected SHA-256 hash for verification
         let expectedSHA256: String?
@@ -212,7 +213,8 @@ extension FreeToken {
         
         init(from download: DownloadItem) {
             self.url = download.url
-            self.destinationPath = download.destinationPath
+            // Persist relative version to survive iOS sandbox UUID changes.
+            self.destinationPath = FreeToken.DownloadManager.relativePathForPersistence(absolutePath: download.destinationPath)
             self.expectedSHA256 = download.expectedSHA256
             self.createdAt = download.createdAt
             self.state = download.state
@@ -221,9 +223,11 @@ extension FreeToken {
         
         /// Convert back to a DownloadItem
         func toDownloadItem() -> DownloadItem {
+            // Reconstruct absolute path from persisted (possibly relative) path.
+            let absolute = FreeToken.DownloadManager.absolutePathFromPersisted(destinationPath)
             var item = DownloadItem(
                 url: url,
-                destinationPath: destinationPath,
+                destinationPath: absolute,
                 expectedSHA256: expectedSHA256,
                 createdAt: createdAt
             )

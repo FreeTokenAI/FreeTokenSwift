@@ -1341,6 +1341,13 @@ extension FreeToken {
         case downloaded = "AI model downloaded"
     }
     
+    public enum ModelDownloadState: Equatable, Sendable {
+        case notDownloaded
+        case downloading
+        case downloaded
+        case failed(error: String)
+    }
+    
     public enum EncryptionScope: Equatable, Sendable {
         case sharedPublic
         case userPrivate

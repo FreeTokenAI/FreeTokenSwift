@@ -41,8 +41,8 @@ extension FreeToken {
             self.mmprojFileName = mmprojFileName // llama.cpp vision mmproj sidecar model
         }
         
-        func downloadState() -> FreeToken.SessionState? {
-            return downloadManager.getSession(id: modelRepo)?.state
+        func downloadState() async -> FreeToken.SessionState? {
+            return await ensureSessionAndGetState()
         }
 
         /// Ensures a `DownloadSession` exists for this model and returns its validated state.
@@ -72,15 +72,13 @@ extension FreeToken {
             // Derive destination directory exactly as download() would so paths align.
             let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
 #if os(iOS) || os(tvOS) || os(watchOS)
+            let destinationRelative = "FreeToken/Models/" + sanitizedRepo
             let destination = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                .appendingPathComponent("FreeToken")
-                .appendingPathComponent("Models")
-                .appendingPathComponent(sanitizedRepo).path
+                .appendingPathComponent(destinationRelative).path
 #else
+            let destinationRelative = ".FreeToken/Models/" + sanitizedRepo
             let destination = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".FreeToken")
-                .appendingPathComponent("Models")
-                .appendingPathComponent(sanitizedRepo).path
+                .appendingPathComponent(destinationRelative).path
 #endif
 
             // Obtain model file metadata (URLs + optional SHA256 hashes). If this fails we cannot
@@ -96,7 +94,8 @@ extension FreeToken {
             do {
                 _ = try downloadManager.sessionBuilder()
                     .sessionID(modelRepo)
-                    .destinationDirectory(destination)
+                    // Persist relative path to avoid sandbox UUID issues
+                    .destinationDirectory(destinationRelative)
                     .addDownloads(modelFiles)
                     // No progress or completion handlers needed for a passive state check
                     .build() // createSession internally validates existing files & sets state
@@ -117,16 +116,14 @@ extension FreeToken {
             // Replace slashes in repo (e.g. "owner/repo") so we don't create nested directories unintentionally.
             let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
             // Set the destination directory Application Support/FreeToken/Models/<sanitizedRepo>
+            let destinationRelative = "FreeToken/Models/" + sanitizedRepo
             let destination = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                .appendingPathComponent("FreeToken")
-                .appendingPathComponent("Models")
-                .appendingPathComponent(sanitizedRepo).path
+                .appendingPathComponent(destinationRelative).path
 #else
             let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
+            let destinationRelative = ".FreeToken/Models/" + sanitizedRepo
             let destination = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(".FreeToken") // Use a shared directory just in case they have more than one FreeToken supported app
-                .appendingPathComponent("Models")
-                .appendingPathComponent(sanitizedRepo).path
+                .appendingPathComponent(destinationRelative).path
 #endif
             
             
@@ -179,7 +176,7 @@ extension FreeToken {
             
             _ = try downloadManager.sessionBuilder()
                 .sessionID(modelRepo)
-                .destinationDirectory(destination)
+                .destinationDirectory(destinationRelative)
                 .addDownloads(modelFiles)
                 .progress(progress)
                 .completion({ result in

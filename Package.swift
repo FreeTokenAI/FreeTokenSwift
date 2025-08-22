@@ -16,7 +16,7 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.20"),
-        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", revision: "a81d393"),
+        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", revision: "6d9a1ee"),
         .package(url: "https://github.com/LaunchDarkly/swift-eventsource.git", from: "3.3.0")
     ],
     targets: [

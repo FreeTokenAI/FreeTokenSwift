@@ -27,7 +27,7 @@ extension FreeToken {
         var downloads: [DownloadItem] = []
         
         /// Called when the entire session completes (success or failure)
-    var completionHandler: (@Sendable (Result<Void, Error>) -> Void)?
+        var completionHandler: (@Sendable (Result<Void, Error>) -> Void)?
         
         /// Progress handler called when collective progress changes
         var progressHandler: (@Sendable (Double) -> Void)?

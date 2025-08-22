@@ -35,6 +35,7 @@ extension FreeToken {
         case isTooHot
         case deviceOverheating
         case deviceNotCapable
+        case unknownAIModelCode
         
         // MARK: - AIModelManager Class Errors:
         case unsupportedVersion
@@ -148,6 +149,7 @@ extension FreeToken.FreeTokenError {
         case .isTooHot: return "isTooHot"
         case .deviceOverheating: return "deviceOverheating"
         case .deviceNotCapable: return "deviceNotCapable"
+        case .unknownAIModelCode: return "unknownAIModelCode"
 
         case .unsupportedVersion: return "unsupportedVersion"
         case .aiModelNotDownloaded: return "aiModelNotDownloaded"
@@ -255,6 +257,7 @@ extension FreeToken.FreeTokenError {
         case .isTooHot: return "The device is too hot to run AI processing"
         case .deviceOverheating: return "Cannot run AI locally: device is overheating. Please wait for device to cool down or use cloud execution."
         case .deviceNotCapable: return "Cannot run AI locally: this device is not capable of running AI models"
+        case .unknownAIModelCode: return "AI Model Code is not known. Please check and try again."
         
         case .unsupportedVersion: return "The AI model sent by the server is not supported by this client"
         case .aiModelNotDownloaded: return "AI model has not yet been downloded. Try .downloadAIModel() first"
@@ -367,6 +370,7 @@ extension FreeToken.FreeTokenError {
         case .isTooHot: return 1030
         case .deviceOverheating: return 1031
         case .deviceNotCapable: return 1032
+        case .unknownAIModelCode: return 1033
         case .unsupportedVersion: return 2000
         case .aiModelNotDownloaded: return 2001
         case .modelAlreadyLoading: return 2002

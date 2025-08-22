@@ -888,4 +888,16 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [franceExpectation, italyExpectation, checkExpectation], timeout: 60.0)
     }
     
+    func testTokenizer() throws {
+        let expectation = self.expectation(description: "Waiting for tokenizer test")
+        
+        Task {
+            let count = try await FreeToken.shared.countTokens(text: "Hello, world!")
+            XCTAssertGreaterThan(count, 0, "Expected token count to be greater than 0")
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 30.0)
+    }
+    
 }

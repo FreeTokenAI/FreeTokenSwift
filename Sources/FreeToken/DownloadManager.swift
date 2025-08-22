@@ -56,6 +56,67 @@ extension FreeToken {
             super.init()
             attachSession()
         }
+
+        // MARK: - Base Root Directory Helpers (Relative Path Persistence)
+
+        /// Returns the stable root directory under which all managed downloads live.
+        /// On iOS-family platforms this is the current sandbox's Application Support directory;
+        /// on macOS it's the user's home directory. All persisted destination paths are stored
+        /// relative to this root so they remain valid across sandbox UUID changes (iOS) or
+        /// application reinstalls.
+        static func baseRootDirectory() -> String {
+#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+            return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.path
+#else
+            return FileManager.default.homeDirectoryForCurrentUser.path
+#endif
+        }
+
+        /// Convert an absolute on-disk path to a relative path (if it resides inside the base root).
+        /// If the path is outside the base root, the original absolute path is returned to avoid
+        /// accidental relocation on restore.
+        static func relativePathForPersistence(absolutePath: String) -> String {
+            let base = baseRootDirectory().trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+            let cleanedAbs = absolutePath
+            if cleanedAbs.hasPrefix(base + "/") {
+                return String(cleanedAbs.dropFirst(base.count + 1))
+            }
+            // Common iOS case: full sandbox path containing Application Support – strip up to and including it.
+            if let range = cleanedAbs.range(of: "Application Support/") {
+                let after = cleanedAbs[range.upperBound...]
+                return String(after)
+            }
+            return cleanedAbs
+        }
+
+        /// Produce an absolute path from a persisted path value. If the persisted path was
+        /// already absolute (legacy metadata) but belongs to an old sandbox, we attempt to
+        /// relocate it by trimming everything before the first "Application Support/" (iOS) or
+        /// the first ".FreeToken" component (macOS) and re-attaching to the current base root.
+        static func absolutePathFromPersisted(_ persisted: String) -> String {
+            // If already absolute and appears to live inside current sandbox/home, trust it.
+            if persisted.hasPrefix("/") {
+                // iOS sandbox UUID may have changed; attempt repair.
+#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+                if persisted.contains("Application Support/") {
+                    // Extract relative portion after Application Support/
+                    if let range = persisted.range(of: "Application Support/") {
+                        let relative = String(persisted[range.upperBound...])
+                        return (baseRootDirectory() as NSString).appendingPathComponent(relative)
+                    }
+                }
+                return persisted // fallback
+#else
+                if let range = persisted.range(of: ".FreeToken") { // keep from .FreeToken forward
+                    let tail = String(persisted[range.lowerBound...])
+                    return (baseRootDirectory() as NSString).appendingPathComponent(tail)
+                }
+                return persisted
+#endif
+            }
+            // Relative path – append to base root.
+            return (baseRootDirectory() as NSString).appendingPathComponent(persisted)
+        }
         
         /// Attaches or reattaches the background URL session with the predefined identifier.
         /// This should be called early in app launch to ensure background downloads can resume
@@ -159,8 +220,10 @@ extension FreeToken {
                    let downloadItem = downloadSession.getDownload(for: url) {
                     // Use the destination path set during session creation (may be custom directory)
                     destinationURL = URL(fileURLWithPath: downloadItem.destinationPath)
+                    FreeToken.shared.logger("📍 Using session-defined destination path: \(destinationURL.path)", .debug)
                 } else {
                     // Fallback to default Documents directory for non-session downloads
+                    FreeToken.shared.logger("⚠️ No session found for \(url.absoluteString), using default Documents directory", .warning)
                     destinationURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
                         .appendingPathComponent(url.lastPathComponent)
                 }
@@ -168,20 +231,66 @@ extension FreeToken {
                 // Create parent directory if needed
                 let parentDirectory = destinationURL.deletingLastPathComponent()
                 if !fileManager.fileExists(atPath: parentDirectory.path) {
+                    FreeToken.shared.logger("📂 Creating parent directory: \(parentDirectory.path)", .debug)
                     try fileManager.createDirectory(at: parentDirectory, withIntermediateDirectories: true, attributes: nil)
                 }
                 
                 var finalDestinationURL = destinationURL
-                
+
+                // Capture initial intent for diagnostics
+                FreeToken.shared.logger("📥 Download temp file ready. Initial destinationPath=\(destinationURL.path)", .debug)
+
                 // If the CDN produced a hashed filename, prefer the server's suggested filename (e.g., original repo path file)
                 if let suggested = downloadTask.response?.suggestedFilename,
-                   suggested != destinationURL.lastPathComponent {
-                    let candidate = destinationURL.deletingLastPathComponent().appendingPathComponent(suggested)
-                    finalDestinationURL = candidate
+                    !suggested.isEmpty,
+                    suggested != destinationURL.lastPathComponent {
+                        let candidate = destinationURL.deletingLastPathComponent().appendingPathComponent(suggested)
+                        FreeToken.shared.logger("🔄 Considering suggested filename: \(suggested) ⇒ \(candidate.path)", .debug)
+                        finalDestinationURL = candidate
                 }
+
+                // SAFEGUARD: If the computed final destination currently points to an existing directory
+                // (e.g., a sanitized repo folder) we must not overwrite that directory. Instead, place
+                // the file *inside* that directory using a safe filename (suggested, or lastPathComponent, or a fallback).
+                var isDir: ObjCBool = false
+                if fileManager.fileExists(atPath: finalDestinationURL.path, isDirectory: &isDir), isDir.boolValue {
+                    let suggested = downloadTask.response?.suggestedFilename
+                    let safeName: String = suggested?.isEmpty == false ? suggested! : url.lastPathComponent.isEmpty ? "downloaded-file" : url.lastPathComponent
+                    let adjusted = finalDestinationURL.appendingPathComponent(safeName)
+                    FreeToken.shared.logger("⚠️ Destination path resolves to existing directory. Adjusting file target to \(adjusted.path)", .warning)
+                    finalDestinationURL = adjusted
+                }
+
+                // Additional guard: If finalDestinationURL still has no file extension and suggested filename had one, append it.
+                if finalDestinationURL.pathExtension.isEmpty,
+                    let suggested = downloadTask.response?.suggestedFilename {
+                    let suggestedExt = URL(fileURLWithPath: suggested).pathExtension
+                    if !suggestedExt.isEmpty {
+                        // Only adjust if the basename matches sanitized repo name (likely directory mis-detection)
+                        let baseLast = finalDestinationURL.lastPathComponent
+                        if baseLast == baseLast.replacingOccurrences(of: ".", with: "") { // crude check for no dots in base
+                            let withExt = finalDestinationURL.appendingPathExtension(suggestedExt)
+                            FreeToken.shared.logger("🛠️ Added missing extension '.\(suggestedExt)' to destination ⇒ \(withExt.path)", .debug)
+                            finalDestinationURL = withExt
+                        }
+                    }
+                }
+
+                // Ensure parent directory exists for (potentially) adjusted path
+                let finalParent = finalDestinationURL.deletingLastPathComponent()
+                if !fileManager.fileExists(atPath: finalParent.path) {
+                    FreeToken.shared.logger("📂 Creating final parent directory: \(finalParent.path)", .debug)
+                    try fileManager.createDirectory(at: finalParent, withIntermediateDirectories: true, attributes: nil)
+                }
+                FreeToken.shared.logger("📍 Final file destination decided: \(finalDestinationURL.path)", .debug)
                 
                 // Remove existing file if it exists at final destination
-                try? fileManager.removeItem(at: finalDestinationURL)
+                if fileManager.fileExists(atPath: finalDestinationURL.path) {
+                    FreeToken.shared.logger("⚠️ Removing existing file at destination: \(finalDestinationURL.path)", .warning)
+                    try? fileManager.removeItem(at: finalDestinationURL)
+                }
+                
+                FreeToken.shared.logger("📥 Moving downloaded file from \(location.path) to \(finalDestinationURL.path)", .info)
                 try fileManager.moveItem(at: location, to: finalDestinationURL)
                 
                 FreeToken.shared.logger("✅ Download completed successfully for \(url.absoluteString)", .info)
@@ -1022,12 +1131,16 @@ extension FreeToken {
                 FreeToken.shared.logger("🔐 Hash verification enabled for \(sha256Hashes.count) downloads", .info)
             }
             
-            // Create and validate destination directory if provided
+            // Create and validate destination directory if provided (support relative paths).
             var expandedDestinationDirectory: String?
             if let destDir = destinationDirectory {
-                expandedDestinationDirectory = NSString(string: destDir).expandingTildeInPath
-                try createDirectoryIfNeeded(expandedDestinationDirectory!)
-                FreeToken.shared.logger("📁 Session destination directory: \(expandedDestinationDirectory!)", .info)
+                var expanded = NSString(string: destDir).expandingTildeInPath
+                if !expanded.hasPrefix("/") { // treat as relative to base root
+                    expanded = (Self.baseRootDirectory() as NSString).appendingPathComponent(expanded)
+                }
+                expandedDestinationDirectory = expanded
+                try createDirectoryIfNeeded(expanded)
+                FreeToken.shared.logger("📁 Session destination directory (resolved): \(expanded)", .info)
             }
             
             // Enforce session limits
@@ -1197,12 +1310,14 @@ extension FreeToken {
             for download in downloads {
                 let destinationPath = download.destinationPath
                 
+                FreeToken.shared.logger("🔍 Looking for downloaded file at destination path: \(destinationPath)", .info)
                 if FileManager.default.fileExists(atPath: destinationPath) {
                     if let expectedSHA = download.expectedSHA256 {
                         // Has SHA - verify it
                         let verification = verifyFileHash(filePath: destinationPath, expectedHash: expectedSHA)
                         if verification.verified {
                             // File exists and SHA matches - mark as completed
+                            FreeToken.shared.logger("✅ File exists with valid SHA: \(download.url.lastPathComponent)", .info)
                             session.updateDownload(for: download.url) { downloadItem in
                                 downloadItem.state = .completed
                                 downloadItem.completionInfo = CompletionInfo(
@@ -1234,8 +1349,11 @@ extension FreeToken {
                         skippedCount += 1
                         FreeToken.shared.logger("✅ Skipping download - file exists (no SHA to verify): \(download.url.lastPathComponent)", .info)
                     }
+                } else {
+                    // If file doesn't exist, it stays marked for download
+                    FreeToken.shared.logger("📥 File does not exist, will download: \(download.url)", .info)
                 }
-                // If file doesn't exist, it stays marked for download
+                
             }
             
             if skippedCount > 0 || redownloadCount > 0 {

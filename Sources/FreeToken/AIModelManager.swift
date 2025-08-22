@@ -33,12 +33,7 @@ extension FreeToken {
         
         let stateManager: AISessionsManager
         
-        enum DownloadState: Equatable {
-            case notDownloaded
-            case downloading
-            case downloaded
-            case failed(error: String)
-        }
+        
         
         enum LoadState: Equatable {
             case notLoaded
@@ -106,12 +101,14 @@ extension FreeToken {
             let sessionsManager: AISessionsManager
             let sessionID: String
             var messages: [Message]
-            private var _tempSession: LLMSession? = nil
+            var tokenizer: LocalLLMTokenizer
+            var lastRunAt: Date? = nil
 
-            init(messages: [Message], model: LLMSession.LocalModel, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
+            init(messages: [Message], model: LLMSession.LocalModel, tokenizer: LocalLLMTokenizer, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
                 self.messages = messages
                 self.config = config
                 self.model = model
+                self.tokenizer = tokenizer
                 self.deviceManager = deviceManager
                 self.queue = queue
                 self.sessionsManager = sessionsManager
@@ -172,7 +169,7 @@ extension FreeToken {
                 return prioritizedMessages
             }
             
-            func llmSession() async throws -> LLMSession {
+            private func llmSession() async throws -> LLMSession {
                 if let session = self.session {
                     return session
                 } else {
@@ -180,6 +177,8 @@ extension FreeToken {
                     if self.deviceManager.availableMemoryForRequestedSize() == false {
                         FreeToken.shared.logger("⚠️ Device memory is low, removing all resident LLM sessions to free up memory", .warning)
                         await self.sessionsManager.removeAllSessions(but: self.sessionID)
+                    } else {
+                        FreeToken.shared.logger("🏎️ Device memory is sufficient for LLM session", .info)
                     }
                     
                     // Initialize a new LLMSession
@@ -194,7 +193,6 @@ extension FreeToken {
                             try await self.tokenCount(for: messages, tempSession: true)
                         }
                         
-                        self._tempSession = nil
                         self.session = LLMSession(model: model, messages: llmMessages(messages: prioritizedMessages))
                         
                         try await session!.prewarm()
@@ -211,13 +209,10 @@ extension FreeToken {
             func tokenCount(for messages: [Message], tempSession: Bool = false) async throws -> Int {
                 var total = 0
                 for message in messages {
-                    if tempSession {
-                        if _tempSession == nil {
-                            _tempSession = LLMSession(model: model)
-                        }
-                        total += await _tempSession!.tokenize(message.content) + 2 // +2 for role and separator
+                    if session != nil {
+                        total += await session!.tokenize(message.content) + 2
                     } else {
-                        total += try await llmSession().tokenize(message.content) + 2
+                        total += try tokenizer.tokenCount(message.content) + 2
                     }
                 }
                 
@@ -225,14 +220,14 @@ extension FreeToken {
             }
             
             func tokenCount(for text: String, tempSession: Bool = false) async throws -> Int {
-                if tempSession {
-                    if _tempSession == nil {
-                        _tempSession = LLMSession(model: model)
-                    }
-                    return await _tempSession!.tokenize(text)
+                let total: Int
+                if session != nil {
+                    total = await session!.tokenize(text)
                 } else {
-                    return try await llmSession().tokenize(text)
+                    total = try tokenizer.tokenCount(text)
                 }
+                
+                return total
             }
             
             func catchUp(allThreadMessages: [Message]) async throws {
@@ -263,15 +258,17 @@ extension FreeToken {
             }
             
             func generate(runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
-                try await optimizeKVCache()
                 // We return a stream whose production is serialized by the queue for its entire lifetime.
                 return AsyncThrowingStream<String, any Error> { continuation in
                     Task {
                         do {
                             try await self.queue.enqueue(runLocation: runLocation) {
+                                try await self.optimizeKVCache()
+                                
                                 if self.deviceManager.isTooHot() {
                                     throw FreeTokenError.isTooHot
                                 }
+                                self.lastRunAt = Date()
                                 let underlying = try await self.llmSession().streamResponse()
                                 for try await token in underlying {
                                     continuation.yield(token)
@@ -294,9 +291,7 @@ extension FreeToken {
                                 if self.deviceManager.isTooHot() {
                                     throw FreeTokenError.isTooHot
                                 }
-                                if self.deviceManager.availableMemoryForRequestedSize() == false {
-                                    await self.sessionsManager.removeAllSessions(but: self.sessionID)
-                                }
+                                self.lastRunAt = Date()
                                 let underlying = try await self.llmSession().streamResponse(to: text)
                                 for try await token in underlying {
                                     continuation.yield(token)
@@ -394,6 +389,9 @@ extension FreeToken {
             private let deviceManager: DeviceManager
             private let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
             private let modelTypes: Codings.AvailableModelTypesResponse
+            private var tokenizer: LocalLLMTokenizer? = nil
+            private var cachedDownloadState: FreeToken.SessionState? = nil
+            private var memoryLevel: MemoryPressureLevel = .normal
             
             init(config: AIModelConfiguration, modelTypes: Codings.AvailableModelTypesResponse, clientConfig: Codings.ShowClientConfig, deviceManager: DeviceManager, promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
                 self.config = config
@@ -409,11 +407,70 @@ extension FreeToken {
                     let downloadOptions = modelTypes.llamaCpp
                     downloadManager = ModelDownloadManager.llama(modelRepo: downloadOptions.repo, modelFileName: downloadOptions.modelFileName!, mmprojFileName: downloadOptions.mmproj)
                 }
+                
+                MemoryPressureManager.shared.register(minLevel: .normal) { pressureLevel in
+                    switch pressureLevel {
+                    case .warning:
+                        FreeToken.shared.logger("🟡 Memory pressure warning, removing all but the last AI session cache", .warning)
+                        #if os(iOS)
+                        FreeToken.shared.logger("Availble memory: \(os_proc_available_memory() / 1024 / 1024) MB", .debug)
+                        #endif
+                        Task(priority: .high) {
+                            await self.removeAllButLastRunSession()
+                            await self.setMemoryLevel(pressureLevel)
+                        }
+                    case .critical:
+                        FreeToken.shared.logger("🔴 Memory pressure is critical, removing all AI sessions immediately", .error)
+                        #if os(iOS)
+                        FreeToken.shared.logger("Availble memory: \(os_proc_available_memory() / 1024 / 1024) MB", .debug)
+                        #endif
+                        Task(priority: .high) {
+                            await self.reset()
+                            await self.setMemoryLevel(pressureLevel)
+                        }
+                    case .normal:
+                        FreeToken.shared.logger("🟢 Memory pressure is \(pressureLevel), no action needed", .info)
+                        #if os(iOS)
+                        FreeToken.shared.logger("Availble memory: \(os_proc_available_memory() / 1024 / 1024) MB", .debug)
+                        #endif
+                        Task {
+                            await self.setMemoryLevel(pressureLevel)
+                        }
+                    }
+                }
+            }
+            
+            private func setMemoryLevel(_ level: MemoryPressureLevel) {
+                self.memoryLevel = level
+            }
+            
+            func lastRunSession() -> AISessionManager? {
+                let sessions = self.sessions.sorted { $0.value.lastRunAt ?? Date.distantPast > $1.value.lastRunAt ?? Date.distantPast }
+                return sessions.first?.value
+            }
+            
+            private func removeAllButLastRunSession() {
+                // Remove all sessions except the last one that was run
+                let sortedSessions = self.sessions.sorted { $0.value.lastRunAt ?? Date.distantPast > $1.value.lastRunAt ?? Date.distantPast }
+                guard let lastSession = sortedSessions.first else {
+                    FreeToken.shared.logger("🔴 No AI sessions to remove", .error)
+                    return
+                }
+                
+                let lastSessionId = lastSession.key
+                FreeToken.shared.logger("🔄 Removing all AI sessions except the last run session: \(lastSessionId)", .info)
+                self.removeAllSessions(but: lastSessionId)
             }
             
             // Get download state
-            func getDownloadState() async -> DownloadState {
-                let state = self.downloadManager.downloadState()
+            func getDownloadState() async -> ModelDownloadState {
+                let state: FreeToken.SessionState?
+                
+                if cachedDownloadState == nil {
+                    state = await self.downloadManager.ensureSessionAndGetState()
+                } else {
+                    state = cachedDownloadState
+                }
                 
                 if state == nil {
                     FreeToken.shared.logger("🔴 AI model download state is nil, assuming not downloaded", .error)
@@ -422,6 +479,7 @@ extension FreeToken {
                 
                 switch state! {
                 case .completed:
+                    self.cachedDownloadState = state! // Cache the completed download state to prevent redundant checks
                     return .downloaded
                 case .downloading:
                     return .downloading
@@ -437,12 +495,14 @@ extension FreeToken {
             
             func reset() async {
                 FreeToken.shared.logger("🔄 Resetting AI sessions manager...", .info)
+                self.model = nil
+                self.tokenizer = nil
                 removeAllSessions()
             }
             
             // Goal: Load a temporary sesison and run one small message.
             // Why: This will make sure the model loads potentialy for the first time on the device, which can take a while
-            func prewarm() async throws {
+            private func prewarm() async throws {
                 FreeToken.shared.logger("😎 Prewarming AI model...", .info)
                 
                 _ = try await generateForId("prewarm-session", messages: [Message(role: .user, content: "Answer with only one number: What's 2+2?")], runLocation: .localRun, isTemporary: true)
@@ -469,6 +529,7 @@ extension FreeToken {
                     let mlxModel = modelBaseURL.appendingPathComponent(downloadOptions.repo.replacingOccurrences(of: "/", with: "_"))
                     model = LLMSession.LocalModel.mlx(url: mlxModel, parameter: .init(
                         maxTokens: config.maxTokenCount, temperature: config.temperature, topP: config.topP, repetitionPenalty: config.penaltyRepeat, repetitionContextSize: Int(config.penaltyLastN), options: .init(verbose: true)))
+                    tokenizer = MLXTokenizer(modelURL: mlxModel)
                 } else {
                     // Use LlamaCpp by default
                     let downloadOptions = modelTypes.llamaCpp
@@ -486,6 +547,7 @@ extension FreeToken {
                         penaltyRepeat: config.penaltyRepeat,
                         options: .init(verbose: true)
                     ))
+                    tokenizer = LlamaTokenizer(modelURL: modelFileURL)
                 }
             }
             
@@ -499,6 +561,7 @@ extension FreeToken {
                 }
                 
                 let model = self.model!
+                let tokenizer = self.tokenizer!
                 
                 // Convert RunConfig to AIModelConfiguration if provided
                 var config: AIModelConfiguration
@@ -527,7 +590,7 @@ extension FreeToken {
                     return existingSession
                 }
                 
-                let session = AISessionManager(messages: preparedMessages, model: model, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
+                let session = AISessionManager(messages: preparedMessages, model: model, tokenizer: tokenizer, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
                 if isTemporary == false {
                     self.sessions[id] = session
                 }
@@ -555,6 +618,14 @@ extension FreeToken {
                 success: @escaping @Sendable () async -> Void,
                 failure: @escaping @Sendable (FreeToken.FreeTokenError) async -> Void
             ) async throws {
+                let downloadState = await self.getDownloadState()
+                
+                if downloadState == .downloaded {
+                    FreeToken.shared.logger("🔵 AI model is already downloaded", .info)
+                    await success()
+                    return
+                }
+                
                 try await downloadManager.download(
                     progress: onProgress,
                     success: { modelPath in
@@ -625,16 +696,16 @@ extension FreeToken {
             }
             
             func tokenCountFor(id: String? = nil, messages: [Message]) async throws -> Int {
-                if id == nil {
-                    // Setup a temporary session
-                    let tempSession = try await loadSession(for: "temp-session", with: [], isTemporary: true)
-                    return try await tempSession.tokenCount(for: messages)
-                } else if let session = self.sessions[id!] {
-                    return try await session.tokenCount(for: messages)
-                } else {
-                    FreeToken.shared.logger("🔴 AI session for ID \(id!) does not exist", .error)
-                    throw FreeTokenError.aiModelNotLoaded
+                if tokenizer == nil {
+                    try await self.loadModel()
                 }
+                
+                var total = 0
+                for message in messages {
+                    total += try self.tokenizer!.tokenCount(message.content) + 2
+                }
+                
+                return total
             }
         }
         
@@ -678,7 +749,7 @@ extension FreeToken {
         
         func loadModel() async -> Result<AIModelLoadingState, FreeTokenError> {
             do {
-                try await stateManager.prewarm()
+                try await stateManager.loadModel()
                 
                 return .success(.loaded)
             } catch {
@@ -689,6 +760,15 @@ extension FreeToken {
         
         func unloadModel() async {
             await self.stateManager.removeAllSessions()
+        }
+        
+        func lastUsedAt() async -> Date? {
+            // Returns the last used session date
+            if let lastSession = await self.stateManager.lastRunSession() {
+                return lastSession.lastRunAt
+            } else {
+                return nil
+            }
         }
         
         func stopGeneration() async {
