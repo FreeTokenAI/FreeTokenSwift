@@ -355,7 +355,7 @@ public class FreeToken: @unchecked Sendable {
     ///  - modelCode: Optional String that represents the AI model code to check. If not provided, uses the default AI model for the Agent.
     /// - Returns: A `Bool` indicating whether the AI model is downloaded.
     /// - Throws: `FreeTokenError` if the device is not registered.
-    func getAIModelDownloadState(modelCode: String? = nil) async throws -> ModelDownloadState {
+    public func getAIModelDownloadState(modelCode: String? = nil) async throws -> ModelDownloadState {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
         }
