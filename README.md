@@ -1,6 +1,8 @@
-# FreeToken Swift Client
+![FreeToken header](./github-header.png)
 
 The FreeToken Swift client provides seamless AI integration for iOS/macOS apps, supporting both on-device and cloud AI, document search, and more.
+
+For more in-depth guides, configuration options, and scenarios, visit the FreeToken documentation: https://docs.freetoken.ai
 
 ---
 
@@ -41,15 +43,18 @@ dependencies: [
 
 ### 1. Configuration
 
-Set up the FreeToken client with your API key.  
+Set up the FreeToken client with your API key from the [FreeToken console](https://app.freetoken.ai).  
 _Always call this before any other FreeToken operations._
 
 ```swift
 import FreeToken
 
-let client = FreeToken.shared.configure(
-    appToken: "your-api-key"
-)
+do {
+    let client = try FreeToken.shared.configure(appToken: "your-api-key")
+    // client is now configured
+} catch {
+    print("Failed to configure FreeToken: \(error)")
+}
 ```
 
 ---
@@ -59,38 +64,44 @@ let client = FreeToken.shared.configure(
 Register the device with FreeToken Cloud to determine AI capabilities and enable secure communication.
 
 ```swift
-client.registerDeviceSession(scope: "my-app-v1") {
+await client.registerDeviceSession(scope: "my-app-v1") {
     // Successfully registered
 } error: { error in
     print("Failed to register device: \(error)")
 }
 ```
 
-_Note:_ The scope parameter can be used for testing message prompts through configuring the "agent routing" on the App in the FreeToken dashboard.  You may want to elect to create a unique scope by appending a letter or number to the end of the scope string, such as "my-app-v1-a". This would allow route all "a" clients to a different agent for A/B testing.
+_Note:_ The scope parameter can be used for testing message prompts through configuring agent routes on the App in the [FreeToken console](https://app.freetoken.ai). You may want to elect to randomly add a unique scope by appending a letter or number to the end of the scope string, such as "my-app-v1-a". Then in the console you can configure routing so all "a" scoped sessions go to one agent and other sessions go to another.
 
 ---
 
 ### 3. Download AI Model
 
 Download the AI model for on-device inference.  
-_If the device is not capable, FreeToken will automatically use cloud fallback for AI if the App is configured for Compatability mode on the FreeToken dashboard._
+_If the device is not capable, FreeToken will **not** download the model and try use cloud fallback for AI if the run location is set to `.automatic`._
 
 ```swift
-client.downloadAIModel { isModelDownloaded in
+await client.downloadAIModel { state in
     // Ready for use whether on-device or cloud
-    if isModelDownloaded {
+    switch state {
+    case .downloaded:
         // Device supports on-device AI
-    } else {
-        // Fallback to cloud if supported
+        print("Model downloaded and ready")
+    case .aiNotSupported:
+        // Device cannot run the model locally; fallback to cloud
+        print("Device not AI-capable; will use cloud fallback")
+    default:
+        print("Model state: \(state)")
     }
 } error: { error in
     print("Download failed: \(error)")
 } progressPercent: { progress in
-    print("Download progress: \(progress)%")
+    // progress is 0.0 ... 1.0
+    print("Download progress: \(Int(progress * 100))%")
 }
 ```
 
-Note: The `isModelDownloaded` boolean indicates whether the model was successfully downloaded and is ready for use on-device. If false, the app will use cloud AI if configured for Compatability mode. _This is a heads-up to your app whether it's capable of on-device AI or not._
+Note: The `success` callback returns a `DownloadedState` enum (for example `.downloaded` or `.aiNotSupported`) that indicates to your application what happened during the download process. Use the returned state to decide how to proceed.
 
 ---
 
@@ -101,22 +112,20 @@ Create, manage, and interact with threaded conversations for chat or context-bas
 #### Create a Thread
 
 ```swift
-client.createMessageThread(
-    pinnedContext: "Initial context",
-    agentScope: "agent-scope"
-) { messageThread in
+await client.createMessageThread { messageThread in
     // Save messageThread.id for future use
+    // Persist the ID as this is the only time the server returns it
 } error: { error in
     print("Failed to create thread: \(error)")
 }
 ```
 
-Note: Make sure to save the the `messageThread.id` for future operations like adding messages or running the thread.  This will be the *ONLY* time you are provided this ID, so store it securely in your app's state or database.
+Note: Make sure to save the `messageThread.id` for future operations like adding messages or running the thread. This will be the *ONLY* time you are provided this ID, so store it securely in your app's state or database.
 
-#### Add a Message
+#### Add a Message to a Message Thread
 
 ```swift
-let message = Message(role: .user, content: "What is a nova?")
+let message = Message(role: .user, content: "What is a supernova?")
 
 await client.addMessageToThread(
     messageThreadID: "thread-id",
@@ -130,9 +139,9 @@ await client.addMessageToThread(
 )
 ```
 
-#### Run a Thread (Automatic Local/Cloud Selection)
+#### Run a Message Thread
 
-`runMessageThread` will automatically use the best available AI (local or cloud) based on your configuration and device capabilities.
+`runMessageThread` will automatically use the best available AI (local or cloud) based on your configuration and device capabilities.  You can optionally override this by specifying `runLocation: .cloudRun` or `.localRun` as a parameter to this method.
 
 ```swift
 await client.runMessageThread(
@@ -146,26 +155,6 @@ await client.runMessageThread(
 )
 ```
 
-#### Run a Thread with Private Document Context
-
-You can provide private document store IDs to include private documents in the AI's context for enhanced RAG capabilities.
-
-```swift
-await client.runMessageThread(
-    id: "thread-id",
-    privateDocumentStoreIds: ["store-id-1", "store-id-2"],
-    success: { response in
-        print("AI response with private context: \(response.content)")
-    },
-    error: { error in
-        print("Failed to run thread: \(error)")
-    }
-)
-```
-Note: If you configure *Compatability mode with Turbo mode*, the client will automatically use the cloud until the model is downloaded and ready for on-device use. This provides a better user experience allowing immediate interaction with the AI while still preparing for on-device capabilities.
-
-Additionally, there are _many_ additional options to message threads, such as _forcing a cloud run_, _streaming tokens_ back to your app, _scoping RAG document searches_, and more. 
-
 #### Delete, Get, and Inspect Threads
 
 Basic thread management operations allow you to delete threads, retrieve threads with messages, and fetch individual messages.
@@ -177,13 +166,13 @@ client.deleteMessageThread(id: "thread-id", success: { id in
     print("Failed to delete thread: \(error)")
 })
 
-client.getMessageThread(id: "thread-id", success: { thread in
+await client.getMessageThread(id: "thread-id", success: { thread in
     print("Loaded thread with \(thread.messages.count) messages")
 }, error: { error in
     print("Failed to load thread: \(error)")
 })
 
-client.getMessage(id: "message-id", success: { message in
+await client.getMessage(id: "message-id", success: { message in
     print("Message: \(message.content)")
 }, error: { error in
     print("Failed to get message: \(error)")
@@ -210,8 +199,6 @@ await client.generateCompletion(
     }
 )
 ```
-
-Note: You can pass a `modelCode` to specify what particular model to use, if it's not currently available on the device, it will automatically push the request to the cloud. This is useful when you need a larger model or specialized model for specific tasks.  Model codes are available in the FreeToken dashboard under the "Models" section.
 
 #### Force Cloud or Local Completion
 
@@ -240,26 +227,6 @@ await client.generateLocalCompletion(
 )
 ```
 
-#### Chat Completion
-
-This method does not require a message thread and can be used for simple chat interactions. This is the underlying method used by `runMessageThread` for cloud chat completion.
-
-```swift
-let messages = [
-    Message(role: .user, content: "Hello!")
-]
-
-client.generateCloudChatCompletion(
-    messages: messages,
-    modelCode: "cloud-model-code",
-    success: { message in
-        print("Chat AI: \(message.content)")
-    },
-    error: { error in
-        print("Chat completion failed: \(error)")
-    }
-)
-```
 
 ---
 
@@ -270,17 +237,19 @@ Store, retrieve, and search documents for use as AI context (RAG, knowledge base
 #### Create a Document
 
 ```swift
-client.createDocument(
-    content: "Document content",
-    metadata: "TITLE: Example Document\nAUTHOR: John Doe",
-    searchScope: "knowledge-base",
-    success: { document in
+do {
+    try await client.createDocument(
+        content: "Document content",
+        metadata: "TITLE: Example Document\nAUTHOR: John Doe",
+        searchScope: "knowledge-base"
+    ) { document in
         print("Document created: \(document.id)")
-    },
-    error: { error in
+    } error: { error in
         print("Failed to create document: \(error)")
     }
-)
+} catch {
+    print("Create document failed: \(error)")
+}
 ```
 
 Note: The document data should be considered _public_ to all agents in the App context and immutable.
@@ -290,18 +259,20 @@ Note: The document data should be considered _public_ to all agents in the App c
 You can create documents within private document stores for enhanced security and isolation.
 
 ```swift
-client.createDocument(
-    content: "Private document content",
-    metadata: "TITLE: Private Document\nCLASSIFICATION: Confidential",
-    searchScope: "private-knowledge",
-    privateDocumentStoreID: "store-id",
-    success: { document in
+do {
+    try await client.createDocument(
+        content: "Private document content",
+        metadata: "TITLE: Private Document\nCLASSIFICATION: Confidential",
+        searchScope: "private-knowledge",
+        privateDocumentStoreID: "store-id"
+    ) { document in
         print("Private document created: \(document.id)")
-    },
-    error: { error in
+    } error: { error in
         print("Failed to create private document: \(error)")
     }
-)
+} catch {
+    print("Create private document failed: \(error)")
+}
 ``` 
 
 #### Get a Document
@@ -317,7 +288,7 @@ client.getDocument(id: "doc-id", success: { document in
 #### Search Documents
 
 ```swift
-client.searchDocuments(
+await client.searchDocuments(
     query: "supernova explosion",
     searchScope: "astronomy",
     maxResults: 5,
@@ -332,32 +303,12 @@ client.searchDocuments(
 )
 ```
 
-#### Search Documents Across Public and Private Stores
-
-You can search across both public documents and private document stores simultaneously.
-
-```swift
-client.searchDocuments(
-    query: "machine learning algorithms",
-    searchScope: "public-research",
-    privateDocumentStoreIds: ["store-1", "store-2"],
-    maxResults: 10,
-    success: { results in
-        for chunk in results.documentChunks {
-            print("Found content: \(chunk.contentChunk)")
-        }
-    },
-    error: { error in
-        print("Search failed: \(error)")
-    }
-)
-```
-
 ---
 
 ### 7. Private Document Stores
 
 Private Document Stores provide secure, isolated document storage with server-generated IDs for enhanced security. Unlike public documents, private stores are only accessible by their unique ID and provide complete isolation between different contexts.
+
 
 #### Create a Private Document Store
 
@@ -366,18 +317,6 @@ await client.createPrivateDocumentStore(name: "My Private Documents") { store in
     // Store the ID securely - this is the only way to access the store
     let storeId = store.id
     print("Created private store: \(storeId)")
-} error: { error in
-    print("Failed to create private store: \(error)")
-}
-```
-
-#### Create a Private Document Store (Without Name)
-
-```swift
-await client.createPrivateDocumentStore { store in
-    // Anonymous private store
-    let storeId = store.id
-    print("Created anonymous private store: \(storeId)")
 } error: { error in
     print("Failed to create private store: \(error)")
 }
@@ -398,7 +337,7 @@ await client.deletePrivateDocumentStore(id: "store-id") {
 - Once created, stores can only be accessed via their unique ID
 - There is no API to list private document stores (security by design)
 - Deleting a store permanently removes all documents within it
-- The `name` parameter is optional and used for server-side identification only
+- The `name` parameter is used for identification in the [FreeToken console](https://app.freetoken.ai)
 
 #### Integration with RAG and AI Context
 
@@ -414,30 +353,64 @@ Private document stores seamlessly integrate with the AI system for Retrieval-Au
 ### 8. Encryption
 
 Enable client-side encryption/decryption for sensitive data. When enabled, all messages and documents will be encrypted before sending to the server and decrypted when received.
-
 ```swift
-try client.enableEncryption(
-    encrypt: { text in
-        // Your encryption logic here
-        return encryptedText
-    },
-    decrypt: { text in
-        // Your decryption logic here
-        return decryptedText
-    }
-)
+// Built-in key generation (recommended for most apps)
+// Generate keys (only returned once) for each scope and persist them securely.
+let sharedPublicKey = FreeToken.shared.enableEncryption(scope: .sharedPublic)
+let userPrivateKey = FreeToken.shared.enableEncryption(scope: .userPrivate)
+
+// Persist securely — Keychain is recommended. Example (insecure demonstration only):
+UserDefaults.standard.set(sharedPublicKey, forKey: "FTSharedPublicKey")
+UserDefaults.standard.set(userPrivateKey, forKey: "FTUserPrivateKey")
+
+// Later — initialize the client with the persisted keys
+do {
+    let sharedKey = UserDefaults.standard.string(forKey: "FTSharedPublicKey")
+    let privateKey = UserDefaults.standard.string(forKey: "FTUserPrivateKey")
+
+    let client = try FreeToken.shared.configure(
+        appToken: "your-api-key",
+        baseURL: nil,
+        sharedPublicEncryptionKey: sharedKey,
+        userPrivateEncryptionKey: privateKey,
+        logLevel: .info
+    )
+    // client is now configured with the built-in encryption keys
+} catch {
+    print("Failed to configure FreeToken: \(error)")
+}
 ```
 
-Note: You must implement your own encryption and decryption logic. The library provides the hooks but does not include encryption algorithms.
+Built-in encryption details:
+
+- Algorithm: AES-GCM (authenticated encryption).
+- Key size: 256-bit symmetric keys (generated using CryptoKit's `SymmetricKey(size: .bits256)`).
+- Format: Keys are returned as Base64-encoded bytes; pass the Base64 string to `configure(...)` via `sharedPublicEncryptionKey` and `userPrivateEncryptionKey` or call `setEncryptionKey(...)` internally.
+- Scope usage: use `.sharedPublic` for public-document encryption (documents shared among agents) and `.userPrivate` for messages and private-document-store encryption.
+- Security notes: The generated key string is only returned at creation time — persist it securely (Keychain). Do NOT store long-lived keys in plaintext or insecure stores like UserDefaults in production.
+
+If you need a custom encryption implementation (for example to integrate with a proprietary KMS or hardware-backed keys), you can register encryption/decryption closures instead:
+
+```swift
+try FreeToken.shared.enableCustomEncryption(encrypt: { text, scope in
+    // Your encryption logic here (e.g. call into your KMS)
+    return "encryptedString"
+}, decrypt: { text, scope in
+    // Your decryption logic here
+    return "decryptedString"
+})
+```
+
+Note: When you enable custom encryption the SDK will call your closures for encrypt/decrypt operations. Use the custom hook if you must integrate external hardware or KMS; otherwise prefer the built-in AES-GCM keys for simplicity and compatibility.
 
 ---
 
 ### 9. Web Search
 
-Perform web searches and retrieve results for use in AI or user-facing features.  This is the same method that is used by the AI to search the web for relevant information when generating completions or responses.
+Perform web searches and retrieve results for use in AI or user-facing features.  This is the same method that is used by the AI to search the web for relevant information when generating responses.
 
 ```swift
-client.webSearch(
+await client.webSearch(
     query: "latest AI news",
     resultCount: 3,
     success: { results in
@@ -451,7 +424,7 @@ client.webSearch(
 )
 ```
 
-Note: You must setup the web search with an API key in the FreeToken dashboard before using this feature.
+Note: You must setup the web search with an API key in the [FreeToken console](https://app.freetoken.ai) before using this feature.
 
 ---
 
@@ -460,11 +433,12 @@ Note: You must setup the web search with an API key in the FreeToken dashboard b
 Reset caches or manage model memory.
 
 ```swift
-try client.resetAIModelCache() // Clears local AI model cache
-try client.resetEmbeddingModelCache() // Clears embedding model cache
+try await client.resetModelCaches() // Clears local AI model & embedding caches and removes persisted sessions
 
-client.loadModel(success: {
-    print("Model loaded")
+try await client.resetEmbeddingModelCache() // Clears only the embedding model cache
+
+await client.loadModel(success: { loaded in
+    print("Model load state: \(loaded)")
 }, error: { error in
     print("Failed to load model: \(error)")
 })
@@ -479,6 +453,12 @@ Stop any running local AI generation. Useful when your app goes into the backgro
 ```swift
 await client.stopLocalGeneration()
 ```
+
+---
+
+## Learn more
+
+Full developer guides, walkthroughs, and advanced integration patterns are available at https://docs.freetoken.ai.
 
 ---
 
