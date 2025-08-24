@@ -42,11 +42,15 @@ extension FreeToken {
                 let scope: String
                 let clientType: String
                 let clientVersion: String
+                let deviceModelIdentifier: String?
+                let deviceModelName: String?
                 
                 enum CodingKeys: String, CodingKey {
                     case scope
                     case clientType = "client_type"
                     case clientVersion = "client_version"
+                    case deviceModelIdentifier = "device_model_identifier"
+                    case deviceModelName = "device_model_name"
                 }
             }
             

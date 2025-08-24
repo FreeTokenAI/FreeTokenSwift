@@ -36,6 +36,9 @@ public class FreeToken: @unchecked Sendable {
     let messagesManager: MessagesManager
     let aiModelsManager: AIModelsManager = AIModelsManager()
     let toolDefinitionsManager = ToolDefinitionsManager()
+    // Captured device model details (identifier like iPhone16,1 or Mac15,7, plus a friendly name when available)
+    public let deviceModelIdentifier: String
+    public let deviceModelName: String
     
     var clientConfigStatus: ClientConfigStatus = .notConfigured
     var baseURL: URL? = nil
@@ -106,6 +109,9 @@ public class FreeToken: @unchecked Sendable {
     
     private init() {
         self.baseURL = URL(string: "https://api.freetoken.ai/api/v1/")!
+        let provider = DeviceModelProvider()
+        self.deviceModelIdentifier = provider.modelIdentifier
+        self.deviceModelName = provider.modelName
         self.messagesManager = MessagesManager(encryptionManager: self.encryptionManager)
         self.messagesManager.client = self
     }
@@ -227,7 +233,18 @@ public class FreeToken: @unchecked Sendable {
         let profiler = Profiler()
         
         // Determine Device Capabilities
-        let createDeviceSessionRequest = Codings.CreateDeviceSessionRequest(deviceSession: .init(scope: scope, clientType: clientType, clientVersion: clientVersion))
+        // Only include model fields if we have a non-Unknown identifier
+        let modelIdentifier = deviceModelIdentifier == "Unknown" ? nil : deviceModelIdentifier
+        let modelName = deviceModelName == "Unknown" ? nil : deviceModelName
+        let createDeviceSessionRequest = Codings.CreateDeviceSessionRequest(
+            deviceSession: .init(
+                scope: scope,
+                clientType: clientType,
+                clientVersion: clientVersion,
+                deviceModelIdentifier: modelIdentifier,
+                deviceModelName: modelName
+            )
+        )
         
         await postData(path: "device_sessions", data: createDeviceSessionRequest, responseType: Codings.ShowDeviceSessionResponse.self) { result in
             switch result {
