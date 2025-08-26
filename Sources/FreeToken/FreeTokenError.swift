@@ -36,6 +36,7 @@ extension FreeToken {
         case deviceOverheating
         case deviceNotCapable
         case unknownAIModelCode
+        case visionNotSupportedLocally
         
         // MARK: - AIModelManager Class Errors:
         case unsupportedVersion
@@ -114,6 +115,16 @@ extension FreeToken {
         case downloadHashVerificationFailed(url: String, expected: String, actual: String)
         case failedToFetchModelFiles(String)
         
+    // MARK: - Llama Manager Errors
+    case llamaUnexpectedInsertion
+    case llamaMultimodalNotSupported
+    case llamaContextOverflow
+    case llamaBusy
+    case llamaInvariantViolation(message: String? = nil)
+    case llamaModelLoadFailed(message: String? = nil)
+    case llamaTokenizationFailed
+    case llamaGenerationStopped
+        
         // MARK: - Custom Error:
         case error(message: String, code: Int? = nil)
     }
@@ -150,6 +161,7 @@ extension FreeToken.FreeTokenError {
         case .deviceOverheating: return "deviceOverheating"
         case .deviceNotCapable: return "deviceNotCapable"
         case .unknownAIModelCode: return "unknownAIModelCode"
+        case .visionNotSupportedLocally: return "visionNotSupportedLocally"
 
         case .unsupportedVersion: return "unsupportedVersion"
         case .aiModelNotDownloaded: return "aiModelNotDownloaded"
@@ -218,6 +230,14 @@ extension FreeToken.FreeTokenError {
         case .downloadSessionLimitExceeded(_): return "downloadSessionLimitExceeded"
         case .downloadHashVerificationFailed(_, _, _): return "downloadHashVerificationFailed"
         case .failedToFetchModelFiles(_): return "failedToFetchModelFiles"
+    case .llamaUnexpectedInsertion: return "llamaUnexpectedInsertion"
+    case .llamaMultimodalNotSupported: return "llamaMultimodalNotSupported"
+    case .llamaContextOverflow: return "llamaContextOverflow"
+    case .llamaBusy: return "llamaBusy"
+    case .llamaInvariantViolation(_): return "llamaInvariantViolation"
+    case .llamaModelLoadFailed(_): return "llamaModelLoadFailed"
+    case .llamaTokenizationFailed: return "llamaTokenizationFailed"
+    case .llamaGenerationStopped: return "llamaGenerationStopped"
         
         case .error(_, _):
             return "error"
@@ -258,6 +278,7 @@ extension FreeToken.FreeTokenError {
         case .deviceOverheating: return "Cannot run AI locally: device is overheating. Please wait for device to cool down or use cloud execution."
         case .deviceNotCapable: return "Cannot run AI locally: this device is not capable of running AI models"
         case .unknownAIModelCode: return "AI Model Code is not known. Please check and try again."
+        case .visionNotSupportedLocally: return "Vision/image processing is not supported on local models. Please use cloud execution for messages with images."
         
         case .unsupportedVersion: return "The AI model sent by the server is not supported by this client"
         case .aiModelNotDownloaded: return "AI model has not yet been downloded. Try .downloadAIModel() first"
@@ -337,6 +358,14 @@ extension FreeToken.FreeTokenError {
         case .downloadSessionLimitExceeded(let limit): return "Maximum concurrent session limit exceeded (\(limit) sessions). Complete or remove existing sessions before creating new ones."
         case .downloadHashVerificationFailed(let url, let expected, let actual): return "Hash verification failed for \(url). Expected: \(expected), Actual: \(actual). The file may be corrupted or tampered with."
         case .failedToFetchModelFiles(let message): return "Failed to fetch model files: \(message)"
+    case .llamaUnexpectedInsertion: return "Unexpected middle insertion or reordering detected in llama context update"
+    case .llamaMultimodalNotSupported: return "Local llama inference does not support image or multimodal attachments"
+    case .llamaContextOverflow: return "Insufficient context capacity for requested operation after pruning"
+    case .llamaBusy: return "Llama manager is busy processing another operation"
+    case .llamaInvariantViolation(let message): return "Llama context invariant violation" + ((message != nil) ? ": \(message!)" : "")
+    case .llamaModelLoadFailed(let message): return "Failed to load llama model" + ((message != nil) ? ": \(message!)" : "")
+    case .llamaTokenizationFailed: return "Llama tokenization failed"
+    case .llamaGenerationStopped: return "Llama generation stopped"
 
         case .error(let message, _):
             return message
@@ -371,6 +400,7 @@ extension FreeToken.FreeTokenError {
         case .deviceOverheating: return 1031
         case .deviceNotCapable: return 1032
         case .unknownAIModelCode: return 1033
+        case .visionNotSupportedLocally: return 1034
         case .unsupportedVersion: return 2000
         case .aiModelNotDownloaded: return 2001
         case .modelAlreadyLoading: return 2002
@@ -429,6 +459,14 @@ extension FreeToken.FreeTokenError {
         case .downloadSessionLimitExceeded(_): return 8006
         case .downloadHashVerificationFailed(_, _, _): return 8007
         case .failedToFetchModelFiles(_): return 8008
+    case .llamaUnexpectedInsertion: return 5000
+    case .llamaMultimodalNotSupported: return 5001
+    case .llamaContextOverflow: return 5002
+    case .llamaBusy: return 5003
+    case .llamaInvariantViolation(_): return 5004
+    case .llamaModelLoadFailed(_): return 5005
+    case .llamaTokenizationFailed: return 5006
+    case .llamaGenerationStopped: return 5007
             
         case .error(_, let code):
             return code

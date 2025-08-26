@@ -51,6 +51,16 @@ extension FreeToken {
             
             sufficientMetalSupport = MTLCreateSystemDefaultDevice() != nil
         }
+
+        // Recommend decode & batch thread counts leaving some headroom for UI / system tasks.
+        // reserve: number of logical cores to leave unused. Ensures at least 1 decode thread.
+        static func recommendedThreadCounts(reserve: Int = 2) -> (decode: Int, batch: Int) {
+            let total = max(1, ProcessInfo.processInfo.activeProcessorCount)
+            let decode = max(1, total - reserve)
+            // Allow batch to match decode, but keep at least one core free if possible
+            let batch = min(total - 1, max(1, decode))
+            return (decode, batch > 0 ? batch : decode)
+        }
         
         func availableMemoryForRequestedSize() -> Bool {
             #if os(iOS)

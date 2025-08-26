@@ -388,12 +388,49 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.unknownAIModelCode
         }
         
-        guard let modelManager = aiModelsManager.getManager(for: unwrappedModelCode) else {
-            FreeToken.shared.logger("🔴 AI Model Manager not found for code \(unwrappedModelCode)", .error)
-            throw FreeTokenError.unknownAIModelCode
+        // If a manager already exists, return its download state
+        if let existingManager = aiModelsManager.getManager(for: unwrappedModelCode) {
+            return await existingManager.stateManager.getDownloadState()
         }
         
-        return await modelManager.stateManager.getDownloadState()
+        // Lazily load the AI model by code and create a new manager if missing
+        FreeToken.shared.logger("ℹ️ AI Model Manager not found for code \(unwrappedModelCode). Attempting to initialize it now.", .info)
+        
+        // Bridge the existing closure-based getAIModel into async/await
+        let aiModel: AIModel = try await withCheckedThrowingContinuation { continuation in
+            Task { [unowned self] in
+                await self.getAIModel(modelCode: unwrappedModelCode) { model in
+                    continuation.resume(returning: model)
+                } error: { error in
+                    continuation.resume(throwing: error)
+                }
+            }
+        }
+        
+        // Prevent creating a manager for cloud-only models
+        if aiModel.cloudOnly {
+            FreeToken.shared.logger("🔴 AI Model \(unwrappedModelCode) is cloud-only. No local download state available.", .error)
+            throw FreeTokenError.isCloudOnlyModel
+        }
+        
+        let isDefault = (unwrappedModelCode == deviceDetails?.aiModel.code)
+        do {
+            let newManager = try aiModelsManager.addManager(
+                modelConfig: aiModel.coding,
+                clientVersion: clientVersion,
+                isDefault: isDefault
+            )
+            FreeToken.shared.logger("✅ Initialized AI Model Manager for code \(unwrappedModelCode) on-demand.", .info)
+            return await newManager.stateManager.getDownloadState()
+        } catch {
+            FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager for code \(unwrappedModelCode): \(error.localizedDescription)", .error)
+            // Propagate known FreeTokenError or wrap unknowns
+            if let ftError = error as? FreeTokenError {
+                throw ftError
+            } else {
+                throw FreeTokenError.unknownAIModelCode
+            }
+        }
     }
     
     /// Download the AI model for this specific device
@@ -1840,7 +1877,7 @@ public class FreeToken: @unchecked Sendable {
         
         do {
             let session = try await aiModelManager?.stateManager.loadSession(for: runIdentifier, runConfig: runConfig)
-            _ = try await session?.load()
+            _ = try session?.load()
             await successCallback?()
         } catch {
             await errorCallback?(FreeTokenError.failedToLoadModel)
@@ -1895,7 +1932,7 @@ public class FreeToken: @unchecked Sendable {
         await self.getMessageThread(id: messageThreadID) { thread in
             do {
                 let session = try await aiModelManager?.stateManager.loadSession(for: messageThreadID, with: thread.messages, runConfig: runConfig)
-                _ = try await session?.load()
+                _ = try session?.load()
                 await successCallback?()
             } catch {
                 await errorCallback?(FreeTokenError.failedToLoadModel)

@@ -6,10 +6,10 @@
 //
 import Foundation
 import Metal
-import LocalLLMClient
-import LocalLLMClientLlama
-import LocalLLMClientMLX
-import LocalLLMClientUtility
+//import LocalLLMClient
+//import LocalLLMClientLlama
+//import LocalLLMClientMLX
+//import LocalLLMClientUtility
 
 #if canImport(UIKit)
 import UIKit
@@ -86,38 +86,90 @@ extension FreeToken {
         }
         
         class AISessionManager: @unchecked Sendable {
-            // Goal: Unified manager that keeps track of:
-            // * Primary interface with LLMSession for generation
-            // * Initialize LLMSession
-            // * Allocation of tokens in the context window per message (kv cache management)
-            // * Tokenizer
-            // * Evacuation of specific messages based on incoming needs
-            
-            var session: LLMSession? = nil
+            // Simplified: Uses internal FreeToken.LlamaManager instead of external LLMSession.
+            var llama: LlamaManager? = nil
             let config: AIModelConfiguration
-            let model: LLMSession.LocalModel
+            let modelPath: String
             let deviceManager: DeviceManager
             let queue: AITaskQueue
             let sessionsManager: AISessionsManager
             let sessionID: String
             var messages: [Message]
-            var tokenizer: LocalLLMTokenizer
             var lastRunAt: Date? = nil
 
-            init(messages: [Message], model: LLMSession.LocalModel, tokenizer: LocalLLMTokenizer, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
+            init(messages: [Message], modelPath: String, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
                 self.messages = messages
                 self.config = config
-                self.model = model
-                self.tokenizer = tokenizer
+                self.modelPath = modelPath
                 self.deviceManager = deviceManager
                 self.queue = queue
                 self.sessionsManager = sessionsManager
                 self.sessionID = sessionID
             }
+
             
-            func load() async throws {
-                _ = try await llmSession()
+            private func ensureLlamaLoaded() throws -> LlamaManager {
+                if let l = llama { return l }
+                
+                // Each session loads its own model instance for complete isolation
+                FreeTokenLogger.shared.log("Loading isolated model instance for session \(sessionID)", level: .info)
+                
+                // Map AIModelConfiguration to LlamaInitOptions
+                let opts = LlamaInitOptions(
+                    contextSize: config.nCTX,
+                    maxSequences: 1,  // Only need 1 sequence since each session has its own model
+                    maxNewTokens: config.maxTokenCount,
+                    temperature: config.temperature,
+                    topK: config.topK,
+                    topP: config.topP,
+                    repeatPenalty: config.penaltyRepeat,
+                    repeatLastN: Int(config.penaltyLastN),
+                    frequencyPenalty: config.penaltyFrequency,
+                    presencePenalty: config.penaltyPresence,
+                    stopSequences: [], // upstream provides stop sequences elsewhere
+                    seed: nil,
+                    useChatTemplate: true,
+                    assistantPrefix: nil,
+                    chatStyle: .auto, // Auto-detect from model
+                    threadCount: { let (d, _) = DeviceManager.recommendedThreadCounts(reserve: 2); return d }(),
+                    batchSize: config.batchSize, // heuristic prompt batch size
+                    threadCountBatch: { let (_, b) = DeviceManager.recommendedThreadCounts(reserve: 2); return b }()
+                )
+                // Create manager with its own model instance
+                let manager = try LlamaManager(modelPath: modelPath, options: opts)
+                self.llama = manager
+                return manager
             }
+
+            func load() throws { _ = try ensureLlamaLoaded() }
+            
+            /// Create a new session with its own model instance
+            func createNewSession(options: LlamaInitOptions? = nil) throws -> LlamaManager {
+                
+                // Use provided options or default from config
+                let opts = options ?? LlamaInitOptions(
+                    contextSize: config.nCTX,
+                    maxNewTokens: config.maxTokenCount,
+                    temperature: config.temperature,
+                    topK: config.topK,
+                    topP: config.topP,
+                    repeatPenalty: config.penaltyRepeat,
+                    repeatLastN: Int(config.penaltyLastN),
+                    frequencyPenalty: config.penaltyFrequency,
+                    presencePenalty: config.penaltyPresence,
+                    stopSequences: [],
+                    seed: nil,
+                    useChatTemplate: true,
+                    assistantPrefix: nil,
+                    chatStyle: .auto,
+                    threadCount: { let (d, _) = DeviceManager.recommendedThreadCounts(reserve: 2); return d }(),
+                    batchSize: config.batchSize,
+                    threadCountBatch: { let (_, b) = DeviceManager.recommendedThreadCounts(reserve: 2); return b }()
+                )
+                
+                return try LlamaManager(modelPath: modelPath, options: opts)
+            }
+            
             
             private func middleOutMessages(messages: [Message], tokenCounter: @Sendable (_ messages: [Message]) async throws -> Int) async throws -> [Message] {
                 // Goal: Middle-out messages to fit into the available context size
@@ -169,92 +221,28 @@ extension FreeToken {
                 return prioritizedMessages
             }
             
-            private func llmSession() async throws -> LLMSession {
-                if let session = self.session {
-                    return session
-                } else {
-                    // Test for available memory, prune all other sessions if not enough memory.
-                    if self.deviceManager.availableMemoryForRequestedSize() == false {
-                        FreeToken.shared.logger("⚠️ Device memory is low, removing all resident LLM sessions to free up memory", .warning)
-                        await self.sessionsManager.removeAllSessions(but: self.sessionID)
-                    } else {
-                        FreeToken.shared.logger("🏎️ Device memory is sufficient for LLM session", .info)
-                    }
-                    
-                    // Initialize a new LLMSession
-                    let availableContextTokens = (config.nCTX - config.maxTokenCount) - Int(Double(config.nCTX) * 0.1) // 10% buffer
-                    let initTokenCount = try await self.tokenCount(for: messages, tempSession: true)
-                    
-                    if availableContextTokens - initTokenCount < 0 {
-                        // Not enough tokens to initialize full session, need to prioritize messages
-                        // Prioritize the system message first and then the last few messages to fill up context
-                        
-                        let prioritizedMessages = try await middleOutMessages(messages: messages) { messages in
-                            try await self.tokenCount(for: messages, tempSession: true)
-                        }
-                        
-                        self.session = LLMSession(model: model, messages: llmMessages(messages: prioritizedMessages))
-                        
-                        try await session!.prewarm()
-                        return session!
-                    } else {
-                        // We can initialize the session with all messages
-                        self.session = LLMSession(model: model, messages: llmMessages())
-                        try await session!.prewarm()
-                        return session!
-                    }
-                }
-            }
             
-            func tokenCount(for messages: [Message], tempSession: Bool = false) async throws -> Int {
+            func tokenCount(for messages: [Message]) async throws -> Int {
+                let l = try ensureLlamaLoaded()
                 var total = 0
-                for message in messages {
-                    if session != nil {
-                        total += await session!.tokenize(message.content) + 2
-                    } else {
-                        total += try tokenizer.tokenCount(message.content) + 2
-                    }
-                }
-                
+                for m in messages { total += (try await l.tokenize(m.content).count) + 2 }
                 return total
             }
-            
-            func tokenCount(for text: String, tempSession: Bool = false) async throws -> Int {
-                let total: Int
-                if session != nil {
-                    total = await session!.tokenize(text)
-                } else {
-                    total = try tokenizer.tokenCount(text)
-                }
-                
-                return total
+
+            func tokenCount(for text: String) async throws -> Int {
+                let l = try ensureLlamaLoaded()
+                return try await l.tokenize(text).count
             }
-            
+
             func catchUp(allThreadMessages: [Message]) async throws {
-                guard allThreadMessages.count > 0 else {
-                    FreeToken.shared.logger("⚠️ No messages in thread to catch up context", .warning)
-                    return
-                }
-                
+                guard allThreadMessages.count > 0 else { return }
                 self.messages = allThreadMessages
-                
-                if (try await llmSession().messageAwareCacheManager) != nil {
-                    // Coming from behind - a few messages were generated somewhere else (cloud or another model) and now the user wants to continue the conversation on this model in this session. It's behind and needs to be caught up.
-                    
-                    let prioritizedMessages = try await middleOutMessages(messages: allThreadMessages) { messages in
-                        try await self.tokenCount(for: messages)
-                    }
-
-                    let llmMessages = llmMessages(messages: prioritizedMessages)
-
-                    // Take the new optimized array and use:
-                    try await llmSession().messages = llmMessages
-                    
-                    FreeToken.shared.logger("🔄 Caught up session cache", .info)
-                } else {
-                    // Just add all messages
-                    try await llmSession().messages = llmMessages()
+                // Rebuild context from scratch into llama manager
+                let l = try ensureLlamaLoaded()
+                let messages = try await self.middleOutMessages(messages: self.messages) { messages in
+                    return try await self.tokenCount(for: messages)
                 }
+                try await l.updateContext(messages: messages)
             }
             
             func generate(runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
@@ -263,16 +251,15 @@ extension FreeToken {
                     Task {
                         do {
                             try await self.queue.enqueue(runLocation: runLocation) {
-                                try await self.optimizeKVCache()
-                                
-                                if self.deviceManager.isTooHot() {
-                                    throw FreeTokenError.isTooHot
-                                }
+                                if self.deviceManager.isTooHot() { throw FreeTokenError.isTooHot }
                                 self.lastRunAt = Date()
-                                let underlying = try await self.llmSession().streamResponse()
-                                for try await token in underlying {
-                                    continuation.yield(token)
+                                let l = try self.ensureLlamaLoaded()
+                                let messages = try await self.middleOutMessages(messages: self.messages) { messages in
+                                    return try await self.tokenCount(for: messages)
                                 }
+                                try await l.updateContext(messages: messages)
+                                let stream = try await l.generate()
+                                for try await chunk in stream { continuation.yield(chunk) }
                                 continuation.finish()
                             } as Void
                         } catch {
@@ -283,19 +270,18 @@ extension FreeToken {
             }
 
             func generateCompletion(text: String, runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
-                try await optimizeKVCache()
+                let message = Message(role: .user, content: text)
+                
                 return AsyncThrowingStream<String, any Error> { continuation in
                     Task {
                         do {
                             try await self.queue.enqueue(runLocation: runLocation) {
-                                if self.deviceManager.isTooHot() {
-                                    throw FreeTokenError.isTooHot
-                                }
+                                if self.deviceManager.isTooHot() { throw FreeTokenError.isTooHot }
                                 self.lastRunAt = Date()
-                                let underlying = try await self.llmSession().streamResponse(to: text)
-                                for try await token in underlying {
-                                    continuation.yield(token)
-                                }
+                                let l = try self.ensureLlamaLoaded()
+                                try await l.updateContext(messages: [message])
+                                let stream = try await l.generate()
+                                for try await chunk in stream { continuation.yield(chunk) }
                                 continuation.finish()
                             } as Void
                         } catch {
@@ -307,72 +293,8 @@ extension FreeToken {
             
             // Goal: Optimize the KV cache by removing old messages but keeping the system message and recent messages
             func optimizeKVCache() async throws {
-                if let cacheManager = try await llmSession().messageAwareCacheManager {
-                    // Typical Conversation Pattern
-                    // 1. System Message (Optional)
-                    // 2. User Message < This is initial run
-                    // 3. Assistant Message (tool call)
-                    // 4. Tool Message < This is second run
-                    // 5. Assistant Message (response to tool)
-                    // 6. User Message (follow-up) < This is third run
-                    
-                    FreeToken.shared.logger("🔄 KV Cache Optimization started - executing middle-out KV cache optimization strategy", .info)
-                    
-                    let wasOptimized = await cacheManager.optimizeMessageCache(preserveFirstMessages: 1, preserveLastMessages: 1, targetUsagePercentage: 0.6, triggerThreshold: 0.9)
-                    
-                    if wasOptimized {
-                        FreeToken.shared.logger("♻️ KV Cache Optimization: middle-out strategy completed successfully", .info)
-                    } else {
-                        FreeToken.shared.logger("⏭️ KV Cache Optimization did not change the cache state", .info)
-                    }
-                } else {
-                    // Cache management is not possible with this model type.
-                    FreeToken.shared.logger("⚠️ KV Cache Management is not available with this model type", .warning)
-                }
-            }
-            
-            func llmMessages(messages: [Message]? = nil) -> [LLMInput.Message] {
-                let processMessages: [Message]
-                
-                if let messages = messages {
-                    processMessages = messages
-                } else {
-                    // Use self.messages
-                    processMessages = self.messages
-                }
-                
-                return processMessages.map { message in
-                    let attachments = message.attachments?.compactMap { attachment -> LLMAttachment? in
-                        guard attachment.type == .image else { return nil }
-                        
-                        #if canImport(UIKit)
-                        if let image = UIImage(data: attachment.data) {
-                            return LLMAttachment.image(image)
-                        }
-                        #elseif canImport(AppKit)
-                        if let image = NSImage(data: attachment.data) {
-                            return LLMAttachment.image(image)
-                        }
-                        #endif
-                        
-                        if let inputImage = LLMInputImage(data: attachment.data) {
-                            return LLMAttachment.image(inputImage)
-                        }
-                        
-                        return nil
-                    } ?? []
-                    
-                    switch message.role {
-                    case .assistant:
-                        return LLMInput.Message.assistant(message.content, attachments: attachments)
-                    case .user:
-                        return LLMInput.Message.user(message.content, attachments: attachments)
-                    case .system:
-                        return LLMInput.Message.system(message.content)
-                    case .tool:
-                        return LLMInput.Message(role: .custom("tool"), content: message.content, attachments: attachments)
-                    }
-                }
+                // Middle-out pruning handled externally before updateContext; llama manager itself only removes/ appends.
+                return
             }
         }
         
@@ -380,7 +302,6 @@ extension FreeToken {
             // Goal: Manage multiple AI sessions, evacuation & overall memory state
             
             private let downloadManager: ModelDownloadManager
-            private var model: LLMSession.LocalModel?
             private var modelPath: String? = nil
             private var sessions: [String: AISessionManager] = [:]
             private let queue = AITaskQueue.shared
@@ -389,9 +310,9 @@ extension FreeToken {
             private let deviceManager: DeviceManager
             private let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
             private let modelTypes: Codings.AvailableModelTypesResponse
-            private var tokenizer: LocalLLMTokenizer? = nil
             private var cachedDownloadState: FreeToken.SessionState? = nil
             private var memoryLevel: MemoryPressureLevel = .normal
+            private var sessionDates: [String: Date] = [:] // stable per-session date for message prep
             
             init(config: AIModelConfiguration, modelTypes: Codings.AvailableModelTypesResponse, clientConfig: Codings.ShowClientConfig, deviceManager: DeviceManager, promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
                 self.config = config
@@ -400,13 +321,8 @@ extension FreeToken {
                 self.promptTemplateConfig = promptTemplateConfig
                 self.modelTypes = modelTypes
                 
-                if let downloadOptions = modelTypes.mlx {
-                    // If it's MLX, use MLX downloader
-                    downloadManager = ModelDownloadManager.mlx(modelRepo: downloadOptions.repo)
-                } else {
-                    let downloadOptions = modelTypes.llamaCpp
-                    downloadManager = ModelDownloadManager.llama(modelRepo: downloadOptions.repo, modelFileName: downloadOptions.modelFileName!, mmprojFileName: downloadOptions.mmproj)
-                }
+                let downloadOptions = modelTypes.llamaCpp // MLX dropped
+                downloadManager = ModelDownloadManager.llama(modelRepo: downloadOptions.repo, modelFileName: downloadOptions.modelFileName!, mmprojFileName: downloadOptions.mmproj)
                 
                 MemoryPressureManager.shared.register(minLevel: .normal) { pressureLevel in
                     switch pressureLevel {
@@ -495,8 +411,7 @@ extension FreeToken {
             
             func reset() async {
                 FreeToken.shared.logger("🔄 Resetting AI sessions manager...", .info)
-                self.model = nil
-                self.tokenizer = nil
+                self.modelPath = nil
                 removeAllSessions()
             }
             
@@ -525,30 +440,10 @@ extension FreeToken {
                     .appendingPathComponent("Models")
 #endif
 
-                if let downloadOptions = modelTypes.mlx {
-                    let mlxModel = modelBaseURL.appendingPathComponent(downloadOptions.repo.replacingOccurrences(of: "/", with: "_"))
-                    model = LLMSession.LocalModel.mlx(url: mlxModel, parameter: .init(
-                        maxTokens: config.maxTokenCount, temperature: config.temperature, topP: config.topP, repetitionPenalty: config.penaltyRepeat, repetitionContextSize: Int(config.penaltyLastN), options: .init(verbose: true)))
-                    tokenizer = MLXTokenizer(modelURL: mlxModel)
-                } else {
-                    // Use LlamaCpp by default
-                    let downloadOptions = modelTypes.llamaCpp
-                    let modelURL = modelBaseURL.appendingPathComponent(downloadOptions.repo.replacingOccurrences(of: "/", with: "_"))
-                    let modelFileURL = modelURL.appendingPathComponent(downloadOptions.modelFileName!)
-                    let mmprojURL: URL? = downloadOptions.mmproj != nil ? modelURL.appendingPathComponent(downloadOptions.mmproj!) : nil
-
-                    model = LLMSession.LocalModel.llama(url: modelFileURL, mmprojURL: mmprojURL, parameter: .init(
-                        context: config.nCTX,
-                        batch: config.batchSize,
-                        temperature: config.temperature,
-                        topK: config.topK,
-                        topP: config.topP,
-                        penaltyLastN: Int(config.penaltyLastN),
-                        penaltyRepeat: config.penaltyRepeat,
-                        options: .init(verbose: true)
-                    ))
-                    tokenizer = LlamaTokenizer(modelURL: modelFileURL)
-                }
+                let downloadOptions = modelTypes.llamaCpp
+                let modelURL = modelBaseURL.appendingPathComponent(downloadOptions.repo.replacingOccurrences(of: "/", with: "_"))
+                let modelFileURL = modelURL.appendingPathComponent(downloadOptions.modelFileName!)
+                self.modelPath = modelFileURL.path
             }
             
             func loadSession(for id: String, with messages: [Message] = [], isTemporary: Bool = false, runConfig: AIRunConfig? = nil) async throws -> AISessionManager {
@@ -556,12 +451,10 @@ extension FreeToken {
                     throw FreeTokenError.aiModelNotDownloaded
                 }
                 
-                if model == nil {
+                if modelPath == nil {
                     try await loadModel()
                 }
-                
-                let model = self.model!
-                let tokenizer = self.tokenizer!
+                let modelPath = self.modelPath!
                 
                 // Convert RunConfig to AIModelConfiguration if provided
                 var config: AIModelConfiguration
@@ -579,22 +472,28 @@ extension FreeToken {
                     config = self.config
                 }
                 
-                let preparedMessages = try MessagePrep(
-                    messages: messages,
-                    promptTemplateConfig: self.promptTemplateConfig
-                ).prepareMessages()
+                // Stable date for this session id
+                let stableDate = sessionDates[id] ?? Date()
+                if sessionDates[id] == nil { sessionDates[id] = stableDate }
                 
+                // Existing session check
                 if let existingSession = self.sessions[id], existingSession.config.equals(config) {
                     // Session already exists, no need to load again
-                    try await self.catchUpFor(id: id, allThreadMessages: preparedMessages)
+                    try await self.catchUpFor(id: id, allThreadMessages: messages)
                     return existingSession
                 }
                 
-                let session = AISessionManager(messages: preparedMessages, model: model, tokenizer: tokenizer, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
+                let preparedMessages = try MessagePrep(
+                    messages: messages,
+                    promptTemplateConfig: self.promptTemplateConfig,
+                    fixedDate: stableDate
+                ).prepareMessages()
+                
+                let session = AISessionManager(messages: preparedMessages, modelPath: modelPath, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
                 if isTemporary == false {
                     self.sessions[id] = session
                 }
-                try await session.load()
+                try session.load()
                 FreeToken.shared.logger("✅ \(isTemporary ? "Temporary " : "")Session loaded and pre-warmed for ID: \(id)", .info)
                 return session
             }
@@ -638,9 +537,12 @@ extension FreeToken {
             
             func catchUpFor(id: String, allThreadMessages: [Message]) async throws {
                 // Prepared Messages
+                let stableDate = sessionDates[id] ?? Date()
+                if sessionDates[id] == nil { sessionDates[id] = stableDate }
                 let preparedMessages = try MessagePrep(
                     messages: allThreadMessages,
-                    promptTemplateConfig: self.promptTemplateConfig
+                    promptTemplateConfig: self.promptTemplateConfig,
+                    fixedDate: stableDate
                 ).prepareMessages()
                 
                 // Catch up the session with all messages
@@ -674,12 +576,8 @@ extension FreeToken {
                 
                 let sessionsManager = self
                 
-                let preparedMessages = try MessagePrep(
-                    messages: messages,
-                    promptTemplateConfig: self.promptTemplateConfig
-                ).prepareMessages()
-                
-                let session = try await sessionsManager.loadSession(for: id, with: preparedMessages, isTemporary: isTemporary, runConfig: runConfig)
+                // Delegate date stability to loadSession (which uses sessionDates)
+                let session = try await sessionsManager.loadSession(for: id, with: messages, isTemporary: isTemporary, runConfig: runConfig)
                     
                 return try await session.generate(runLocation: runLocation)
             }
@@ -690,21 +588,28 @@ extension FreeToken {
                 
                 let session = try await sessionsManager.loadSession(for: "completion-session", isTemporary: true)
                 
-                try await session.load()
+                try session.load()
                                     
                 return try await session.generateCompletion(text: text, runLocation: .localRun)
             }
             
             func tokenCountFor(id: String? = nil, messages: [Message]) async throws -> Int {
-                if tokenizer == nil {
-                    try await self.loadModel()
-                }
-                
+                if modelPath == nil { try await loadModel() }
+                guard let path = modelPath else { return 0 }
+                // Create a lightweight ephemeral llama manager for counting (could be optimized to reuse).
+                let (decodeThreads, batchThreads) = DeviceManager.recommendedThreadCounts(reserve: 2)
+                let opts = LlamaInitOptions(
+                    contextSize: config.nCTX,
+                    maxSequences: 1,  // Only need 1 sequence since each session has its own model
+                    maxNewTokens: config.maxTokenCount,
+                    chatStyle: .auto,
+                    threadCount: decodeThreads,
+                    batchSize: 512,
+                    threadCountBatch: batchThreads
+                )
+                let temp = try LlamaManager(modelPath: path, options: opts)
                 var total = 0
-                for message in messages {
-                    total += try self.tokenizer!.tokenCount(message.content) + 2
-                }
-                
+                for m in messages { total += (try await temp.tokenize(m.content).count) + 2 }
                 return total
             }
         }
@@ -870,7 +775,6 @@ extension FreeToken {
             
             let session = try await self.stateManager.loadSession(for: runIdentifier, with: messages, isTemporary: noContextCache, runConfig: aiRunConfig)
             
-            // Count input tokens using the tokenizer if available
             var inputTokenCount = 0
             
             inputTokenCount = try await session.tokenCount(for: messages)

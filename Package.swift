@@ -16,20 +16,35 @@ let package = Package(
     ],
     dependencies: [
         .package(url: "https://github.com/huggingface/swift-transformers", from: "0.1.20"),
-        .package(url: "https://github.com/FreeTokenAI/LocalLLMClient", revision: "6d9a1ee"),
         .package(url: "https://github.com/LaunchDarkly/swift-eventsource.git", from: "3.3.0")
     ],
     targets: [
         .target(
+            name: "FreeTokenCBridge",
+            dependencies: ["LlamaFramework"], // Keep dependency for linking
+            path: "Sources/FreeTokenCBridge",
+            publicHeadersPath: "include",
+            cSettings: [
+                .headerSearchPath("include"),
+                .headerSearchPath("include/LlamaHeaders"),
+                .define("SWIFT_PACKAGE"),
+                .define("LLAMA_HEADERS_DIRECT")
+            ]
+        ),
+        .target(
             name: "FreeToken",
             dependencies: [
                 .product(name: "Transformers", package: "swift-transformers"),
-                .product(name: "LocalLLMClient", package: "LocalLLMClient"),
-                .product(name: "LocalLLMClientLlama", package: "LocalLLMClient"),
-                .product(name: "LocalLLMClientMLX", package: "LocalLLMClient"),
-                .product(name: "LDSwiftEventSource", package: "swift-eventsource")
+                .product(name: "LDSwiftEventSource", package: "swift-eventsource"),
+                "LlamaFramework",
+                "FreeTokenCBridge"
             ],
             path: "Sources/FreeToken"
+        ),
+        .binaryTarget(
+            name: "LlamaFramework",
+            url: "https://github.com/ggml-org/llama.cpp/releases/download/b6265/llama-b6265-xcframework.zip",
+            checksum: "4378b890f78931c7ecdedae3f9f13f7ab540fcff2370d274f42290c200f5c10e"
         ),
         .testTarget(
             name: "FreeTokenTests",

@@ -260,7 +260,7 @@ final class FreeTokenTests: XCTestCase {
                 
                 _ = await FreeToken.shared.prewarmAIForMessageThread(messageThreadID: messageThread.id)
                 
-                await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
+                await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, aiRunConfig: .init(.init(contentWindowSize: 4096)), success: { resultMessage in
                     let finalMessage = await messageStream.getMessage()
                     XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
                     expectation.fulfill()
@@ -522,7 +522,7 @@ final class FreeTokenTests: XCTestCase {
                 
                 await FreeToken.shared.createMessageThread { messageThread in
                     await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
-                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .automatic, success: { resultMessage in
                             print("✅ Multi-modal response: \(resultMessage.content)")
                             XCTAssertTrue(resultMessage.content.count > 0, "Expected non-empty response")
                             XCTAssertTrue(resultMessage.content.contains("Nyan"), "Expected response to mention 'Nyan Cat'")

@@ -184,8 +184,20 @@ extension FreeToken {
             success: @escaping @Sendable (_ context: any WorkflowContext) async -> Void,
             failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
         ) async -> Void {
+            // Check if the last message contains images (vision capability required)
+            let lastMessageHasImages = context.messageThread?.messages.last?.attachments?.contains { $0.type == .image } ?? false
+            
             switch runLocation {
             case .automatic:
+                // If last message has images, force cloud run (local models don't support vision)
+                if lastMessageHasImages {
+                    FreeToken.shared.logger("📸 Last message contains images, forcing cloud run (vision not supported locally)", .info)
+                    context.cloudRun = true
+                    await chatStatusStream?(nil, .starting)
+                    await success(context)
+                    return
+                }
+                
                 // Automatically determine if this should be a cloud run or not
                 do {
                     context.cloudRun = try await shouldCloudRun()
@@ -200,6 +212,14 @@ extension FreeToken {
                 context.cloudRun = true
                 await success(context)
             case .localRun:
+                // Check for vision requirement in local run
+                if lastMessageHasImages {
+                    FreeToken.shared.logger("❌ Local run requested but message contains images - vision not supported on local models", .error)
+                    await chatStatusStream?(nil, .failed)
+                    await failure(FreeTokenError.visionNotSupportedLocally, context)
+                    return
+                }
+                
                 FreeToken.shared.logger("🧠 Force local run requested", .info)
                 context.cloudRun = false
                 
