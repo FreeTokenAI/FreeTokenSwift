@@ -149,10 +149,13 @@ extension FreeToken {
 
                 if existingSession.isDownloading {
                     FreeToken.shared.logger("🔄 Reattaching to in‑progress model download session \(modelRepo)", .info)
-                    existingSession.reattachHandlers(progress: progress) { result in
+                    existingSession.reattachHandlers(progress: progress) { [weak self, modelRepo] result in
                         switch result {
                         case .success:
                             FreeToken.shared.logger("✅ All model files downloaded successfully", .info)
+                            // Expire the session to ensure fresh downloads if model files change
+                            self?.downloadManager.removeSession(id: modelRepo)
+                            FreeToken.shared.logger("🧹 Expired download session for \(modelRepo) to ensure fresh downloads on next request", .debug)
                             Task { await success(destination) }
                         case .failure(let error):
                             FreeToken.shared.logger("❌ Failed to download model files: \(error.localizedDescription)", .error)
@@ -164,10 +167,13 @@ extension FreeToken {
 
                 // Partially completed (some pending/failed). Start only remaining downloads without rebuilding session
                 FreeToken.shared.logger("🚀 Resuming partial model session (will download missing files) for repo \(modelRepo)", .info)
-                existingSession.reattachHandlers(progress: progress) { result in
+                existingSession.reattachHandlers(progress: progress) { [weak self, modelRepo] result in
                     switch result {
                     case .success:
                         FreeToken.shared.logger("✅ All model files downloaded successfully (resume)", .info)
+                        // Expire the session to ensure fresh downloads if model files change
+                        self?.downloadManager.removeSession(id: modelRepo)
+                        FreeToken.shared.logger("🧹 Expired download session for \(modelRepo) to ensure fresh downloads on next request", .debug)
                         Task { await success(destination) }
                     case .failure(let error):
                         FreeToken.shared.logger("❌ Failed to download model files (resume): \(error.localizedDescription)", .error)
@@ -185,10 +191,13 @@ extension FreeToken {
                 .destinationDirectory(destinationRelative)
                 .addDownloads(modelFiles)
                 .progress(progress)
-                .completion({ result in
+                .completion({ [weak self, modelRepo] result in
                     switch result {
                     case .success:
                         FreeToken.shared.logger("✅ All model files downloaded successfully", .info)
+                        // Expire the session to ensure fresh downloads if model files change
+                        self?.downloadManager.removeSession(id: modelRepo)
+                        FreeToken.shared.logger("🧹 Expired download session for \(modelRepo) to ensure fresh downloads on next request", .debug)
                         Task { await success(destination) }
                     case .failure(let error):
                         FreeToken.shared.logger("❌ Failed to download model files: \(error.localizedDescription)", .error)
