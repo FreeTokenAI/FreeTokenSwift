@@ -15,6 +15,15 @@ extension FreeToken {
                 return sufficientVRAM && sufficientMetalSupport
             }
         }
+        
+        /// Highlander mode: Only one AI session at a time (iOS only)
+        var isHighlanderMode: Bool {
+            #if os(iOS)
+            return true
+            #else
+            return false
+            #endif
+        }
                 
         private let sufficientVRAM: Bool
         private let sufficientMetalSupport: Bool

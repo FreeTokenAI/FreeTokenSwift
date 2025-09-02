@@ -257,7 +257,6 @@ extension FreeToken {
             private var memoryLevel: MemoryPressureLevel = .normal
             private var sessionDates: [String: Date] = [:] // stable per-session date for message prep
             private var tokenizer: LlamaTokenizer? = nil
-            private var highlanderMode: Bool
             // Integrity verification state (in-memory only)
             private var integrityResult: ModelIntegrityChecker.IntegrityResult = .unverified
             private var validatedFileSizes: [String: Int64] = [:]
@@ -278,11 +277,6 @@ extension FreeToken {
                 let gpuStats = self.deviceManager.getGPUMemoryStats()
                 FreeToken.shared.logger("GPU memory: \(gpuStats.current / 1024 / 1024) MB used / \(gpuStats.max / 1024 / 1024) MB available (\(String(format: "%.1f", gpuStats.percentage * 100))%)", .info)
                 
-                #if os(iOS)
-                self.highlanderMode = true
-                #else
-                self.highlanderMode = false
-                #endif
                 let dl = modelTypes.llamaCpp
                 self.downloadInspector = ModelDownloadInspector(repo: dl.repo, modelFileName: dl.modelFileName, mmprojFileName: dl.mmproj)
             }
@@ -385,7 +379,7 @@ extension FreeToken {
                     sessionDates[id] = stableDate
                 }
                 
-                if highlanderMode {
+                if deviceManager.isHighlanderMode {
                     // Only one session at a time - reuse the existing session by resetting it.
                     // Disreard the session ID and just use the first session.
                     
@@ -523,7 +517,7 @@ extension FreeToken {
             func catchUpFor(id: String, allThreadMessages: [Message]) async throws {
                 // Prepared Messages
                 var id = id
-                if highlanderMode {
+                if deviceManager.isHighlanderMode {
                     id = self.sessions.first!.key
                 }
                 
@@ -555,7 +549,7 @@ extension FreeToken {
             }
             
             func sessionExists(for id: String) -> Bool {
-                if highlanderMode {
+                if deviceManager.isHighlanderMode {
                     return self.sessions.count > 0
                 } else {
                     return self.sessions[id] != nil
@@ -570,7 +564,7 @@ extension FreeToken {
                 
                 try await loadSession(for: id, with: messages/*, isTemporary: isTemporary*/, runConfig: runConfig)
                 
-                if highlanderMode {
+                if deviceManager.isHighlanderMode {
                     let session = self.sessions.first!.value
                     return try await session.generate(runLocation: runLocation)
                 } else {
@@ -656,6 +650,9 @@ extension FreeToken {
         func loadModel() async -> Result<AIModelLoadingState, FreeTokenError> {
             do {
                 return try await AITaskQueue.shared.enqueue(name: "loadModel", runLocation: .localRun) {
+                    if self.deviceManager.isHighlanderMode {
+                        await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
+                    }
                     try await self.stateManager.getModelDetails()
                     
                     return .success(.loaded)
@@ -668,22 +665,22 @@ extension FreeToken {
         
         func loadSession(for id: String, with messages: [Message] = [], runConfig: AIRunConfig?) async throws {
             try await AITaskQueue.shared.enqueue(name: "loadSession(\(id))", runLocation: .localRun) {
+                if self.deviceManager.isHighlanderMode {
+                    await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
+                }
                 try await self.stateManager.loadSession(for: id, with: messages, isTemporary: false)
             }
         }
         
         func unloadModel() async {
-            do {
-                try await AITaskQueue.shared.enqueue(name: "unloadModel", runLocation: .localRun) {
-                    await self.stateManager.removeAllSessions()
-                }
-            } catch {
-                FreeToken.shared.logger("🔴 Error unloading model: \(error.localizedDescription)", .error)
-            }
+            await self.stateManager.removeAllSessions()
         }
         
         func prewarmForId(id: String) async throws {
             try await AITaskQueue.shared.enqueue(name: "prewarmForId(\(id))", runLocation: .localRun) {
+                if self.deviceManager.isHighlanderMode {
+                    await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
+                }
                 try await self.stateManager.prewarmForID(id: id)
             }
         }
@@ -704,12 +701,18 @@ extension FreeToken {
         
         func tokensCount(messages: [Message]) async throws -> Int {
             return try await AITaskQueue.shared.enqueue(name: "tokensCount", runLocation: .localRun) {
+                if self.deviceManager.isHighlanderMode {
+                    await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
+                }
                 return try await self.stateManager.tokenCountFor(messages: messages)
             }
         }
         
         func sendTextToAI(text: String, runLocation: RunLocation = .automatic, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
             return try await AITaskQueue.shared.enqueue(name: "sendTextToAI", runLocation: runLocation) {
+                if self.deviceManager.isHighlanderMode {
+                    await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
+                }
                 let aiResults = AIResults()
                 
                 if let maxTokens = aiRunConfig?.maxGenerationTokens {
@@ -789,6 +792,9 @@ extension FreeToken {
             }
             
             return try await AITaskQueue.shared.enqueue(name: "sendMessagesToAI(\(runIdentifier))", runLocation: runLocation) {
+                if self.deviceManager.isHighlanderMode {
+                    await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
+                }
                 let aiResults = AIResults()
                 
                 if let maxTokens = aiRunConfig?.maxGenerationTokens {

@@ -34,7 +34,7 @@ public class FreeToken: @unchecked Sendable {
 #endif
     let httpClient = HTTPClient()
     let messagesManager: MessagesManager
-    let aiModelsManager: AIModelsManager = AIModelsManager()
+    let aiModelsManager: AIModelsManager = AIModelsManager.shared
     let toolDefinitionsManager = ToolDefinitionsManager()
     // Captured device model details (identifier like iPhone16,1 or Mac15,7, plus a friendly name when available)
     public let deviceModelIdentifier: String

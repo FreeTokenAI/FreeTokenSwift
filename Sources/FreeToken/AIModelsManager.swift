@@ -8,6 +8,8 @@ import Foundation
 
 extension FreeToken {
     class AIModelsManager: @unchecked Sendable {
+        static let shared = AIModelsManager()
+        
         private var aiModelManagers: [AIModelManagerWrapper] = []
         var defaultManager: AIModelManager? {
             get {
@@ -33,7 +35,7 @@ extension FreeToken {
             let clientVersion: String
         }
         
-        init() {
+        private init() {
             MemoryPressureManager.shared.register(minLevel: .warning) { level in
                 switch level {
                 case .warning:
