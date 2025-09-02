@@ -89,7 +89,42 @@ static struct llama_sampler* create_sampler_chain(void* model, freetoken_samplin
     
     // Standard sampling chain (when mirostat is disabled)
     
-    // 1. Repetition penalties (applied first to logits)
+    // 1. DRY sampler (most effective anti-repetition, applied first)
+    if (config.dry_multiplier > 0.0f) {
+        // Get vocab from model for DRY sampler
+        const struct llama_vocab* vocab = model ? llama_model_get_vocab(model) : NULL;
+        
+        // Common sequence breakers (can be customized later)
+        const char* seq_breakers[] = {"\n", ".", "!", "?", ",", ";", ":", " ", "\t", NULL};
+        int num_breakers = 9;
+        
+        llama_sampler_chain_add(chain,
+            llama_sampler_init_dry(
+                vocab,
+                2048,  // n_ctx_train (using reasonable default)
+                config.dry_multiplier,
+                config.dry_base > 0 ? config.dry_base : 1.75f,
+                config.dry_allowed_length > 0 ? config.dry_allowed_length : 2,
+                config.dry_penalty_last_n > 0 ? config.dry_penalty_last_n : 256,
+                seq_breakers,
+                num_breakers
+            )
+        );
+    }
+    
+    // 2. XTC sampler (additional repetition control)
+    if (config.xtc_probability > 0.0f) {
+        llama_sampler_chain_add(chain,
+            llama_sampler_init_xtc(
+                config.xtc_probability,
+                config.xtc_threshold > 0 ? config.xtc_threshold : 0.5f,
+                1,  // min_keep
+                seed
+            )
+        );
+    }
+    
+    // 3. Traditional repetition penalties (still useful as backup)
     if (config.repeat_penalty != 1.0f || 
         config.frequency_penalty != 0.0f || 
         config.presence_penalty != 0.0f) {
@@ -104,42 +139,42 @@ static struct llama_sampler* create_sampler_chain(void* model, freetoken_samplin
         );
     }
     
-    // 2. Top-K sampling
+    // 4. Top-K sampling
     if (config.top_k > 0 && config.top_k < 40000) {  // Sanity check
         llama_sampler_chain_add(chain, 
             llama_sampler_init_top_k(config.top_k)
         );
     }
     
-    // 3. Typical-P sampling (alternative to top-p)
+    // 5. Typical-P sampling (alternative to top-p)
     if (config.typical_p > 0.0f && config.typical_p < 1.0f) {
         llama_sampler_chain_add(chain,
             llama_sampler_init_typical(config.typical_p, 1)  // min_keep=1
         );
     }
     
-    // 4. Top-P (nucleus) sampling  
+    // 6. Top-P (nucleus) sampling  
     if (config.top_p > 0.0f && config.top_p < 1.0f) {
         llama_sampler_chain_add(chain,
             llama_sampler_init_top_p(config.top_p, 1)  // min_keep=1
         );
     }
     
-    // 5. Min-P sampling
+    // 7. Min-P sampling
     if (config.min_p > 0.0f) {
         llama_sampler_chain_add(chain,
             llama_sampler_init_min_p(config.min_p, 1)  // min_keep=1
         );
     }
     
-    // 6. Temperature
+    // 8. Temperature
     if (config.temperature > 0.0f) {
         llama_sampler_chain_add(chain,
             llama_sampler_init_temp(config.temperature)
         );
     }
     
-    // 7. Final sampling from distribution
+    // 9. Final sampling from distribution
     llama_sampler_chain_add(chain,
         llama_sampler_init_dist(seed)
     );

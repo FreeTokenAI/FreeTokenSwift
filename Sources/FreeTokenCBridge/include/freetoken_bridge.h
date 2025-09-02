@@ -37,6 +37,14 @@ typedef struct {
     int32_t mirostat;      // 0=disabled, 1=v1, 2=v2
     float mirostat_tau;    // Target entropy
     float mirostat_eta;    // Learning rate
+    // DRY sampler parameters
+    float dry_multiplier;  // DRY penalty strength (0.0 = disabled)
+    float dry_base;        // DRY base value
+    int32_t dry_allowed_length;  // How many tokens can repeat
+    int32_t dry_penalty_last_n;  // Context window for DRY
+    // XTC sampler parameters  
+    float xtc_probability; // XTC probability threshold (0.0 = disabled)
+    float xtc_threshold;   // XTC temperature threshold
     uint32_t seed;
     bool use_seed;
 } freetoken_sampling_config;

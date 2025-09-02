@@ -137,13 +137,13 @@ extension FreeToken {
             }
             
             // If the model isn't downloaded, just move on.
-            if await context.aiModelManager?.stateManager.getDownloadState() != .downloaded {
+            if await context.aiModelManager?.getDownloadState() != .downloaded {
                 await success(context)
                 return
             }
             
             do {
-                _ = try await context.aiModelManager?.stateManager.loadSession(for: context.runIdentifier, with: context.messageThread!.messages, runConfig: context.aiRunConfig)
+                _ = try await context.aiModelManager?.loadSession(for: context.runIdentifier, with: context.messageThread!.messages, runConfig: context.aiRunConfig)
             } catch {
                 if context.runLocation == .localRun {
                     FreeToken.shared.logger("🔴 Failed to load AI model for local run: \(error)", .error)
@@ -231,7 +231,7 @@ extension FreeToken {
                 }
                 
                 // Check if AI model is downloaded
-                if await aiModelManager?.stateManager.getDownloadState() != .downloaded {
+                if await aiModelManager?.getDownloadState() != .downloaded {
                     await chatStatusStream?(nil, .failed)
                     await failure(FreeTokenError.aiModelNotDownloaded, context)
                     return
@@ -259,7 +259,7 @@ extension FreeToken {
             // Check device capabilities first
             if deviceManager?.isAICapable == true {
                 // Device is AI capable, check model state
-                if await aiModelManager?.stateManager.getDownloadState() != .downloaded {
+                if await aiModelManager?.getDownloadState() != .downloaded {
                     // Model not downloaded - use cloud for automatic mode
                     FreeToken.shared.logger("🔽 Model not downloaded, running in cloud", .info)
                     return true

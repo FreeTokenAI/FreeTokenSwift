@@ -9,10 +9,12 @@
 import Foundation
 import llama
 
-typealias LlamaToken = llama_token
-typealias LlamaPos = llama_pos
+nonisolated(unsafe) private var isLlamaInitialized = false
 
 extension FreeToken {
+
+    typealias LlamaToken = llama_token
+    typealias LlamaPos = llama_pos
     
     /// Wrapper for basic llama.cpp operations
     enum LlamaAPI {
@@ -20,10 +22,13 @@ extension FreeToken {
         // MARK: - Backend Management
         
         static func backendInit() {
+            if isLlamaInitialized { return }
             llama_backend_init()
+            isLlamaInitialized = true
         }
         
         static func backendFree() {
+            isLlamaInitialized = false
             llama_backend_free()
         }
         

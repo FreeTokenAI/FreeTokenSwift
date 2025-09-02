@@ -31,7 +31,7 @@ extension FreeToken {
         private let clientVersion: String
         private var generationTask: Task<Void, Error>? = nil
         
-        let stateManager: AISessionsManager
+        private let stateManager: AISessionsManager
         
         
         
@@ -87,9 +87,8 @@ extension FreeToken {
         
         class AISessionManager: @unchecked Sendable {
             // Simplified: Uses internal FreeToken.LlamaManager instead of external LLMSession.
-            var llama: LlamaManager? = nil
+            var llama: LlamaManager
             let config: AIModelConfiguration
-            let modelPath: String
             let deviceManager: DeviceManager
             let queue: AITaskQueue
             let sessionsManager: AISessionsManager
@@ -97,27 +96,17 @@ extension FreeToken {
             var messages: [Message]
             var lastRunAt: Date? = nil
 
-            init(messages: [Message], modelPath: String, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) {
+            init(messages: [Message], modelPath: String, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) throws {
                 self.messages = messages
                 self.config = config
-                self.modelPath = modelPath
                 self.deviceManager = deviceManager
                 self.queue = queue
                 self.sessionsManager = sessionsManager
                 self.sessionID = sessionID
-            }
-
-            
-            private func ensureLlamaLoaded() throws -> LlamaManager {
-                if let l = llama { return l }
                 
-                // Each session loads its own model instance for complete isolation
-                FreeTokenLogger.shared.log("Loading isolated model instance for session \(sessionID)", level: .info)
-                
-                // Map AIModelConfiguration to LlamaInitOptions
-                let opts = LlamaInitOptions(
+                let options = LlamaInitOptions(
                     contextSize: config.nCTX,
-                    maxSequences: 1,  // Only need 1 sequence since each session has its own model
+                    maxSequences: 1,  // Default to 4 parallel sequences
                     maxNewTokens: config.maxTokenCount,
                     temperature: config.temperature,
                     topK: config.topK,
@@ -126,51 +115,21 @@ extension FreeToken {
                     repeatLastN: Int(config.penaltyLastN),
                     frequencyPenalty: config.penaltyFrequency,
                     presencePenalty: config.penaltyPresence,
-                    stopSequences: [], // upstream provides stop sequences elsewhere
-                    seed: nil,
-                    useChatTemplate: true,
-                    assistantPrefix: nil,
-                    chatStyle: .auto, // Auto-detect from model
-                    threadCount: { let (d, _) = DeviceManager.recommendedThreadCounts(reserve: 2); return d }(),
-                    batchSize: config.batchSize, // heuristic prompt batch size
-                    threadCountBatch: { let (_, b) = DeviceManager.recommendedThreadCounts(reserve: 2); return b }()
-                )
-                // Create manager with its own model instance
-                let manager = try LlamaManager(modelPath: modelPath, options: opts)
-                self.llama = manager
-                return manager
-            }
-
-            func load() throws { _ = try ensureLlamaLoaded() }
-            
-            /// Create a new session with its own model instance
-            func createNewSession(options: LlamaInitOptions? = nil) throws -> LlamaManager {
-                
-                // Use provided options or default from config
-                let opts = options ?? LlamaInitOptions(
-                    contextSize: config.nCTX,
-                    maxNewTokens: config.maxTokenCount,
-                    temperature: config.temperature,
-                    topK: config.topK,
-                    topP: config.topP,
-                    repeatPenalty: config.penaltyRepeat,
-                    repeatLastN: Int(config.penaltyLastN),
-                    frequencyPenalty: config.penaltyFrequency,
-                    presencePenalty: config.penaltyPresence,
+                    dryMultiplier: config.dryMultiplier,
+                    dryBase: config.dryBase,
+                    dryAllowedLength: Int(config.dryAllowedLength),
+                    dryPenaltyLastN: Int(config.dryPenaltyLastN),
+                    xtcProbability: config.xtcProbability,
+                    xtcThreshold: config.xtcThreshold,
                     stopSequences: [],
-                    seed: nil,
-                    useChatTemplate: true,
-                    assistantPrefix: nil,
-                    chatStyle: .auto,
-                    threadCount: { let (d, _) = DeviceManager.recommendedThreadCounts(reserve: 2); return d }(),
+                    threadCount: DeviceManager.recommendedThreadCounts(reserve: 2).decode,
                     batchSize: config.batchSize,
-                    threadCountBatch: { let (_, b) = DeviceManager.recommendedThreadCounts(reserve: 2); return b }()
+                    threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
                 )
                 
-                return try LlamaManager(modelPath: modelPath, options: opts)
+                self.llama = try LlamaManager(modelPath: modelPath, options: options)
             }
-            
-            
+
             private func middleOutMessages(messages: [Message], tokenCounter: @Sendable (_ messages: [Message]) async throws -> Int) async throws -> [Message] {
                 // Goal: Middle-out messages to fit into the available context size
                 var availableTokens = (config.nCTX - config.maxTokenCount) - Int(Double(config.nCTX) * 0.1) // 10% buffer
@@ -223,78 +182,62 @@ extension FreeToken {
             
             
             func tokenCount(for messages: [Message]) async throws -> Int {
-                let l = try ensureLlamaLoaded()
                 var total = 0
-                for m in messages { total += (try await l.tokenize(m.content).count) + 2 }
+                for m in messages { total += (try await llama.tokenize(m.content).count) + 2 }
                 return total
             }
 
             func tokenCount(for text: String) async throws -> Int {
-                let l = try ensureLlamaLoaded()
-                return try await l.tokenize(text).count
+                return try await llama.tokenize(text).count
             }
 
             func catchUp(allThreadMessages: [Message]) async throws {
                 guard allThreadMessages.count > 0 else { return }
                 self.messages = allThreadMessages
                 // Rebuild context from scratch into llama manager
-                let l = try ensureLlamaLoaded()
                 let messages = try await self.middleOutMessages(messages: self.messages) { messages in
                     return try await self.tokenCount(for: messages)
                 }
-                try await l.updateContext(messages: messages)
+                try await llama.updateContext(messages: messages)
             }
             
             func generate(runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
                 // We return a stream whose production is serialized by the queue for its entire lifetime.
-                return AsyncThrowingStream<String, any Error> { continuation in
-                    Task {
-                        do {
-                            try await self.queue.enqueue(runLocation: runLocation) {
-                                if self.deviceManager.isTooHot() { throw FreeTokenError.isTooHot }
-                                self.lastRunAt = Date()
-                                let l = try self.ensureLlamaLoaded()
-                                let messages = try await self.middleOutMessages(messages: self.messages) { messages in
-                                    return try await self.tokenCount(for: messages)
-                                }
-                                try await l.updateContext(messages: messages)
-                                let stream = try await l.generate()
-                                for try await chunk in stream { continuation.yield(chunk) }
-                                continuation.finish()
-                            } as Void
-                        } catch {
-                            continuation.finish(throwing: error)
-                        }
-                    }
+                // Log GPU memory remaining
+                let gpuStats = self.deviceManager.getGPUMemoryStats()
+                FreeToken.shared.logger("🚀 GPU memory: \(gpuStats.current / 1024 / 1024) MB used / \(gpuStats.max / 1024 / 1024) MB available (\(String(format: "%.1f", gpuStats.percentage * 100))%)", .info)
+                
+                if self.deviceManager.isTooHot() {
+                    throw FreeTokenError.isTooHot
                 }
+                self.lastRunAt = Date()
+                
+                let messages = try await self.middleOutMessages(messages: self.messages) { messages in
+                    return try await self.tokenCount(for: messages)
+                }
+                
+                try await self.llama.updateContext(messages: messages)
+                return try await self.llama.generate()
             }
 
             func generateCompletion(text: String, runLocation: RunLocation) async throws -> AsyncThrowingStream<String, any Error> {
                 let message = Message(role: .user, content: text)
                 
-                return AsyncThrowingStream<String, any Error> { continuation in
-                    Task {
-                        do {
-                            try await self.queue.enqueue(runLocation: runLocation) {
-                                if self.deviceManager.isTooHot() { throw FreeTokenError.isTooHot }
-                                self.lastRunAt = Date()
-                                let l = try self.ensureLlamaLoaded()
-                                try await l.updateContext(messages: [message])
-                                let stream = try await l.generate()
-                                for try await chunk in stream { continuation.yield(chunk) }
-                                continuation.finish()
-                            } as Void
-                        } catch {
-                            continuation.finish(throwing: error)
-                        }
-                    }
+                let gpuStats = self.deviceManager.getGPUMemoryStats()
+                FreeToken.shared.logger("🚀 GPU memory: \(gpuStats.current / 1024 / 1024) MB used / \(gpuStats.max / 1024 / 1024) MB available (\(String(format: "%.1f", gpuStats.percentage * 100))%)", .info)
+                
+                if self.deviceManager.isTooHot() {
+                    throw FreeTokenError.isTooHot
                 }
+                self.lastRunAt = Date()
+                
+                try await self.llama.updateContext(messages: [message])
+                
+                return try await self.llama.generate()
             }
-            
-            // Goal: Optimize the KV cache by removing old messages but keeping the system message and recent messages
-            func optimizeKVCache() async throws {
-                // Middle-out pruning handled externally before updateContext; llama manager itself only removes/ appends.
-                return
+        
+            func unload() async {
+                await self.llama.unload()
             }
         }
         
@@ -313,6 +256,8 @@ extension FreeToken {
             private var cachedDownloadState: FreeToken.SessionState? = nil
             private var memoryLevel: MemoryPressureLevel = .normal
             private var sessionDates: [String: Date] = [:] // stable per-session date for message prep
+            private var tokenizer: LlamaTokenizer? = nil
+            private var highlanderMode: Bool
             
             init(config: AIModelConfiguration, modelTypes: Codings.AvailableModelTypesResponse, clientConfig: Codings.ShowClientConfig, deviceManager: DeviceManager, promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
                 self.config = config
@@ -324,36 +269,14 @@ extension FreeToken {
                 let downloadOptions = modelTypes.llamaCpp // MLX dropped
                 downloadManager = ModelDownloadManager.llama(modelRepo: downloadOptions.repo, modelFileName: downloadOptions.modelFileName!, mmprojFileName: downloadOptions.mmproj)
                 
-                MemoryPressureManager.shared.register(minLevel: .normal) { pressureLevel in
-                    switch pressureLevel {
-                    case .warning:
-                        FreeToken.shared.logger("🟡 Memory pressure warning, removing all but the last AI session cache", .warning)
-                        #if os(iOS)
-                        FreeToken.shared.logger("Availble memory: \(os_proc_available_memory() / 1024 / 1024) MB", .debug)
-                        #endif
-                        Task(priority: .high) {
-                            await self.removeAllButLastRunSession()
-                            await self.setMemoryLevel(pressureLevel)
-                        }
-                    case .critical:
-                        FreeToken.shared.logger("🔴 Memory pressure is critical, removing all AI sessions immediately", .error)
-                        #if os(iOS)
-                        FreeToken.shared.logger("Availble memory: \(os_proc_available_memory() / 1024 / 1024) MB", .debug)
-                        #endif
-                        Task(priority: .high) {
-                            await self.reset()
-                            await self.setMemoryLevel(pressureLevel)
-                        }
-                    case .normal:
-                        FreeToken.shared.logger("🟢 Memory pressure is \(pressureLevel), no action needed", .info)
-                        #if os(iOS)
-                        FreeToken.shared.logger("Availble memory: \(os_proc_available_memory() / 1024 / 1024) MB", .debug)
-                        #endif
-                        Task {
-                            await self.setMemoryLevel(pressureLevel)
-                        }
-                    }
-                }
+                let gpuStats = self.deviceManager.getGPUMemoryStats()
+                FreeToken.shared.logger("GPU memory: \(gpuStats.current / 1024 / 1024) MB used / \(gpuStats.max / 1024 / 1024) MB available (\(String(format: "%.1f", gpuStats.percentage * 100))%)", .info)
+                
+                #if os(iOS)
+                self.highlanderMode = true
+                #else
+                self.highlanderMode = false
+                #endif
             }
             
             private func setMemoryLevel(_ level: MemoryPressureLevel) {
@@ -365,7 +288,7 @@ extension FreeToken {
                 return sessions.first?.value
             }
             
-            private func removeAllButLastRunSession() {
+            private func removeAllButLastRunSession() async {
                 // Remove all sessions except the last one that was run
                 let sortedSessions = self.sessions.sorted { $0.value.lastRunAt ?? Date.distantPast > $1.value.lastRunAt ?? Date.distantPast }
                 guard let lastSession = sortedSessions.first else {
@@ -375,7 +298,7 @@ extension FreeToken {
                 
                 let lastSessionId = lastSession.key
                 FreeToken.shared.logger("🔄 Removing all AI sessions except the last run session: \(lastSessionId)", .info)
-                self.removeAllSessions(but: lastSessionId)
+                await self.removeAllSessions(but: lastSessionId)
             }
             
             // Get download state
@@ -412,18 +335,18 @@ extension FreeToken {
             func reset() async {
                 FreeToken.shared.logger("🔄 Resetting AI sessions manager...", .info)
                 self.modelPath = nil
-                removeAllSessions()
+                await removeAllSessions()
             }
             
-            // Goal: Load a temporary sesison and run one small message.
-            // Why: This will make sure the model loads potentialy for the first time on the device, which can take a while
-            private func prewarm() async throws {
-                FreeToken.shared.logger("😎 Prewarming AI model...", .info)
+            // Goal: Load a session and have it memory resident for quick future execution.
+            func prewarmForID(id: String) async throws {
+                FreeToken.shared.logger("😎 Prewarming AI model ID: \(id)...", .info)
                 
-                _ = try await generateForId("prewarm-session", messages: [Message(role: .user, content: "Answer with only one number: What's 2+2?")], runLocation: .localRun, isTemporary: true)
+                try await loadSession(for: id)
+                try await catchUpFor(id: id, allThreadMessages: [])
             }
             
-            func loadModel() async throws {
+            func getModelDetails() async throws {
                 guard await getDownloadState() == .downloaded else {
                     FreeToken.shared.logger("🔴 AI model not downloaded yet", .error)
                     throw FreeTokenError.aiModelNotDownloaded
@@ -446,13 +369,13 @@ extension FreeToken {
                 self.modelPath = modelFileURL.path
             }
             
-            func loadSession(for id: String, with messages: [Message] = [], isTemporary: Bool = false, runConfig: AIRunConfig? = nil) async throws -> AISessionManager {
+            func loadSession(for id: String, with messages: [Message] = [], isTemporary: Bool = false, runConfig: AIRunConfig? = nil) async throws {
                 guard await getDownloadState() == .downloaded else {
                     throw FreeTokenError.aiModelNotDownloaded
                 }
                 
                 if modelPath == nil {
-                    try await loadModel()
+                    try await getModelDetails()
                 }
                 let modelPath = self.modelPath!
                 
@@ -474,13 +397,62 @@ extension FreeToken {
                 
                 // Stable date for this session id
                 let stableDate = sessionDates[id] ?? Date()
-                if sessionDates[id] == nil { sessionDates[id] = stableDate }
+                if sessionDates[id] == nil {
+                    sessionDates[id] = stableDate
+                }
+                
+                if highlanderMode {
+                    // Only one session at a time - reuse the existing session by resetting it.
+                    // Disreard the session ID and just use the first session.
+                    
+                    let preparedMessages = try MessagePrep(
+                        messages: messages,
+                        promptTemplateConfig: self.promptTemplateConfig,
+                        fixedDate: stableDate
+                    ).prepareMessages()
+                    
+                    if sessions.count > 0 {
+                        let session = sessions.first!.value
+                        let sessionID = sessions.first!.key
+                        
+                        if sessions.count > 1 {
+                            FreeToken.shared.logger("⚔️ Highlander mode - removing all other sessions except ID: \(id)", .info)
+                            await self.removeAllSessions(but: sessionID)
+                        }
+                        
+                        if session.config.equals(config) {
+                            if sessionID != id {
+                                _ = await session.llama.resetSession() // Reset it so it's like new
+                                // Rename session key so that next time it won't reset the session
+                                if let value = self.sessions.removeValue(forKey: sessionID) {
+                                    self.sessions[id] = value // perform a move without copy
+                                }
+                            }
+                            try await session.catchUp(allThreadMessages: preparedMessages) // Load all the tokens into the thread
+                            return
+                        } else {
+                            FreeToken.shared.logger("⚔️ Highlander mode - removing existing session with different config (ID: \(sessionID))", .info)
+                            _ = await self.removeAllSessions()
+                            // This will now fall through to create a new session below
+                        }
+                    }
+                    
+                    if !deviceHasEnoughMemoryForNewSession() {
+                        FreeToken.shared.logger("🔴 Does not have enough GPU memory after unloading all other sessions, cannot load new session", .error)
+                        throw FreeTokenError.aiRunFailed(message: "Insufficient memory for new AI session")
+                    }
+                    
+                    let session = try AISessionManager(messages: preparedMessages, modelPath: modelPath, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
+                    self.sessions[id] = session
+                    
+                    return
+                }
                 
                 // Existing session check
                 if let existingSession = self.sessions[id], existingSession.config.equals(config) {
                     // Session already exists, no need to load again
                     try await self.catchUpFor(id: id, allThreadMessages: messages)
-                    return existingSession
+                    return
                 }
                 
                 let preparedMessages = try MessagePrep(
@@ -489,27 +461,56 @@ extension FreeToken {
                     fixedDate: stableDate
                 ).prepareMessages()
                 
-                let session = AISessionManager(messages: preparedMessages, modelPath: modelPath, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
+                // If there will not be enough GPU memory, unload all other sessions
+                if !deviceHasEnoughMemoryForNewSession() {
+                    FreeToken.shared.logger("🟡 Not enough memory for new session, unloading all other sessions before loading new one", .warning)
+                    _ = await self.removeAllSessions()
+                    
+                    // Wait 100ms and try again - if still not enough memory, fail
+                    try await Task.sleep(nanoseconds: 100 * 1_000_000)
+                    if !deviceHasEnoughMemoryForNewSession() {
+                        FreeToken.shared.logger("🔴 Still not enough memory after unloading all other sessions, cannot load new session", .error)
+                        throw FreeTokenError.aiRunFailed(message: "Insufficient memory for new AI session")
+                    }
+                }
+                
+                let session = try AISessionManager(messages: preparedMessages, modelPath: modelPath, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
                 if isTemporary == false {
                     self.sessions[id] = session
                 }
-                try session.load()
+                
                 FreeToken.shared.logger("✅ \(isTemporary ? "Temporary " : "")Session loaded and pre-warmed for ID: \(id)", .info)
-                return session
             }
             
             func removeSession(for id: String) {
                 // Remove the session for the given ID
+                if let session = self.sessions[id] {
+                    Task {
+                        await session.unload()
+                    }
+                }
+
                 self.sessions.removeValue(forKey: id)
             }
             
-            func removeAllSessions() {
+            func removeAllSessions() async {
+                for (_, session) in sessions {
+                    await session.unload()
+                }
                 self.sessions.removeAll()
             }
             
-            func removeAllSessions(but id: String) {
+            func removeAllSessions(but id: String) async {
                 // Remove all sessions except the one with the given ID
-                self.sessions = self.sessions.filter { $0.key == id }
+                for (sessionID, session) in sessions {
+                    if sessionID != id {
+                        await session.unload()
+                        FreeToken.shared.logger("🗑️ Removing AI session with ID: \(sessionID)", .info)
+                    }
+                }
+                if let session = self.sessions[id] {
+                    self.sessions = [id: session]
+                }
             }
             
             func downloadModel(
@@ -537,6 +538,11 @@ extension FreeToken {
             
             func catchUpFor(id: String, allThreadMessages: [Message]) async throws {
                 // Prepared Messages
+                var id = id
+                if highlanderMode {
+                    id = self.sessions.first!.key
+                }
+                
                 let stableDate = sessionDates[id] ?? Date()
                 if sessionDates[id] == nil { sessionDates[id] = stableDate }
                 let preparedMessages = try MessagePrep(
@@ -565,7 +571,11 @@ extension FreeToken {
             }
             
             func sessionExists(for id: String) -> Bool {
-                return self.sessions[id] != nil
+                if highlanderMode {
+                    return self.sessions.count > 0
+                } else {
+                    return self.sessions[id] != nil
+                }
             }
             
             func generateForId(_ id: String, messages: [Message] = [], runLocation: RunLocation, isTemporary: Bool = false, runConfig: AIRunConfig? = nil) async throws -> AsyncThrowingStream<String, any Error> {
@@ -574,43 +584,46 @@ extension FreeToken {
                     throw FreeTokenError.aiRunFailed(message: "Cloud run is not supported in this context")
                 }
                 
-                let sessionsManager = self
+                try await loadSession(for: id, with: messages/*, isTemporary: isTemporary*/, runConfig: runConfig)
                 
-                // Delegate date stability to loadSession (which uses sessionDates)
-                let session = try await sessionsManager.loadSession(for: id, with: messages, isTemporary: isTemporary, runConfig: runConfig)
-                    
-                return try await session.generate(runLocation: runLocation)
+                if highlanderMode {
+                    let session = self.sessions.first!.value
+                    return try await session.generate(runLocation: runLocation)
+                } else {
+                    let session = self.sessions[id]!
+                        
+                    return try await session.generate(runLocation: runLocation)
+                }
             }
             
-            func generateCompletion(text: String) async throws -> AsyncThrowingStream<String, any Error> {
+            func generateCompletion(text: String, runConfig: AIRunConfig? = nil) async throws -> AsyncThrowingStream<String, any Error> {
+                
                 // Generate a completion for a single text input
-                let sessionsManager = self
+                let sessionID = "completion-session"
+                let message = Message(role: .user, content: text)
+                try await self.loadSession(for: sessionID, with: [message], runConfig: runConfig)
                 
-                let session = try await sessionsManager.loadSession(for: "completion-session", isTemporary: true)
-                
-                try session.load()
-                                    
-                return try await session.generateCompletion(text: text, runLocation: .localRun)
+                return try await self.generateForId(sessionID, runLocation: .localRun)
             }
             
-            func tokenCountFor(id: String? = nil, messages: [Message]) async throws -> Int {
-                if modelPath == nil { try await loadModel() }
+            func tokenCountFor(messages: [Message]) async throws -> Int {
+                if modelPath == nil { try await getModelDetails() }
                 guard let path = modelPath else { return 0 }
-                // Create a lightweight ephemeral llama manager for counting (could be optimized to reuse).
-                let (decodeThreads, batchThreads) = DeviceManager.recommendedThreadCounts(reserve: 2)
-                let opts = LlamaInitOptions(
-                    contextSize: config.nCTX,
-                    maxSequences: 1,  // Only need 1 sequence since each session has its own model
-                    maxNewTokens: config.maxTokenCount,
-                    chatStyle: .auto,
-                    threadCount: decodeThreads,
-                    batchSize: 512,
-                    threadCountBatch: batchThreads
-                )
-                let temp = try LlamaManager(modelPath: path, options: opts)
-                var total = 0
-                for m in messages { total += (try await temp.tokenize(m.content).count) + 2 }
-                return total
+                if sessions.isEmpty {
+                    if tokenizer == nil {
+                        tokenizer = LlamaTokenizer(modelPath: path)
+                    }
+                    var count = 0
+                    
+                    for message in messages {
+                        count += tokenizer!.tokenize(text: message.content).count + 2
+                    }
+                    
+                    return count
+                } else {
+                    let firstSession = sessions.first!.value
+                    return try await firstSession.tokenCount(for: messages)
+                }
             }
         }
         
@@ -652,19 +665,43 @@ extension FreeToken {
             }
         }
         
+        func getDownloadState() async -> ModelDownloadState {
+            return await self.stateManager.getDownloadState()
+        }
+        
         func loadModel() async -> Result<AIModelLoadingState, FreeTokenError> {
             do {
-                try await stateManager.loadModel()
-                
-                return .success(.loaded)
+                return try await AITaskQueue.shared.enqueue(name: "loadModel", runLocation: .localRun) {
+                    try await self.stateManager.getModelDetails()
+                    
+                    return .success(.loaded)
+                }
             } catch {
                 FreeToken.shared.logger("🔴 Error loading model: \(error.localizedDescription)", .error)
                 return .failure(FreeTokenError.failedToLoadModel)
             }
         }
         
+        func loadSession(for id: String, with messages: [Message] = [], runConfig: AIRunConfig?) async throws {
+            try await AITaskQueue.shared.enqueue(name: "loadSession(\(id))", runLocation: .localRun) {
+                try await self.stateManager.loadSession(for: id, with: messages, isTemporary: false)
+            }
+        }
+        
         func unloadModel() async {
-            await self.stateManager.removeAllSessions()
+            do {
+                try await AITaskQueue.shared.enqueue(name: "unloadModel", runLocation: .localRun) {
+                    await self.stateManager.removeAllSessions()
+                }
+            } catch {
+                FreeToken.shared.logger("🔴 Error unloading model: \(error.localizedDescription)", .error)
+            }
+        }
+        
+        func prewarmForId(id: String) async throws {
+            try await AITaskQueue.shared.enqueue(name: "prewarmForId(\(id))", runLocation: .localRun) {
+                try await self.stateManager.prewarmForID(id: id)
+            }
         }
         
         func lastUsedAt() async -> Date? {
@@ -677,86 +714,88 @@ extension FreeToken {
         }
         
         func stopGeneration() async {
-            FreeToken.shared.logger("Stopping AI generation...", .info)
+            FreeToken.shared.logger("🛑 Stopping AI generation...", .info)
             generationTask?.cancel()
         }
         
-        func tokensCount(for runIdentifier: String?, messages: [Message]) async throws -> Int {
-            return try await stateManager.tokenCountFor(id: runIdentifier, messages: messages)
+        func tokensCount(messages: [Message]) async throws -> Int {
+            return try await AITaskQueue.shared.enqueue(name: "tokensCount", runLocation: .localRun) {
+                return try await self.stateManager.tokenCountFor(messages: messages)
+            }
         }
         
         func sendTextToAI(text: String, runLocation: RunLocation = .automatic, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
-            
-            let aiResults = AIResults()
-            
-            if let maxTokens = aiRunConfig?.maxGenerationTokens {
-                await aiResults.setMaxTokenCount(maxTokens)
-            } else {
-                await aiResults.setMaxTokenCount(self.modelConfig.maxTokenCount)
-            }
-            
-            var inputTokenCount = 0
-            let session = try await self.stateManager.loadSession(for: "completion-session", with: [], isTemporary: true, runConfig: aiRunConfig)
-            
-            inputTokenCount = try await session.tokenCount(for: text)
-            
-            let task = Task {
-                do {
-                    let maxTokenCount = await aiResults.maxTokenCount
-                    FreeToken.shared.logger("🧠 Beginning AI Generation for completion", .info)
-                    for try await value in try await session.generateCompletion(text: text, runLocation: runLocation) {
-                        if Task.isCancelled { break }
-                        if await aiResults.startTime == nil {
-                            await aiResults.setStartTime(DispatchTime.now())
-                        }
-                        
-                        print(value, terminator: "")
-                        await aiResults.appendResponseContent(value)
-                        if let streamHandler = tokenStream {
-                            await streamHandler(value)
-                        }
-                        await aiResults.addToTokenCount(1)
-                        let tokenCount = await aiResults.tokenCount
-                        if let maxTokenCount = maxTokenCount, tokenCount >= maxTokenCount {
-                            break
-                        }
-                    }
-                    await aiResults.setEndTime(DispatchTime.now())
-                } catch {
-                    FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
-                    
-                    throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+            return try await AITaskQueue.shared.enqueue(name: "sendTextToAI", runLocation: runLocation) {
+                let aiResults = AIResults()
+                
+                if let maxTokens = aiRunConfig?.maxGenerationTokens {
+                    await aiResults.setMaxTokenCount(maxTokens)
+                } else {
+                    await aiResults.setMaxTokenCount(self.modelConfig.maxTokenCount)
                 }
+                
+                var inputTokenCount = 0
+                
+                inputTokenCount = try await self.stateManager.tokenCountFor(messages: [Message(role: .user, content: text)]) - 2
+                
+                let task = Task {
+                    do {
+                        let maxTokenCount = await aiResults.maxTokenCount
+                        FreeToken.shared.logger("🧠 Beginning AI Generation for completion", .info)
+                        for try await value in try await self.stateManager.generateCompletion(text: text) {
+                            if Task.isCancelled { break }
+                            if await aiResults.startTime == nil {
+                                await aiResults.setStartTime(DispatchTime.now())
+                            }
+                            
+                            print(value, terminator: "")
+                            await aiResults.appendResponseContent(value)
+                            if let streamHandler = tokenStream {
+                                await streamHandler(value)
+                            }
+                            await aiResults.addToTokenCount(1)
+                            let tokenCount = await aiResults.tokenCount
+                            if let maxTokenCount = maxTokenCount, tokenCount >= maxTokenCount {
+                                break
+                            }
+                        }
+                        await aiResults.setEndTime(DispatchTime.now())
+                    } catch {
+                        FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
+                        
+                        throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+                    }
+                }
+                
+                // Store the task in the generationTask property
+                self.generationTask = task
+                _ = try await task.value
+                self.generationTask = nil
+                
+                // Calculate duration
+                var usage: TokenUsage? = nil
+                let startTime = await aiResults.startTime
+                let endTime = await aiResults.endTime
+                let outputTokenCount = await aiResults.tokenCount
+                
+                if let start = startTime, let endTime = endTime {
+                    let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+                    let tokensPerSecond = Float(Double(outputTokenCount) / (duration / 1000.0))
+                    let totalTokens = inputTokenCount + outputTokenCount
+                    usage = TokenUsage(
+                        totalTokens: totalTokens,
+                        tokensPerSecond: tokensPerSecond,
+                        inputTokens: inputTokenCount,
+                        outputTokens: outputTokenCount,
+                        modelCode: self.modelCode
+                    )
+                    FreeToken.shared.logger("🧠 AI response generated - Input: \(inputTokenCount) tokens, Output: \(outputTokenCount) tokens, Total: \(totalTokens) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
+                }
+                
+                let responseContent = await aiResults.responseContent
+                
+                return (responseContent, usage)
             }
-            
-            // Store the task in the generationTask property
-            self.generationTask = task
-            _ = try await task.value
-            self.generationTask = nil
-            
-            // Calculate duration
-            var usage: TokenUsage? = nil
-            let startTime = await aiResults.startTime
-            let endTime = await aiResults.endTime
-            let outputTokenCount = await aiResults.tokenCount
-            
-            if let start = startTime, let endTime = endTime {
-                let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
-                let tokensPerSecond = Float(Double(outputTokenCount) / (duration / 1000.0))
-                let totalTokens = inputTokenCount + outputTokenCount
-                usage = TokenUsage(
-                    totalTokens: totalTokens,
-                    tokensPerSecond: tokensPerSecond,
-                    inputTokens: inputTokenCount,
-                    outputTokens: outputTokenCount,
-                    modelCode: self.modelCode
-                )
-                FreeToken.shared.logger("🧠 AI response generated - Input: \(inputTokenCount) tokens, Output: \(outputTokenCount) tokens, Total: \(totalTokens) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
-            }
-            
-            let responseContent = await aiResults.responseContent
-            
-            return (responseContent, usage)
         }
         
         func sendMessagesToAI(messages: [Message], runIdentifier: String, runLocation: RunLocation = .automatic, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
@@ -765,78 +804,80 @@ extension FreeToken {
                 throw FreeTokenError.noMessagesToSend
             }
             
-            let aiResults = AIResults()
-            
-            if let maxTokens = aiRunConfig?.maxGenerationTokens {
-                await aiResults.setMaxTokenCount(maxTokens)
-            } else {
-                await aiResults.setMaxTokenCount(self.modelConfig.maxTokenCount)
-            }
-            
-            let session = try await self.stateManager.loadSession(for: runIdentifier, with: messages, isTemporary: noContextCache, runConfig: aiRunConfig)
-            
-            var inputTokenCount = 0
-            
-            inputTokenCount = try await session.tokenCount(for: messages)
-            FreeToken.shared.logger("📊 Input token count: \(inputTokenCount) tokens", .info)
-            
-            let task = Task {
-                do {
-                    let maxTokenCount = await aiResults.maxTokenCount
-                    FreeToken.shared.logger("🧠 Beginning AI Generation for \(runIdentifier)", .info)
-                    for try await value in try await session.generate(runLocation: runLocation) {
-                        if Task.isCancelled { break }
-                        if await aiResults.startTime == nil {
-                            await aiResults.setStartTime(DispatchTime.now())
-                        }
-                        
-                        print(value, terminator: "")
-                        await aiResults.appendResponseContent(value)
-                        if let streamHandler = tokenStream {
-                            await streamHandler(value)
-                        }
-                        await aiResults.addToTokenCount(1)
-                        let tokenCount = await aiResults.tokenCount
-                        if let maxTokenCount = maxTokenCount, tokenCount >= maxTokenCount {
-                            break
-                        }
-                    }
-                    await aiResults.setEndTime(DispatchTime.now())
-                } catch {
-                    FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
-                    
-                    throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+            return try await AITaskQueue.shared.enqueue(name: "sendMessagesToAI(\(runIdentifier))", runLocation: runLocation) {
+                let aiResults = AIResults()
+                
+                if let maxTokens = aiRunConfig?.maxGenerationTokens {
+                    await aiResults.setMaxTokenCount(maxTokens)
+                } else {
+                    await aiResults.setMaxTokenCount(self.modelConfig.maxTokenCount)
                 }
+                
+                try await self.stateManager.loadSession(for: runIdentifier, with: messages/*, isTemporary: noContextCache*/, runConfig: aiRunConfig)
+                
+                var inputTokenCount = 0
+                
+                inputTokenCount = try await self.stateManager.tokenCountFor(messages: messages)
+                FreeToken.shared.logger("📊 Input token count: \(inputTokenCount) tokens", .info)
+                
+                let task = Task {
+                    do {
+                        let maxTokenCount = await aiResults.maxTokenCount
+                        FreeToken.shared.logger("🧠 Beginning AI Generation for \(runIdentifier)", .info)
+                        for try await value in try await self.stateManager.generateForId(runIdentifier, runLocation: runLocation, runConfig: aiRunConfig) {
+                            if Task.isCancelled { break }
+                            if await aiResults.startTime == nil {
+                                await aiResults.setStartTime(DispatchTime.now())
+                            }
+                            
+                            print(value, terminator: "")
+                            await aiResults.appendResponseContent(value)
+                            if let streamHandler = tokenStream {
+                                await streamHandler(value)
+                            }
+                            await aiResults.addToTokenCount(1)
+                            let tokenCount = await aiResults.tokenCount
+                            if let maxTokenCount = maxTokenCount, tokenCount >= maxTokenCount {
+                                break
+                            }
+                        }
+                        await aiResults.setEndTime(DispatchTime.now())
+                    } catch {
+                        FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
+                        
+                        throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+                    }
+                }
+                
+                // Store the task in the generationTask property
+                self.generationTask = task
+                _ = try await task.value
+                self.generationTask = nil
+                
+                // Calculate duration
+                var usage: TokenUsage? = nil
+                let startTime = await aiResults.startTime
+                let endTime = await aiResults.endTime
+                let outputTokenCount = await aiResults.tokenCount
+                
+                if let start = startTime, let endTime = endTime {
+                    let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
+                    let tokensPerSecond = Float(Double(outputTokenCount) / (duration / 1000.0))
+                    let totalTokens = inputTokenCount + outputTokenCount
+                    usage = TokenUsage(
+                        totalTokens: totalTokens,
+                        tokensPerSecond: tokensPerSecond,
+                        inputTokens: inputTokenCount,
+                        outputTokens: outputTokenCount,
+                        modelCode: self.modelCode
+                    )
+                    FreeToken.shared.logger("🧠 AI response generated - Input: \(inputTokenCount) tokens, Output: \(outputTokenCount) tokens, Total: \(totalTokens) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
+                }
+                
+                let responseContent = await aiResults.responseContent
+                
+                return (responseContent, usage)
             }
-            
-            // Store the task in the generationTask property
-            self.generationTask = task
-            _ = try await task.value
-            self.generationTask = nil
-            
-            // Calculate duration
-            var usage: TokenUsage? = nil
-            let startTime = await aiResults.startTime
-            let endTime = await aiResults.endTime
-            let outputTokenCount = await aiResults.tokenCount
-            
-            if let start = startTime, let endTime = endTime {
-                let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
-                let tokensPerSecond = Float(Double(outputTokenCount) / (duration / 1000.0))
-                let totalTokens = inputTokenCount + outputTokenCount
-                usage = TokenUsage(
-                    totalTokens: totalTokens, 
-                    tokensPerSecond: tokensPerSecond, 
-                    inputTokens: inputTokenCount, 
-                    outputTokens: outputTokenCount, 
-                    modelCode: self.modelCode
-                )
-                FreeToken.shared.logger("🧠 AI response generated - Input: \(inputTokenCount) tokens, Output: \(outputTokenCount) tokens, Total: \(totalTokens) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
-            }
-            
-            let responseContent = await aiResults.responseContent
-            
-            return (responseContent, usage)
         }
                 
         private func verifyClientVersionSupported() -> Result<Bool, FreeTokenError> {

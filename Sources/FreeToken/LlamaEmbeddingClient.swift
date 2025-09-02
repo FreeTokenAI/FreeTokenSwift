@@ -59,7 +59,7 @@ extension FreeToken {
         /// Load the model for embedding generation
         func loadModel() throws {
             // Initialize llama backend
-            llama_backend_init()
+            LlamaAPI.backendInit()
             
             // Set up model parameters
             var modelParams = llama_model_default_params()

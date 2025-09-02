@@ -26,47 +26,43 @@ extension FreeToken {
         private let options: LlamaInitOptions
         private var spans: [_LlamaKVSpan] = []
         private var busy: Bool = false
-    private let sequenceId: Int32 = 0 // single sequence
-    // Incremental chat template builder (active when useChatTemplate)
-    private var templateBuilder: LlamaTemplateBuilder? = nil
-        
-    init(modelPath: String, options: LlamaInitOptions) throws {
-        self.options = options
-        // Load model separately
-        let model = try FreeToken.LlamaModel.load(path: modelPath)
-        // Use static factory to avoid sendability issues
-        self.session = LlamaSession.createSession(model: model, options: options)
-        if options.useChatTemplate { self.templateBuilder = LlamaTemplateBuilder(session: session, options: options) }
-    }
+        private let sequenceId: Int32 = 0 // single sequence
     
-    /// Initialize with an existing model handle (for sharing models between managers)
-    init(model: OpaquePointer, options: LlamaInitOptions) throws {
-        self.options = options
-        // Use static factory to avoid sendability issues
-        self.session = LlamaSession.createSession(model: model, options: options)
-        if options.useChatTemplate { self.templateBuilder = LlamaTemplateBuilder(session: session, options: options) }
-    }
+        // Incremental chat template builder
+        private let templateBuilder: LlamaTemplateBuilder
+        private var isUnloaded: Bool = false
+
+        @inline(__always)
+        private func ensureActive(_ fn: StaticString = #function) throws {
+            if isUnloaded { throw FreeTokenError.aiRunFailed(message: "LlamaManager was unloaded; call site: \(fn)") }
+        }
         
+        init(modelPath: String, options: LlamaInitOptions) throws {
+            // Load model separately
+            let model = try FreeToken.LlamaModel(path: modelPath)
+            // Use static factory to avoid sendability issues
+            self.session = try LlamaSession(model: model, config: options)
+            self.templateBuilder = LlamaTemplateBuilder(session: session)
+            self.options = options
+        }
+                
         // Public snapshot of tracked messages
-    /// External read-only snapshot of tracked messages (message + token count).
-    var kvMessages: [KVMessage] {
+        /// External read-only snapshot of tracked messages (message + token count).
+        var kvMessages: [KVMessage] {
             spans.map { KVMessage(message: $0.message, tokenCount: $0.tokenCount) }
         }
         
         // MARK: - Context Update
-    /// Reconcile KV state with authoritative ordered messages.
-    /// Allowed transformations:
-    ///  - Remove any subset of existing messages (whole) anywhere.
-    ///  - Append new messages at tail.
-    /// Disallowed:
-    ///  - Middle insertion of a *new* message before all retained ones (throws unexpectedInsertion).
-    ///  - Reordering existing messages (also triggers unexpectedInsertion).
-    ///  - Messages containing image attachments (multimodal unsupported locally).
-    func updateContext(messages desired: [Message]) async throws {
-            try await ensureNotBusy()
-            defer { busy = false }
-            busy = true
-            try await session.loadIfNeeded()
+        /// Reconcile KV state with authoritative ordered messages.
+        /// Allowed transformations:
+        ///  - Remove any subset of existing messages (whole) anywhere.
+        ///  - Append new messages at tail.
+        /// Disallowed:
+        ///  - Middle insertion of a *new* message before all retained ones (throws unexpectedInsertion).
+        ///  - Reordering existing messages (also triggers unexpectedInsertion).
+        ///  - Messages containing image attachments (multimodal unsupported locally).
+        func updateContext(messages desired: [Message]) async throws {
+            try ensureActive()
             FreeTokenLogger.shared.log("updateContext start currentSpans=\(spans.count) desired=\(desired.count)", level: .debug)
             let promptStartTime = Date()
             
@@ -104,24 +100,24 @@ extension FreeToken {
                     } else {
                         // Check if this span appears later in desired tail -> unexpected insertion
                         if (dIdx + 1) < desired.count && desired[(dIdx+1)...].contains(where: { $0.role == span.message.role && $0.content == span.message.content }) {
-                                    // DIAGNOSTIC BLOCK: unexpected middle insertion / reorder detected.
-                                    let prefixMatched = p
-                                    let currentTrackedMsg = span.message
-                                    let desiredMsg = desired[dIdx]
-                                    let remainingTrackedRoles = spans[sIdx...].map { $0.message.role.rawValue }.joined(separator: ",")
-                                    let remainingDesiredRoles = desired[dIdx...].map { $0.role.rawValue }.joined(separator: ",")
-                                    let tailContainsTrackedIndex = desired[(dIdx+1)...].firstIndex(where: { $0.role == currentTrackedMsg.role && $0.content == currentTrackedMsg.content })
-                                    let trackedSnippet = String(currentTrackedMsg.content.prefix(200))
-                                    let desiredSnippet = String(desiredMsg.content.prefix(200))
-                                    // Break long diagnostic into multiple lines to avoid very long single string literal issues.
-                                    FreeTokenLogger.shared.log("updateContext insertion_detected spanIndex=\(sIdx) desiredIndex=\(dIdx) prefixMatched=\(prefixMatched)", level: .error)
-                                    FreeTokenLogger.shared.log("trackedRole=\(currentTrackedMsg.role.rawValue) desiredRole=\(desiredMsg.role.rawValue)", level: .error)
-                                    FreeTokenLogger.shared.log("trackedSnippet=\(trackedSnippet.debugDescription) desiredSnippet=\(desiredSnippet.debugDescription)", level: .error)
-                                    FreeTokenLogger.shared.log("remainingTrackedRoles=[\(remainingTrackedRoles)] remainingDesiredRoles=[\(remainingDesiredRoles)]", level: .error)
-                                    let tailIndexStr = tailContainsTrackedIndex.map { String(describing: $0) } ?? "nil"
-                                    FreeTokenLogger.shared.log("tailFoundTrackedAtDesiredIndex=\(tailIndexStr)", level: .error)
-                                    FreeTokenLogger.shared.log("updateContext throwing .llamaUnexpectedInsertion (diagnostics mode; no rebuild)", level: .error)
-                                    throw FreeTokenError.llamaUnexpectedInsertion
+                            // DIAGNOSTIC BLOCK: unexpected middle insertion / reorder detected.
+                            let prefixMatched = p
+                            let currentTrackedMsg = span.message
+                            let desiredMsg = desired[dIdx]
+                            let remainingTrackedRoles = spans[sIdx...].map { $0.message.role.rawValue }.joined(separator: ",")
+                            let remainingDesiredRoles = desired[dIdx...].map { $0.role.rawValue }.joined(separator: ",")
+                            let tailContainsTrackedIndex = desired[(dIdx+1)...].firstIndex(where: { $0.role == currentTrackedMsg.role && $0.content == currentTrackedMsg.content })
+                            let trackedSnippet = String(currentTrackedMsg.content.prefix(200))
+                            let desiredSnippet = String(desiredMsg.content.prefix(200))
+                            // Break long diagnostic into multiple lines to avoid very long single string literal issues.
+                            FreeTokenLogger.shared.log("updateContext insertion_detected spanIndex=\(sIdx) desiredIndex=\(dIdx) prefixMatched=\(prefixMatched)", level: .error)
+                            FreeTokenLogger.shared.log("trackedRole=\(currentTrackedMsg.role.rawValue) desiredRole=\(desiredMsg.role.rawValue)", level: .error)
+                            FreeTokenLogger.shared.log("trackedSnippet=\(trackedSnippet.debugDescription) desiredSnippet=\(desiredSnippet.debugDescription)", level: .error)
+                            FreeTokenLogger.shared.log("remainingTrackedRoles=[\(remainingTrackedRoles)] remainingDesiredRoles=[\(remainingDesiredRoles)]", level: .error)
+                            let tailIndexStr = tailContainsTrackedIndex.map { String(describing: $0) } ?? "nil"
+                            FreeTokenLogger.shared.log("tailFoundTrackedAtDesiredIndex=\(tailIndexStr)", level: .error)
+                            FreeTokenLogger.shared.log("updateContext throwing .llamaUnexpectedInsertion (diagnostics mode; no rebuild)", level: .error)
+                            throw FreeTokenError.llamaUnexpectedInsertion
                         } else {
                             removalIndices.append(sIdx)
                         }
@@ -150,7 +146,7 @@ extension FreeToken {
                 let tokenArrays = try await session.tokenizeParallel(contents)
                 let estNewTokens = tokenArrays.reduce(0) { $0 + $1.count }
                 
-                let used = options.useChatTemplate ? (templateBuilder?.tokens.count ?? 0) : spans.totalTokens()
+                let used = templateBuilder.tokens.count
                 if used + estNewTokens > options.contextSize {
                     FreeTokenLogger.shared.log("updateContext overflow estNew=\(estNewTokens) used=\(used) limit=\(options.contextSize)", level: .warning)
                     throw FreeTokenError.llamaContextOverflow
@@ -164,34 +160,35 @@ extension FreeToken {
                 let promptElapsed = Date().timeIntervalSince(promptStartTime)
                 FreeTokenLogger.shared.log("updateContext complete totalTokens=\(spans.totalTokens()) spans=\(spans.count) ms=\(Int(promptElapsed*1000))", level: .info)
         }
-
-    // fullRebuild(with:) removed: intentional for diagnosing unexpected insertions upstream.
         
         // MARK: - Generation (Skeleton)
-    // (Old placeholder generation methods removed in favor of full implementations below)
 
-    /// Tokenize arbitrary text using the underlying session (stubbed until llama.cpp wiring).
-    func tokenize(_ text: String) async throws -> [Int] { try await session.tokenize(text) }
-        
-    func unload() async { await session.unload(); spans.removeAll() }
-        
-        // MARK: - Private Helpers
-        private func ensureNotBusy() async throws {
-            if busy { throw FreeTokenError.llamaBusy }
+        /// Tokenize arbitrary text using the underlying session (stubbed until llama.cpp wiring).
+        func tokenize(_ text: String) async throws -> [Int] {
+            try ensureActive()
+            return try await session.tokenize(text)
         }
         
-    /// Perform message removals. Phase 1: in-memory only; future phase will invoke llama
-    /// KV cache removal (seq_rm) + shifting (seq_shift). Indices refer to current `spans`.
-    private func performRemovals(removalIndices: [Int]) async throws {
+        func unload() async {
+            if isUnloaded { return }
+            await session.unload()
+            spans.removeAll()
+            isUnloaded = true
+        }
+        
+        /// Perform message removals. Phase 1: in-memory only; future phase will invoke llama
+        /// KV cache removal (seq_rm) + shifting (seq_shift). Indices refer to current `spans`.
+        private func performRemovals(removalIndices: [Int]) async throws {
+            try ensureActive()
             // Fallback strategy: full rebuild of remaining kept messages (no in-place KV cache surgery yet).
             guard !removalIndices.isEmpty else { return }
             FreeTokenLogger.shared.log("performRemovals(rebuild) indices=\(removalIndices)", level: .debug)
             // Determine kept spans in original order
             let removalSet = Set(removalIndices)
             let keptMessages = spans.enumerated().filter { !removalSet.contains($0.offset) }.map { $0.element.message }
-            // Reset session & spans
-            await session.unload()
-            try await session.loadIfNeeded()
+            // Instead of unloading (which frees model/context then reuses dangling pointers), perform an in-place reset.
+            // This preserves the underlying model/context/sampler pointers and avoids use-after-free.
+            await session.resetForRebuild()
             spans.removeAll(keepingCapacity: true)
             var cursor = 0
             for msg in keptMessages {
@@ -206,35 +203,26 @@ extension FreeToken {
             FreeTokenLogger.shared.log("performRemovals(rebuild) keptMessages=\(keptMessages.count) newTotalTokens=\(spans.totalTokens())", level: .debug)
         }
         
-    /// Append tail messages (authoritative new messages). Tokenization currently stubbed.
-    private func appendTail(messages: [Message]) async throws {
-            if options.useChatTemplate, let builder = templateBuilder {
-                let addedSpans = try await builder.addMessages(messages)
-                // Mirror template spans into local spans (approx message token counts via builder span lengths) using builder span ordering
-                // We approximate token slice per message by re-tokenizing content to maintain repetition penalty integrity.
-                for (idx, msg) in messages.enumerated() {
-                    let mtoks = try await session.tokenize(msg.content)
-                    let start = spans.last?.end ?? 0
-                    let end = start + mtoks.count
-                    let span = _LlamaKVSpan(start: start, end: end, hash: _hash(msg), message: msg, tokens: mtoks.map { Int32($0) })
-                    spans.append(span)
-                    FreeTokenLogger.shared.log("appendTail(builder) msgRole=\(msg.role.rawValue) newTemplateSpan=\(addedSpans[idx].start)..<\(addedSpans[idx].end) approxMsgTokens=\(mtoks.count)", level: .debug)
-                }
-            } else {
-                for msg in messages {
-                    let tokens = try await session.tokenize(msg.content)
-                    try await session.evalOptimized(tokens: tokens)
-                    let start = spans.last?.end ?? 0
-                    let end = start + tokens.count
-                    let span = _LlamaKVSpan(start: start, end: end, hash: _hash(msg), message: msg, tokens: tokens.map { Int32($0) })
-                    spans.append(span)
-                    FreeTokenLogger.shared.log("appendTail messageRole=\(msg.role) tokenCount=\(tokens.count) newTotal=\(spans.totalTokens())", level: .debug)
-                }
+        /// Append tail messages (authoritative new messages). Tokenization currently stubbed.
+        private func appendTail(messages: [Message]) async throws {
+            try ensureActive()
+            let addedSpans = try await templateBuilder.addMessages(messages)
+            // Mirror template spans into local spans (approx message token counts via builder span lengths) using builder span ordering
+            // We approximate token slice per message by re-tokenizing content to maintain repetition penalty integrity.
+            for (idx, msg) in messages.enumerated() {
+                let mtoks = try await session.tokenize(msg.content)
+                let start = spans.last?.end ?? 0
+                let end = start + mtoks.count
+                let span = _LlamaKVSpan(start: start, end: end, hash: _hash(msg), message: msg, tokens: mtoks.map { Int32($0) })
+                spans.append(span)
+                FreeTokenLogger.shared.log("appendTail(builder) msgRole=\(msg.role.rawValue) newTemplateSpan=\(addedSpans[idx].start)..<\(addedSpans[idx].end) approxMsgTokens=\(mtoks.count)", level: .debug)
             }
+            
         }
         
-    /// Verify contiguous, gapless spans ordering; throw if violated.
-    private func invariantCheck() throws {
+        /// Verify contiguous, gapless spans ordering; throw if violated.
+        private func invariantCheck() throws {
+            if isUnloaded { throw FreeTokenError.aiRunFailed(message: "LlamaManager unloaded; invariantCheck invalid") }
             // Simple contiguous check
             for i in 1..<spans.count {
                 if spans[i-1].end != spans[i].start {
@@ -244,11 +232,6 @@ extension FreeToken {
             if spans.last?.end != spans.totalTokens() { // always true by definition but keep placeholder
                 // No action; spans.totalTokens uses last.end
             }
-        }
-        
-        private func spansMatchIndex(span: _LlamaKVSpan, index: Int) -> Bool {
-            // Placeholder: in future performRemovals will directly mutate spans eliminating need for this
-            return false
         }
 
         // MARK: - Streaming Generation
@@ -270,31 +253,32 @@ extension FreeToken {
 
         /// Streaming assistant generation with sampling, stop sequences, capacity guard, assistant prefix, and commit-on-complete.
         func generate() async throws -> AsyncThrowingStream<String, Error> {
-            try await ensureNotBusy()
-            busy = true
-            try await session.loadIfNeeded()
+            try ensureActive()
             // Capacity guard
             // If in template mode, use actual template token count for headroom estimation if available
-            let templateCount = (options.useChatTemplate ? (templateBuilder?.tokens.count ?? 0) : spans.totalTokens())
+            let templateCount = templateBuilder.tokens.count
             let adjustedHeadroom = options.contextSize - templateCount
-            if adjustedHeadroom <= 0 || adjustedHeadroom < options.maxNewTokens { busy = false; throw FreeTokenError.llamaContextOverflow }
+            
+            if adjustedHeadroom <= 0 || adjustedHeadroom < options.maxNewTokens {
+                throw FreeTokenError.llamaContextOverflow
+            }
+            
             FreeTokenLogger.shared.log("generate start headroom=\(adjustedHeadroom) maxNew=\(options.maxNewTokens)", level: .info)
             let maxTokens = min(options.maxNewTokens, adjustedHeadroom)
-            // If using chat template we rebuild and evaluate combined template with assistant slot prior to generation.
-            if options.useChatTemplate, let builder = templateBuilder {
-                // Render with assistant slot; reuse builder.tokens prefix.
-                let withSlot = try await builder.renderWithAssistantSlot()
-                let base = builder.tokens
-                var i = 0; let minC = min(base.count, withSlot.count)
-                while i < minC && base[i] == withSlot[i] { i += 1 }
-                if i == base.count { // append only slot tail
-                    let tail = Array(withSlot.dropFirst(i))
-                    if !tail.isEmpty { try await session.evalOptimized(tokens: tail.map { Int($0) }) }
-                } else {
-                    FreeTokenLogger.shared.log("generate(template) divergence assistant_slot full_rebuild i=\(i) base=\(base.count) new=\(withSlot.count)", level: .warning)
-                    await session.unload(); try await session.loadIfNeeded(); try await session.evalOptimized(tokens: withSlot.map { Int($0) })
-                }
+            
+            // Render with assistant slot; reuse builder.tokens prefix.
+            let withSlot = try await templateBuilder.renderWithAssistantSlot()
+            let base = templateBuilder.tokens
+            var i = 0; let minC = min(base.count, withSlot.count)
+            while i < minC && base[i] == withSlot[i] { i += 1 }
+            if i == base.count { // append only slot tail
+                let tail = Array(withSlot.dropFirst(i))
+                if !tail.isEmpty { try await session.evalOptimized(tokens: tail.map { Int($0) }) }
+            } else {
+                // Unexpected divergence; re-eval full template
+                throw FreeTokenError.aiRunFailed(message: "Template divergence detected during generate, create a new session and try again")
             }
+            
             return AsyncThrowingStream { continuation in
                 Task {
                     var emitted = options.assistantPrefix ?? ""
@@ -439,10 +423,8 @@ extension FreeToken {
         }
 
         /// Raw completion variant that uses the same generation path as chat (for quality consistency).
-    func generate(text: String) async throws -> AsyncThrowingStream<String, Error> {
-            try await ensureNotBusy()
-            busy = true
-            try await session.loadIfNeeded()
+        func generate(text: String) async throws -> AsyncThrowingStream<String, Error> {
+            try ensureActive()
             
             // CRITICAL: Reset sampler for stateless raw completion
             // This clears any accumulated history from previous completions
@@ -566,6 +548,10 @@ extension FreeToken {
                     }
                 }
             }
+        }
+        
+        func resetSession() async {
+            await session.resetForRebuild()
         }
 
         // MARK: - Stop Sequence Trimming

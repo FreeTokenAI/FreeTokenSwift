@@ -63,16 +63,20 @@ extension FreeToken {
         }
         
         func availableMemoryForRequestedSize() -> Bool {
-            #if os(iOS)
-            let availableMemory = Int(Double(os_proc_available_memory()) * 0.75) // Only use 75% of available memory
-            let remainingMemory = availableMemory - memoryRequirement
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                FreeToken.shared.logger("🔴 No Metal device available for GPU memory check", .error)
+                return false
+            }
             
-            FreeToken.shared.logger("📲 Memory Test results: Available memory: \(availableMemory) bytes, Required memory: \(memoryRequirement) bytes, Remaining memory after allocation: \(remainingMemory) bytes", .debug)
+            let currentAllocated = UInt64(device.currentAllocatedSize)
+            let recommendedMax = UInt64(device.recommendedMaxWorkingSetSize)
+            let reservedMemory: UInt64 = UInt64(Float(currentAllocated) * 0.2) // Reserve 20% for fluctuations
             
-            return remainingMemory > 0
-            #else
-            return true // Assume sufficient memory on non-iOS platforms
-            #endif
+            let available = recommendedMax > currentAllocated ? recommendedMax - currentAllocated - reservedMemory : 0
+            
+            FreeToken.shared.logger("🖥️ GPU Memory Check: \(formatBytes(available)) available, \(formatBytes(UInt64(memoryRequirement))) required", .debug)
+            
+            return available >= memoryRequirement
         }
         
         func isTooHot() -> Bool {
@@ -95,6 +99,82 @@ extension FreeToken {
                 // Assume this is not a mobile device, heating is not a problem.
                 return false
             #endif
+        }
+        
+        // MARK: - GPU Memory Management
+        
+        /// Check if there's sufficient GPU memory available for a new session
+        /// - Parameter threshold: Memory usage threshold (0.0-1.0), defaults to 0.8 (80%)
+        /// - Returns: true if GPU memory usage is below threshold
+        func hasAvailableGPUMemory(threshold: Double = 0.8) -> Bool {
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                FreeToken.shared.logger("🔴 No Metal device available for GPU memory check", .error)
+                return false
+            }
+            
+            let currentAllocated = UInt64(device.currentAllocatedSize)
+            let recommendedMax = UInt64(device.recommendedMaxWorkingSetSize)
+            
+            guard recommendedMax > 0 else {
+                FreeToken.shared.logger("🟡 Unable to determine GPU memory limits", .warning)
+                return true // Assume OK if we can't determine limits
+            }
+            
+            let usageRatio = Double(currentAllocated) / Double(recommendedMax)
+            let isAvailable = usageRatio < threshold
+            
+            FreeToken.shared.logger("🖥️ GPU Memory: \(formatBytes(currentAllocated))/\(formatBytes(recommendedMax)) (\(String(format: "%.1f", usageRatio * 100))%) - \(isAvailable ? "Available" : "Full")", .debug)
+            
+            if !isAvailable {
+                FreeToken.shared.logger("⚠️ GPU memory usage at \(String(format: "%.1f", usageRatio * 100))% - threshold exceeded", .warning)
+            }
+            
+            return isAvailable
+        }
+        
+        /// Get current GPU memory statistics
+        /// - Returns: (current: bytes used, max: bytes available, percentage: 0.0-1.0)
+        func getGPUMemoryStats() -> (current: UInt64, max: UInt64, percentage: Double) {
+            guard let device = MTLCreateSystemDefaultDevice() else {
+                return (0, 0, 0.0)
+            }
+            
+            let current = UInt64(device.currentAllocatedSize)
+            let max = UInt64(device.recommendedMaxWorkingSetSize)
+            let percentage = max > 0 ? Double(current) / Double(max) : 0.0
+            
+            return (current, max, percentage)
+        }
+        
+        /// Force GPU memory cleanup if needed
+        func forceGPUMemoryCleanup() {
+            guard let device = MTLCreateSystemDefaultDevice() else { return }
+            
+            let beforeCleanup = UInt64(device.currentAllocatedSize)
+            
+            // Trigger Metal resource cleanup by creating and destroying a temporary command buffer
+            // This encourages Metal to free unused resources
+            let commandQueue = device.makeCommandQueue()
+            let commandBuffer = commandQueue?.makeCommandBuffer()
+            commandBuffer?.commit()
+            commandBuffer?.waitUntilCompleted()
+            
+            let afterCleanup = UInt64(device.currentAllocatedSize)
+            let freed = beforeCleanup > afterCleanup ? beforeCleanup - afterCleanup : 0
+            
+            if freed > 0 {
+                FreeToken.shared.logger("🧹 GPU memory cleanup freed \(formatBytes(freed))", .info)
+            } else {
+                FreeToken.shared.logger("🧹 GPU memory cleanup completed (no memory freed)", .debug)
+            }
+        }
+        
+        /// Format bytes for human-readable display
+        private func formatBytes(_ bytes: UInt64) -> String {
+            let formatter = ByteCountFormatter()
+            formatter.allowedUnits = [.useMB, .useGB]
+            formatter.countStyle = .memory
+            return formatter.string(fromByteCount: Int64(bytes))
         }
 
     }

@@ -390,7 +390,7 @@ public class FreeToken: @unchecked Sendable {
         
         // If a manager already exists, return its download state
         if let existingManager = aiModelsManager.getManager(for: unwrappedModelCode) {
-            return await existingManager.stateManager.getDownloadState()
+            return await existingManager.getDownloadState()
         }
         
         // Lazily load the AI model by code and create a new manager if missing
@@ -421,7 +421,7 @@ public class FreeToken: @unchecked Sendable {
                 isDefault: isDefault
             )
             FreeToken.shared.logger("✅ Initialized AI Model Manager for code \(unwrappedModelCode) on-demand.", .info)
-            return await newManager.stateManager.getDownloadState()
+            return await newManager.getDownloadState()
         } catch {
             FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager for code \(unwrappedModelCode): \(error.localizedDescription)", .error)
             // Propagate known FreeTokenError or wrap unknowns
@@ -476,7 +476,7 @@ public class FreeToken: @unchecked Sendable {
 
         // Download a specific model by initializing a new AIModelManager
         if let modelManager = aiModelsManager.getManager(for: modelCode!), let deviceManager = aiModelsManager.getDeviceManager(for: modelCode!) {
-            if await modelManager.stateManager.getDownloadState() == .downloaded {
+            if await modelManager.getDownloadState() == .downloaded {
                 FreeToken.shared.logger("⏭️ Model \(modelCode!) already downloded, skipping download", .info)
                 progressPercent?(1.0)
                 await successCallback(.downloaded)
@@ -903,6 +903,11 @@ public class FreeToken: @unchecked Sendable {
             return 0
         }
         
+        guard deviceManager?.isAICapable == true else {
+            FreeToken.shared.logger("🔴 Device is not AI capable, cannot tokenize text without a model", .error)
+            throw FreeTokenError.deviceNotCapable
+        }
+        
         // Use the AI Model Manager to count tokens
         let aiModelManager: AIModelManager?
         
@@ -919,7 +924,12 @@ public class FreeToken: @unchecked Sendable {
         }
         let message = Message(role: .user, content: text)
         
-        return try await aiModelManager!.tokensCount(for: nil, messages: [message])
+        if let aiModelManager = aiModelManager {
+            return try await aiModelManager.tokensCount(messages: [message])
+        } else {
+            FreeToken.shared.logger("🔴 No AI Model Manager available for token counting", .error)
+            throw FreeTokenError.aiModelNotLoaded
+        }
     }
     
     
@@ -983,7 +993,7 @@ public class FreeToken: @unchecked Sendable {
             deviceManager = self.deviceManager
         }
         
-        if await aiModelManager?.stateManager.getDownloadState() == .downloaded, deviceManager?.isTooHot() == false  {
+        if await aiModelManager?.getDownloadState() == .downloaded, deviceManager?.isTooHot() == false  {
             // Generate local completion
             await generateLocalCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
             return
@@ -1091,7 +1101,7 @@ public class FreeToken: @unchecked Sendable {
             aiModelManager = self.aiModelManager!
         }
         
-        guard await aiModelManager.stateManager.getDownloadState() == .downloaded else {
+        guard await aiModelManager.getDownloadState() == .downloaded else {
             await errorCompletion(FreeTokenError.aiModelNotDownloaded)
             return
         }
@@ -1816,7 +1826,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Check if the AI Model is downloaded
-        guard await aiModelManager?.stateManager.getDownloadState() == .downloaded else {
+        guard await aiModelManager?.getDownloadState() == .downloaded else {
             await errorCompletion(FreeTokenError.aiModelNotDownloaded)
             return
         }
@@ -1876,8 +1886,9 @@ public class FreeToken: @unchecked Sendable {
         }
         
         do {
-            let session = try await aiModelManager?.stateManager.loadSession(for: runIdentifier, runConfig: runConfig)
-            _ = try session?.load()
+            _ = try await aiModelManager?.loadSession(for: runIdentifier, runConfig: runConfig)
+            try await aiModelManager?.prewarmForId(id: runIdentifier)
+            
             await successCallback?()
         } catch {
             await errorCallback?(FreeTokenError.failedToLoadModel)
@@ -1931,8 +1942,7 @@ public class FreeToken: @unchecked Sendable {
         
         await self.getMessageThread(id: messageThreadID) { thread in
             do {
-                let session = try await aiModelManager?.stateManager.loadSession(for: messageThreadID, with: thread.messages, runConfig: runConfig)
-                _ = try session?.load()
+                _ = try await aiModelManager?.loadSession(for: messageThreadID, with: thread.messages, runConfig: runConfig)
                 await successCallback?()
             } catch {
                 await errorCallback?(FreeTokenError.failedToLoadModel)

@@ -21,9 +21,11 @@ extension FreeToken {
         private(set) var spans: [Span] = [] // aligned with messages
         private(set) var tokens: [Int32] = [] // cumulative rendered template tokens (no assistant slot)
         private let session: LlamaSession
-        private let options: LlamaInitOptions
         private let logPrefix = "TEMPLATE_BUILDER"
-        init(session: LlamaSession, options: LlamaInitOptions) { self.session = session; self.options = options }
+        
+        init(session: LlamaSession) {
+            self.session = session
+        }
         
         func addMessages(_ newMessages: [Message]) async throws -> [Span] {
             guard !newMessages.isEmpty else { return [] }
@@ -85,7 +87,7 @@ extension FreeToken {
             let deltaTokens = Array(finalTokens.dropFirst(tokens.count))
             if !deltaTokens.isEmpty {
                 let evalStart = Date()
-                try await session.eval(tokens: deltaTokens.map { Int($0) })
+                try await session.evalOptimized(tokens: deltaTokens.map { Int($0) })
                 let evalMs = Int(Date().timeIntervalSince(evalStart) * 1000)
                 FreeTokenLogger.shared.log("\(logPrefix) batch_eval messages=\(newMessages.count) tokens=\(deltaTokens.count) ms=\(evalMs) tps=\(Double(deltaTokens.count * 1000) / Double(evalMs))", level: .info)
             }

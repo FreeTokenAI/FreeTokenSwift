@@ -14,19 +14,28 @@ extension FreeToken {
 
         // Work item holds metadata and an async body that handles its own continuation.
         private struct WorkItem: Sendable {
+            let name: String
             let startTime: DispatchTime
             let runLocation: RunLocation
             let body: @Sendable () async -> Void
+            
+            func hasExpired() -> Bool {
+                if runLocation == .automatic,
+                   DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds > 30_000_000_000 {
+                    return true
+                }
+                return false
+            }
         }
 
         private var queue: [WorkItem] = []
         private var isRunning: Bool = false
 
-        func enqueue<T: Sendable>(runLocation: RunLocation, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
+        func enqueue<T: Sendable>(name: String, runLocation: RunLocation, _ operation: @escaping @Sendable () async throws -> T) async throws -> T {
             return try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<T, Error>) in
                 let startTime = DispatchTime.now()
 
-                let work = WorkItem(startTime: startTime, runLocation: runLocation) {
+                let work = WorkItem(name: name, startTime: startTime, runLocation: runLocation, body: {
                     // Timeout check prior to execution if waited too long.
                     if runLocation == .automatic,
                        DispatchTime.now().uptimeNanoseconds - startTime.uptimeNanoseconds > 30_000_000_000 {
@@ -40,7 +49,7 @@ extension FreeToken {
                     } catch {
                         continuation.resume(throwing: error)
                     }
-                }
+                })
 
                 queue.append(work)
                 Task { await self.processQueueIfNeeded() }
@@ -52,11 +61,27 @@ extension FreeToken {
             guard !isRunning, !queue.isEmpty else { return }
 
             isRunning = true
+            
+            // Look for expired all tasks and execute them first.
+            let expiredIndexes = queue.indices.filter { queue[$0].hasExpired() }
+            if !expiredIndexes.isEmpty {
+                for expiredIndex in expiredIndexes {
+                    let expiredItem = queue.remove(at: expiredIndex)
+                    await expiredItem.body()
+                }
+            }
+            
+            guard !queue.isEmpty else {
+                isRunning = false
+                return
+            }
+                        
             let item = queue.removeFirst()
-            FreeToken.shared.logger("🚀 Executing AI task in queue...", .info)
+            FreeToken.shared.logger("🚀 Executing AI task \(item.name) in queue...", .info)
             // Execute body serially inside actor.
             await item.body()
             isRunning = false
+            FreeToken.shared.logger("🏁 Finished Executing AI task \(item.name)", .info)
             await processQueueIfNeeded()
         }
 

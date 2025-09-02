@@ -44,14 +44,21 @@ extension FreeToken {
         let repeatLastN: Int
         let frequencyPenalty: Float
         let presencePenalty: Float
+        // DRY sampler parameters
+        let dryMultiplier: Float      // 0.0 = disabled, 0.8-1.5 recommended for IQ2_M
+        let dryBase: Float            // typically 1.75
+        let dryAllowedLength: Int     // how many tokens can repeat (2-4)
+        let dryPenaltyLastN: Int      // context window for DRY (256-512)
+        // XTC sampler parameters
+        let xtcProbability: Float     // 0.0 = disabled, 0.1-0.2 for IQ2_M
+        let xtcThreshold: Float       // typically 0.5-1.0
         let stopSequences: [String]
         let seed: UInt32?
-        let useChatTemplate: Bool
         let assistantPrefix: String?
         let chatStyle: ChatTemplateStyle
-    let threadCount: Int?      // desired inference thread count (nil -> auto)
-    let batchSize: Int?        // prompt decoding batch size hint (nil -> library default)
-    let threadCountBatch: Int? // threads for prompt / batch processing if API distinguishes
+        let threadCount: Int?      // desired inference thread count (nil -> auto)
+        let batchSize: Int?        // prompt decoding batch size hint (nil -> library default)
+        let threadCountBatch: Int? // threads for prompt / batch processing if API distinguishes
         
         init(
             contextSize: Int = 4096,
@@ -64,9 +71,14 @@ extension FreeToken {
             repeatLastN: Int = 64,
             frequencyPenalty: Float = 0.0,
             presencePenalty: Float = 0.0,
+            dryMultiplier: Float = 0.0,  // Disabled by default, use 0.8-1.5 for IQ2_M
+            dryBase: Float = 1.75,
+            dryAllowedLength: Int = 2,
+            dryPenaltyLastN: Int = 256,
+            xtcProbability: Float = 0.0,  // Disabled by default, use 0.1-0.2 for IQ2_M
+            xtcThreshold: Float = 0.5,
             stopSequences: [String] = [],
             seed: UInt32? = nil,
-            useChatTemplate: Bool = true,
             assistantPrefix: String? = nil,
             chatStyle: ChatTemplateStyle = .auto,
             threadCount: Int? = nil,
@@ -83,9 +95,14 @@ extension FreeToken {
             self.repeatLastN = repeatLastN
             self.frequencyPenalty = frequencyPenalty
             self.presencePenalty = presencePenalty
+            self.dryMultiplier = dryMultiplier
+            self.dryBase = dryBase
+            self.dryAllowedLength = dryAllowedLength
+            self.dryPenaltyLastN = dryPenaltyLastN
+            self.xtcProbability = xtcProbability
+            self.xtcThreshold = xtcThreshold
             self.stopSequences = stopSequences
             self.seed = seed
-            self.useChatTemplate = useChatTemplate
             self.assistantPrefix = assistantPrefix
             self.chatStyle = chatStyle
             self.threadCount = threadCount

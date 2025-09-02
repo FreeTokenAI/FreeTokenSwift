@@ -676,9 +676,6 @@ final class FreeTokenTests: XCTestCase {
                 XCTFail("Failed to create message thread: \(err.message)")
                 expectation.fulfill()
             }
-
-            
-            expectation.fulfill()
         }
         
         wait(for: [expectation], timeout: 1000.0)

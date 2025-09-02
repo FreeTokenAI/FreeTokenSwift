@@ -134,6 +134,14 @@ extension FreeToken {
                 let penaltyFrequency: Float
                 let penaltyPresence: Float
                 let batchSize: Int
+                // DRY sampler parameters
+                let dryMultiplier: Float?
+                let dryBase: Float?
+                let dryAllowedLength: Int32?
+                let dryPenaltyLastN: Int32?
+                // XTC sampler parameters
+                let xtcProbability: Float?
+                let xtcThreshold: Float?
                 
                 enum CodingKeys: String, CodingKey {
                     case topK = "top_k"
@@ -146,6 +154,14 @@ extension FreeToken {
                     case penaltyFrequency = "penalty_frequency"
                     case penaltyPresence = "penalty_presence"
                     case batchSize = "batch_size"
+                    // DRY sampler
+                    case dryMultiplier = "dry_multiplier"
+                    case dryBase = "dry_base"
+                    case dryAllowedLength = "dry_allowed_length"
+                    case dryPenaltyLastN = "dry_penalty_last_n"
+                    // XTC sampler
+                    case xtcProbability = "xtc_probability"
+                    case xtcThreshold = "xtc_threshold"
                 }
             }
             
@@ -1290,6 +1306,14 @@ extension FreeToken {
         var penaltyFrequency: Float
         var penaltyPresence: Float
         var batchSize: Int
+        // DRY sampler parameters
+        var dryMultiplier: Float
+        var dryBase: Float
+        var dryAllowedLength: Int32
+        var dryPenaltyLastN: Int32
+        // XTC sampler parameters
+        var xtcProbability: Float
+        var xtcThreshold: Float
         
         
         internal init(from modelOptions: Codings.AiModelConfigResponse.ModelOptions) {
@@ -1303,6 +1327,14 @@ extension FreeToken {
             self.penaltyFrequency = modelOptions.penaltyFrequency
             self.penaltyPresence = modelOptions.penaltyPresence
             self.batchSize = modelOptions.batchSize
+            // DRY sampler (default disabled if not provided)
+            self.dryMultiplier = modelOptions.dryMultiplier ?? 0.0
+            self.dryBase = modelOptions.dryBase ?? 1.75
+            self.dryAllowedLength = modelOptions.dryAllowedLength ?? 2
+            self.dryPenaltyLastN = modelOptions.dryPenaltyLastN ?? 256
+            // XTC sampler (default disabled if not provided)
+            self.xtcProbability = modelOptions.xtcProbability ?? 0.0
+            self.xtcThreshold = modelOptions.xtcThreshold ?? 0.5
         }
         
         func equals(_ other: AIModelConfiguration) -> Bool {
@@ -1316,7 +1348,13 @@ extension FreeToken {
                    self.penaltyRepeat == other.penaltyRepeat &&
                    self.penaltyFrequency == other.penaltyFrequency &&
                    self.penaltyPresence == other.penaltyPresence &&
-                   self.batchSize == other.batchSize
+                   self.batchSize == other.batchSize &&
+                   self.dryMultiplier == other.dryMultiplier &&
+                   self.dryBase == other.dryBase &&
+                   self.dryAllowedLength == other.dryAllowedLength &&
+                   self.dryPenaltyLastN == other.dryPenaltyLastN &&
+                   self.xtcProbability == other.xtcProbability &&
+                   self.xtcThreshold == other.xtcThreshold
         }
             
     }
