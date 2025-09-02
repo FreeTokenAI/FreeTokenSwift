@@ -362,7 +362,7 @@ public class FreeToken: @unchecked Sendable {
             try FileManager.default.removeItem(at: defaultRootDirectory)
             FreeToken.shared.logger("🗑️ AI model cache reset successfully", .info)
         } catch {
-            FreeToken.shared.logger("🔴 Failed to reset LLM model cache: \(error.localizedDescription)", .error)
+            FreeToken.shared.logger("🔴 Failed to reset AI model cache: \(error.localizedDescription)", .error)
         }
     }
     

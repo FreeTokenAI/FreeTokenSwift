@@ -45,6 +45,12 @@ extension FreeToken {
             return await ensureSessionAndGetState()
         }
 
+        /// Returns the current session state if a session already exists, without creating one.
+        /// This is used by lightweight verification paths that must not implicitly create sessions.
+        func existingSessionState() -> FreeToken.SessionState? {
+            return downloadManager.getSessionState(modelRepo)
+        }
+
         /// Ensures a `DownloadSession` exists for this model and returns its validated state.
         ///
         /// If a session already exists, it revalidates on-disk files (hash verifying when possible)
@@ -71,7 +77,7 @@ extension FreeToken {
 
             // Derive destination directory exactly as download() would so paths align.
             let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
-#if os(iOS) || os(tvOS) || os(watchOS)
+#if os(iOS)
             let destinationRelative = "FreeToken/Models/" + sanitizedRepo
             let destination = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                 .appendingPathComponent(destinationRelative).path

@@ -24,8 +24,8 @@ extension FreeToken {
         /// Prevents unbounded session growth and memory issues
         public var maxConcurrentSessions: Int = 10
         
-    // Track completion handlers for individual direct (non-session) downloads
-    private var completionHandlers: [URL: (Result<URL, Error>) -> Void] = [:]
+        // Track completion handlers for individual direct (non-session) downloads
+        private var completionHandlers: [URL: (Result<URL, Error>) -> Void] = [:]
         private var activeDownloads: [URL: URLSessionDownloadTask] = [:]
         
         // Session-based download management
@@ -41,7 +41,7 @@ extension FreeToken {
         private let resumeDataKey = "ai.freetoken.downloadManager.resumeData"
         
         // Background download handling (iOS-specific)
-        #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+#if os(iOS)
         private var backgroundCompletionHandler: (() -> Void)?
         
         // Background completion callbacks
@@ -50,7 +50,7 @@ extension FreeToken {
         
         /// Called when all background downloads finish processing
         public var onAllBackgroundDownloadsComplete: (() -> Void)?
-        #endif
+#endif
         
         private override init() {
             super.init()
@@ -65,7 +65,7 @@ extension FreeToken {
         /// relative to this root so they remain valid across sandbox UUID changes (iOS) or
         /// application reinstalls.
         static func baseRootDirectory() -> String {
-#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+#if os(iOS)
             return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.path
 #else
             return FileManager.default.homeDirectoryForCurrentUser.path
@@ -97,7 +97,7 @@ extension FreeToken {
             // If already absolute and appears to live inside current sandbox/home, trust it.
             if persisted.hasPrefix("/") {
                 // iOS sandbox UUID may have changed; attempt repair.
-#if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+#if os(iOS)
                 if persisted.contains("Application Support/") {
                     // Extract relative portion after Application Support/
                     if let range = persisted.range(of: "Application Support/") {
@@ -293,7 +293,7 @@ extension FreeToken {
                 FreeToken.shared.logger("📥 Moving downloaded file from \(location.path) to \(finalDestinationURL.path)", .info)
                 try fileManager.moveItem(at: location, to: finalDestinationURL)
                 
-                FreeToken.shared.logger("✅ Download completed successfully for \(url.absoluteString)", .info)
+                FreeToken.shared.logger("✅ Download completed successfully for \(finalDestinationURL.lastPathComponent)", .info)
                 
                 // Enhanced logging for session recovery troubleshooting
                 if let sessionID = sessionInfo.sessionID, sessionInfo.session == nil {
@@ -588,7 +588,7 @@ extension FreeToken {
             processBackgroundCompletedSessions()
             
             // Notify app that all background downloads have finished processing
-            #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+            #if os(iOS)
             onAllBackgroundDownloadsComplete?()
             
             // Call the iOS system completion handler
@@ -1878,7 +1878,7 @@ extension FreeToken {
             FreeToken.shared.logger("🔄 Handling background events for session: \(identifier)", .info)
             
             // Store the completion handler for later use (iOS-specific)
-            #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+            #if os(iOS)
             backgroundCompletionHandler = completionHandler
             #else
             // On macOS, call completion handler immediately as background behavior is different
@@ -1905,7 +1905,7 @@ extension FreeToken {
                     SessionStorage.save(metadata)
                     
                     // Notify about session completion (iOS-specific callback)
-                    #if os(iOS) || os(tvOS) || os(watchOS) || os(visionOS)
+                    #if os(iOS)
                     onBackgroundSessionCompletion?(session.id)
                     #endif
                 }

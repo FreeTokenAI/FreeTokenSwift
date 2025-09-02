@@ -897,4 +897,10 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 30.0)
     }
     
+    func testModelIsDownloaded() async throws {
+        let state = try await FreeToken.shared.getAIModelDownloadState()
+        
+        XCTAssert(state == .downloaded, "Expected model to be downloaded, got \(state)")
+    }
+    
 }

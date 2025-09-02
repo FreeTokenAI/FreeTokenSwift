@@ -258,6 +258,12 @@ extension FreeToken {
             private var sessionDates: [String: Date] = [:] // stable per-session date for message prep
             private var tokenizer: LlamaTokenizer? = nil
             private var highlanderMode: Bool
+            // Integrity verification state (in-memory only)
+            private var integrityResult: ModelIntegrityChecker.IntegrityResult = .unverified
+            private var validatedFileSizes: [String: Int64] = [:]
+            private var hashesValidatedOnce: Bool = false
+            private let integrityChecker = ModelIntegrityChecker()
+            private var downloadInspector: ModelDownloadInspector? = nil
             
             init(config: AIModelConfiguration, modelTypes: Codings.AvailableModelTypesResponse, clientConfig: Codings.ShowClientConfig, deviceManager: DeviceManager, promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
                 self.config = config
@@ -277,6 +283,8 @@ extension FreeToken {
                 #else
                 self.highlanderMode = false
                 #endif
+                let dl = modelTypes.llamaCpp
+                self.downloadInspector = ModelDownloadInspector(repo: dl.repo, modelFileName: dl.modelFileName, mmprojFileName: dl.mmproj)
             }
             
             private func setMemoryLevel(_ level: MemoryPressureLevel) {
@@ -303,33 +311,9 @@ extension FreeToken {
             
             // Get download state
             func getDownloadState() async -> ModelDownloadState {
-                let state: FreeToken.SessionState?
-                
-                if cachedDownloadState == nil {
-                    state = await self.downloadManager.ensureSessionAndGetState()
-                } else {
-                    state = cachedDownloadState
-                }
-                
-                if state == nil {
-                    FreeToken.shared.logger("🔴 AI model download state is nil, assuming not downloaded", .error)
-                    return .notDownloaded
-                }
-                
-                switch state! {
-                case .completed:
-                    self.cachedDownloadState = state! // Cache the completed download state to prevent redundant checks
-                    return .downloaded
-                case .downloading:
-                    return .downloading
-                case .failed:
-                    return .failed(error: "Model download failed")
-                case .partial:
-                    return .failed(error: "Model partially downloaded, but failed")
-                case .pending:
-                    FreeToken.shared.logger("🔵 AI model download is pending - or not verified.", .info)
-                    return .notDownloaded
-                }
+                guard let inspector = downloadInspector else { return .notDownloaded }
+                let state = await inspector.getState()
+                return state
             }
             
             func reset() async {
