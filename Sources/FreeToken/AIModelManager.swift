@@ -562,7 +562,7 @@ extension FreeToken {
                     throw FreeTokenError.aiRunFailed(message: "Cloud run is not supported in this context")
                 }
                 
-                try await loadSession(for: id, with: messages/*, isTemporary: isTemporary*/, runConfig: runConfig)
+                try await loadSession(for: id, with: messages, isTemporary: isTemporary, runConfig: runConfig)
                 
                 if deviceManager.isHighlanderMode {
                     let session = self.sessions.first!.value
@@ -723,8 +723,6 @@ extension FreeToken {
                 
                 var inputTokenCount = 0
                 
-                inputTokenCount = try await self.stateManager.tokenCountFor(messages: [Message(role: .user, content: text)]) - 2
-                
                 let task = Task {
                     do {
                         let maxTokenCount = await aiResults.maxTokenCount
@@ -746,6 +744,7 @@ extension FreeToken {
                                 break
                             }
                         }
+                        inputTokenCount = try await self.stateManager.tokenCountFor(messages: [Message(role: .user, content: text)]) - 2
                         await aiResults.setEndTime(DispatchTime.now())
                     } catch {
                         FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
@@ -803,12 +802,7 @@ extension FreeToken {
                     await aiResults.setMaxTokenCount(self.modelConfig.maxTokenCount)
                 }
                 
-                try await self.stateManager.loadSession(for: runIdentifier, with: messages/*, isTemporary: noContextCache*/, runConfig: aiRunConfig)
-                
                 var inputTokenCount = 0
-                
-                inputTokenCount = try await self.stateManager.tokenCountFor(messages: messages)
-                FreeToken.shared.logger("📊 Input token count: \(inputTokenCount) tokens", .info)
                 
                 let task = Task {
                     do {
@@ -832,6 +826,7 @@ extension FreeToken {
                             }
                         }
                         await aiResults.setEndTime(DispatchTime.now())
+                        inputTokenCount = try await self.stateManager.tokenCountFor(messages: messages)
                     } catch {
                         FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
                         
