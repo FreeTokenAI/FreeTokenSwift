@@ -24,23 +24,24 @@ extension FreeToken {
         }
         
         func addToolDefinitions(_ definitions: [ToolDefinition], type: ToolDefinitionType) {
-            switch type {
-            case .builtIn:
-                builtInDefinitions.append(contentsOf: definitions)
-            case .cloud:
-                cloudDefinitions.append(contentsOf: definitions)
-            case .application:
-                applicationDefinitions.append(contentsOf: definitions)
+            for definition in definitions {
+                addToolDefinition(definition, type: type)
             }
         }
         
         func addToolDefinition(_ definition: ToolDefinition, type: ToolDefinitionType) {
             switch type {
             case .builtIn:
+                // Remove any existing definition with the same name
+                builtInDefinitions.removeAll(where: { $0.name == definition.name })
                 builtInDefinitions.append(definition)
             case .cloud:
+                // Remove any existing definition with the same name
+                cloudDefinitions.removeAll(where: { $0.name == definition.name })
                 cloudDefinitions.append(definition)
             case .application:
+                // Remove any existing definition with the same name
+                applicationDefinitions.removeAll(where: { $0.name == definition.name })
                 applicationDefinitions.append(definition)
             }
         }
