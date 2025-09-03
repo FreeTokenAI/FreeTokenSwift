@@ -295,6 +295,20 @@ int32_t freetoken_eval_batch(
     int32_t batch_size,
     int32_t seq_id
 ) {
+    // Delegate to the new function with needs_logits = true for backward compatibility
+    return freetoken_eval_batch_ex(context, tokens, count, start_pos, batch_size, seq_id, true);
+}
+
+// Extended version with explicit logits control for optimized prompt evaluation
+int32_t freetoken_eval_batch_ex(
+    void* context,
+    const int32_t* tokens,
+    int32_t count,
+    int32_t start_pos,
+    int32_t batch_size,
+    int32_t seq_id,
+    bool needs_logits  // Only calculate logits for the very last token if true
+) {
     if (!context || !tokens || count <= 0) return -1;
     
     int32_t processed = 0;
@@ -302,6 +316,7 @@ int32_t freetoken_eval_batch(
     while (processed < count) {
         int32_t remaining = count - processed;
         int32_t chunk_size = remaining > batch_size ? batch_size : remaining;
+        bool is_last_chunk = (processed + chunk_size >= count);
         
         struct llama_batch batch = llama_batch_init(chunk_size, 0, 1);
         
@@ -309,8 +324,9 @@ int32_t freetoken_eval_batch(
             batch.token[i] = tokens[processed + i];
             batch.pos[i] = start_pos + processed + i;
             batch.n_seq_id[i] = 1;
-            batch.seq_id[i][0] = seq_id;  // Use provided sequence ID
-            batch.logits[i] = (i == chunk_size - 1) ? 1 : 0;  // Only last token needs logits
+            batch.seq_id[i][0] = seq_id;
+            // Only calculate logits for the very last token of the entire sequence if needed
+            batch.logits[i] = (needs_logits && is_last_chunk && i == chunk_size - 1) ? 1 : 0;
         }
         batch.n_tokens = chunk_size;
         
@@ -334,16 +350,31 @@ int32_t freetoken_eval_batch_with_session(
     int32_t batch_size,
     int32_t seq_id
 ) {
+    // Delegate to extended version with needs_logits = true for backward compatibility
+    return freetoken_eval_batch_with_session_ex(session, tokens, count, start_pos, batch_size, seq_id, true);
+}
+
+// Extended version with explicit logits control
+int32_t freetoken_eval_batch_with_session_ex(
+    freetoken_session_t session,
+    const int32_t* tokens,
+    int32_t count,
+    int32_t start_pos,
+    int32_t batch_size,
+    int32_t seq_id,
+    bool needs_logits
+) {
     if (!session || !session->context) return -1;
     
-    // First evaluate the batch
-    int32_t result = freetoken_eval_batch(
+    // First evaluate the batch with logits control
+    int32_t result = freetoken_eval_batch_ex(
         session->context,
         tokens,
         count,
         start_pos,
         batch_size,
-        seq_id
+        seq_id,
+        needs_logits
     );
     
     // If successful, feed tokens to sampler for penalty tracking

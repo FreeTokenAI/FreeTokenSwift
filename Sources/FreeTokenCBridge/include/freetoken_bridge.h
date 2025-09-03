@@ -87,7 +87,7 @@ freetoken_result freetoken_generate_next(
     int32_t seq_id                      // Sequence ID for KV cache
 );
 
-// Optimized batch evaluation
+// Optimized batch evaluation (backward compatible - always calculates logits)
 int32_t freetoken_eval_batch(
     void* context,                      // llama_context*
     const int32_t* tokens,              // Tokens to evaluate
@@ -97,7 +97,18 @@ int32_t freetoken_eval_batch(
     int32_t seq_id                      // Sequence ID for KV cache
 );
 
-// Evaluate batch and feed tokens to session sampler
+// Extended batch evaluation with logits control for optimized prompt processing
+int32_t freetoken_eval_batch_ex(
+    void* context,                      // llama_context*
+    const int32_t* tokens,              // Tokens to evaluate
+    int32_t count,                      // Number of tokens
+    int32_t start_pos,                  // Starting position
+    int32_t batch_size,                 // Batch size limit
+    int32_t seq_id,                     // Sequence ID for KV cache
+    bool needs_logits                   // Only calculate logits for last token if true
+);
+
+// Evaluate batch and feed tokens to session sampler (backward compatible)
 int32_t freetoken_eval_batch_with_session(
     freetoken_session_t session,        // Session with context and sampler
     const int32_t* tokens,              // Tokens to evaluate
@@ -105,6 +116,17 @@ int32_t freetoken_eval_batch_with_session(
     int32_t start_pos,                  // Starting position
     int32_t batch_size,                 // Batch size limit
     int32_t seq_id                      // Sequence ID for KV cache
+);
+
+// Extended session batch evaluation with logits control
+int32_t freetoken_eval_batch_with_session_ex(
+    freetoken_session_t session,        // Session with context and sampler
+    const int32_t* tokens,              // Tokens to evaluate
+    int32_t count,                      // Number of tokens
+    int32_t start_pos,                  // Starting position
+    int32_t batch_size,                 // Batch size limit
+    int32_t seq_id,                     // Sequence ID for KV cache
+    bool needs_logits                   // Only calculate logits for last token if true
 );
 
 // Fast token to string conversion with pre-allocated buffer

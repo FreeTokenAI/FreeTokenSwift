@@ -51,7 +51,86 @@ extension FreeToken {
             var toolCalls: [ToolCall] = []
             var matches: [String] = []
             
-            // Pattern to match JSON tool calls
+            // First try to find JSON arrays containing tool calls
+            // Use a more comprehensive pattern that handles nested objects
+            let arrayPattern = #"\[(?:\s*\{(?:[^{}]|\{[^}]*\})*\}\s*,?)+\]"#
+            if let arrayRegex = try? NSRegularExpression(pattern: arrayPattern, options: []) {
+                let arrayMatches = arrayRegex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
+                
+                for arrayMatch in arrayMatches {
+                    guard let arrayRange = Range(arrayMatch.range, in: messageContent) else { continue }
+                    let arrayString = String(messageContent[arrayRange])
+                    
+                    // Try to parse as JSON array
+                    if let data = arrayString.data(using: .utf8),
+                       let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
+                        for jsonObject in jsonArray {
+                            // Handle format: { "type": "function_call", "name": "...", "arguments": {...} }
+                            if let type = jsonObject["type"] as? String,
+                               type == "function_call" || type == "function",
+                               let name = jsonObject["name"] as? String,
+                               toolNames.contains(name) {
+                                
+                                var arguments: [String: String] = [:]
+                                if let argsDict = jsonObject["arguments"] as? [String: Any] {
+                                    for (key, value) in argsDict {
+                                        arguments[key] = String(describing: value)
+                                    }
+                                }
+                                
+                                let toolCall = ToolCall(name: name, arguments: arguments)
+                                toolCalls.append(toolCall)
+                                matches.append(arrayString)
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Also try to find individual JSON objects with type field (without array brackets)
+            let singleJsonWithTypePattern = #"\{\s*"type"\s*:\s*"(function_call|function)"\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
+            if let singleJsonRegex = try? NSRegularExpression(pattern: singleJsonWithTypePattern, options: []) {
+                let singleJsonMatches = singleJsonRegex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
+                
+                for match in singleJsonMatches {
+                    guard Range(match.range(at: 1), in: messageContent) != nil,
+                          let nameRange = Range(match.range(at: 2), in: messageContent),
+                          let argsRange = Range(match.range(at: 3), in: messageContent),
+                          let fullRange = Range(match.range, in: messageContent) else {
+                        continue
+                    }
+                    
+                    let toolName = String(messageContent[nameRange])
+                    let argsJson = String(messageContent[argsRange])
+                    let fullMatch = String(messageContent[fullRange])
+                    
+                    // Verify tool name is in allowed list
+                    guard toolNames.contains(toolName) else {
+                        continue
+                    }
+                    
+                    // Skip if already processed as part of an array
+                    if matches.contains(where: { $0.contains(fullMatch) }) {
+                        continue
+                    }
+                    
+                    // Parse JSON arguments
+                    if let data = argsJson.data(using: .utf8),
+                       let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                        // Convert all values to strings
+                        var arguments: [String: String] = [:]
+                        for (key, value) in jsonObject {
+                            arguments[key] = String(describing: value)
+                        }
+                        
+                        let toolCall = ToolCall(name: toolName, arguments: arguments)
+                        toolCalls.append(toolCall)
+                        matches.append(fullMatch)
+                    }
+                }
+            }
+            
+            // Also support individual JSON objects (original format)
             let jsonPattern = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}"#
             let regex = try NSRegularExpression(pattern: jsonPattern, options: [])
             let jsonMatches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
@@ -69,6 +148,11 @@ extension FreeToken {
                 
                 // Verify tool name is in allowed list
                 guard toolNames.contains(toolName) else {
+                    continue
+                }
+                
+                // Skip if already processed as part of an array
+                if matches.contains(where: { $0.contains(fullMatch) }) {
                     continue
                 }
                 

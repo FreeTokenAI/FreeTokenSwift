@@ -177,7 +177,8 @@ extension FreeToken {
         /// - Parameters:
         ///   - tokens: Tokens to evaluate
         ///   - feedToSampler: Whether to feed tokens to sampler for penalty tracking (default true for chat, false for raw completion)
-        func evalOptimized(tokens: [Int], feedToSampler: Bool = true) async throws {
+        ///   - needsLogits: Whether to calculate logits for the last token (default: true for generation, false for prompt loading)
+        func evalOptimized(tokens: [Int], feedToSampler: Bool = true, needsLogits: Bool = true) async throws {
             try ensureActive()
             guard !tokens.isEmpty else { return }
     
@@ -190,25 +191,27 @@ extension FreeToken {
             if feedToSampler {
                 // Use session-based eval that also feeds tokens to sampler for repetition penalty tracking
                 processed = converted.withUnsafeBufferPointer { buffer in
-                    freetoken_eval_batch_with_session(
+                    freetoken_eval_batch_with_session_ex(
                         session,
                         buffer.baseAddress,
                         Int32(buffer.count),
                         pos,
                         Int32(batchSize),
-                        0
+                        0,
+                        needsLogits
                     )
                 }
             } else {
                 // Use regular eval (for cases where we don't have a session yet or don't need penalty tracking)
                 processed = converted.withUnsafeBufferPointer { buffer in
-                    freetoken_eval_batch(
+                    freetoken_eval_batch_ex(
                         UnsafeMutableRawPointer(context),
                         buffer.baseAddress,
                         Int32(buffer.count),
                         pos,
                         Int32(batchSize),
-                        0
+                        0,
+                        needsLogits
                     )
                 }
             }

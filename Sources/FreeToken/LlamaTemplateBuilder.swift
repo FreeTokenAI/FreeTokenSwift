@@ -87,7 +87,18 @@ extension FreeToken {
             let deltaTokens = Array(finalTokens.dropFirst(tokens.count))
             if !deltaTokens.isEmpty {
                 let evalStart = Date()
-                try await session.evalOptimized(tokens: deltaTokens.map { Int($0) })
+                
+                // Optimize by evaluating all tokens except the last without logits
+                if deltaTokens.count > 1 {
+                    // Evaluate all but the last token without logits (faster)
+                    let promptTokens = Array(deltaTokens.dropLast())
+                    try await session.evalOptimized(tokens: promptTokens.map { Int($0) }, needsLogits: false)
+                }
+                
+                // Always evaluate the last token WITH logits for generation
+                let lastToken = deltaTokens.last!
+                try await session.evalOptimized(tokens: [Int(lastToken)], needsLogits: true)
+                
                 let evalMs = Int(Date().timeIntervalSince(evalStart) * 1000)
                 FreeTokenLogger.shared.log("\(logPrefix) batch_eval messages=\(newMessages.count) tokens=\(deltaTokens.count) ms=\(evalMs) tps=\(Double(deltaTokens.count * 1000) / Double(evalMs))", level: .info)
             }

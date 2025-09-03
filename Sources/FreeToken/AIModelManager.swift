@@ -6,18 +6,6 @@
 //
 import Foundation
 import Metal
-//import LocalLLMClient
-//import LocalLLMClientLlama
-//import LocalLLMClientMLX
-//import LocalLLMClientUtility
-
-#if canImport(UIKit)
-import UIKit
-#elseif canImport(AppKit)
-import AppKit
-#endif
-import os
-
 
 extension FreeToken {
     class AIModelManager: @unchecked Sendable {
@@ -263,6 +251,7 @@ extension FreeToken {
             private var hashesValidatedOnce: Bool = false
             private let integrityChecker = ModelIntegrityChecker()
             private var downloadInspector: ModelDownloadInspector? = nil
+            private var lastRunID: String = ""
             
             init(config: AIModelConfiguration, modelTypes: Codings.AvailableModelTypesResponse, clientConfig: Codings.ShowClientConfig, deviceManager: DeviceManager, promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
                 self.config = config
@@ -373,43 +362,41 @@ extension FreeToken {
                     config = self.config
                 }
                 
+                let originalID = id
+                var id = id // Allow mutating for highlander mode
+                
+                if deviceManager.isHighlanderMode {
+                    // Overriding ID in Highlander mode - always use the same session ID
+                    id = "highlander-session"
+                }
+                
                 // Stable date for this session id
                 let stableDate = sessionDates[id] ?? Date()
                 if sessionDates[id] == nil {
                     sessionDates[id] = stableDate
                 }
                 
+                let preparedMessages = try MessagePrep(
+                    messages: messages,
+                    promptTemplateConfig: self.promptTemplateConfig,
+                    fixedDate: stableDate
+                ).prepareMessages()
+                
                 if deviceManager.isHighlanderMode {
                     // Only one session at a time - reuse the existing session by resetting it.
-                    // Disreard the session ID and just use the first session.
                     
-                    let preparedMessages = try MessagePrep(
-                        messages: messages,
-                        promptTemplateConfig: self.promptTemplateConfig,
-                        fixedDate: stableDate
-                    ).prepareMessages()
-                    
-                    if sessions.count > 0 {
-                        let session = sessions.first!.value
-                        let sessionID = sessions.first!.key
-                        
-                        if sessions.count > 1 {
-                            FreeToken.shared.logger("⚔️ Highlander mode - removing all other sessions except ID: \(id)", .info)
-                            await self.removeAllSessions(but: sessionID)
-                        }
-                        
+                    if let session = self.sessions[id] {
                         if session.config.equals(config) {
-                            if sessionID != id {
-                                _ = await session.llama.resetSession() // Reset it so it's like new
-                                // Rename session key so that next time it won't reset the session
-                                if let value = self.sessions.removeValue(forKey: sessionID) {
-                                    self.sessions[id] = value // perform a move without copy
-                                }
+                            if originalID != self.lastRunID {
+                                await session.llama.resetSession()
                             }
+                            
                             try await session.catchUp(allThreadMessages: preparedMessages) // Load all the tokens into the thread
+
+                            self.lastRunID = originalID
                             return
                         } else {
-                            FreeToken.shared.logger("⚔️ Highlander mode - removing existing session with different config (ID: \(sessionID))", .info)
+                            FreeToken.shared.logger("⚔️ Highlander mode - removing existing session with different config (ID: \(id))", .info)
                             _ = await self.removeAllSessions()
                             // This will now fall through to create a new session below
                         }
@@ -422,42 +409,44 @@ extension FreeToken {
                     
                     let session = try AISessionManager(messages: preparedMessages, modelPath: modelPath, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
                     self.sessions[id] = session
+                    self.lastRunID = originalID
                     
                     return
-                }
-                
-                // Existing session check
-                if let existingSession = self.sessions[id], existingSession.config.equals(config) {
-                    // Session already exists, no need to load again
-                    try await self.catchUpFor(id: id, allThreadMessages: messages)
-                    return
-                }
-                
-                let preparedMessages = try MessagePrep(
-                    messages: messages,
-                    promptTemplateConfig: self.promptTemplateConfig,
-                    fixedDate: stableDate
-                ).prepareMessages()
-                
-                // If there will not be enough GPU memory, unload all other sessions
-                if !deviceHasEnoughMemoryForNewSession() {
-                    FreeToken.shared.logger("🟡 Not enough memory for new session, unloading all other sessions before loading new one", .warning)
-                    _ = await self.removeAllSessions()
+                } else {
                     
-                    // Wait 100ms and try again - if still not enough memory, fail
-                    try await Task.sleep(nanoseconds: 100 * 1_000_000)
-                    if !deviceHasEnoughMemoryForNewSession() {
-                        FreeToken.shared.logger("🔴 Still not enough memory after unloading all other sessions, cannot load new session", .error)
-                        throw FreeTokenError.aiRunFailed(message: "Insufficient memory for new AI session")
+                    // Existing session check
+                    if let existingSession = self.sessions[id], existingSession.config.equals(config) {
+                        FreeToken.shared.logger("[StateManager] Existing session found for \(id), calling catchUpFor", .debug)
+                        // Session already exists, no need to load again
+                        try await self.catchUpFor(id: id, allThreadMessages: messages)
+                        return
                     }
+                    
+                    FreeToken.shared.logger("[StateManager] After MessagePrep: \(preparedMessages.count) messages", .debug)
+                    for (i, msg) in preparedMessages.enumerated() {
+                        FreeToken.shared.logger("[StateManager] Prepared msg[\(i)]: role=\(msg.role), contentPrefix=\(String(msg.content.prefix(100)))", .debug)
+                    }
+                    
+                    // If there will not be enough GPU memory, unload all other sessions
+                    if !deviceHasEnoughMemoryForNewSession() {
+                        FreeToken.shared.logger("🟡 Not enough memory for new session, unloading all other sessions before loading new one", .warning)
+                        _ = await self.removeAllSessions()
+                        
+                        // Wait 100ms and try again - if still not enough memory, fail
+                        try await Task.sleep(nanoseconds: 100 * 1_000_000)
+                        if !deviceHasEnoughMemoryForNewSession() {
+                            FreeToken.shared.logger("🔴 Still not enough memory after unloading all other sessions, cannot load new session", .error)
+                            throw FreeTokenError.aiRunFailed(message: "Insufficient memory for new AI session")
+                        }
+                    }
+                    
+                    let session = try AISessionManager(messages: preparedMessages, modelPath: modelPath, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
+                    if isTemporary == false {
+                        self.sessions[id] = session
+                    }
+                    
+                    FreeToken.shared.logger("✅ \(isTemporary ? "Temporary " : "")Session loaded and pre-warmed for ID: \(id)", .info)
                 }
-                
-                let session = try AISessionManager(messages: preparedMessages, modelPath: modelPath, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
-                if isTemporary == false {
-                    self.sessions[id] = session
-                }
-                
-                FreeToken.shared.logger("✅ \(isTemporary ? "Temporary " : "")Session loaded and pre-warmed for ID: \(id)", .info)
             }
             
             func removeSession(for id: String) {
