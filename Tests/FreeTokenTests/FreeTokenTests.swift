@@ -48,6 +48,42 @@ final class FreeTokenTests: XCTestCase {
         }
     }
     
+    func testGetAIModelDownloadState() throws {
+        let expectation = self.expectation(description: "Waiting for download state check")
+        
+        Task {
+            do {
+                // Test 1: Check default model (should be downloaded from setUp)
+                let defaultState = try await FreeToken.shared.getAIModelDownloadState()
+                XCTAssertEqual(defaultState, .downloaded, "Default model should be downloaded after setUp")
+                print("✅ Default model state: \(defaultState)")
+                
+                // Test 2: Check a model that hasn't been downloaded yet
+                let undownloadedModelCode = "gemma3_4b_it"
+                let undownloadedState = try await FreeToken.shared.getAIModelDownloadState(modelCode: undownloadedModelCode)
+                print("✅ State for undownloaded model \(undownloadedModelCode): \(undownloadedState)")
+                XCTAssertEqual(undownloadedState, .notDownloaded, "Model that hasn't been downloaded should return .notDownloaded")
+                
+                // Test 3: Check the same undownloaded model again to ensure consistency
+                let undownloadedStateAgain = try await FreeToken.shared.getAIModelDownloadState(modelCode: undownloadedModelCode)
+                XCTAssertEqual(undownloadedStateAgain, .notDownloaded, "Checking again should still return .notDownloaded")
+                print("✅ Consistency check for \(undownloadedModelCode): \(undownloadedStateAgain)")
+                
+                // Test 4: Check default model again after checking other models
+                let defaultStateAgain = try await FreeToken.shared.getAIModelDownloadState()
+                XCTAssertEqual(defaultStateAgain, .downloaded, "Default model should still be downloaded")
+                print("✅ Default model state after other checks: \(defaultStateAgain)")
+                
+                expectation.fulfill()
+            } catch {
+                XCTFail("Failed to get download state: \(error)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 30.0)
+    }
+    
     func testLocalCompletion() throws {
         let expectation = self.expectation(description: "Waiting for completion")
 
