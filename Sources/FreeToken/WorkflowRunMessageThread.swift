@@ -592,10 +592,10 @@ extension FreeToken {
                                 FreeToken.shared.logger("⚠️ AI made too many recursive tool calls, stopping execution", .warning)
                                 profiler.end(eventType: .toolCallAgentRun, isSuccess: false, errorMessage: "Too many recursive tool calls")
                                 do {
-                            try await self.context.chatStatusStream?(nil, .stream_ended)
-                        } catch {
-                            // Ignore errors at stream end
-                        }
+                                    try await self.context.chatStatusStream?(nil, .stream_ended)
+                                } catch {
+                                    // Ignore errors at stream end
+                                }
                                 await success(self.context)
                                 return
                             }

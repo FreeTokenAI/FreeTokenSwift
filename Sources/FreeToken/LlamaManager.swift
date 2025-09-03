@@ -304,7 +304,7 @@ extension FreeToken {
                         // Capture last user message text for echo suppression heuristics
                         let lastUser = spans.last(where: { $0.message.role == .user })?.message.content
                         let stopTokens = await session.getStopTokens()
-                        var recentPieces: [String] = []  // Track recent pieces for repetition detection
+                        var recentText = ""  // Track recent text for repetition detection (sliding window)
                         
                         for i in 0..<maxTokens {
                             if Task.isCancelled { canceledEarly = metrics.producedTokens == 0; metrics.stopReason = "canceled"; break }
@@ -330,28 +330,45 @@ extension FreeToken {
                                 break
                             }
                             
-                            // Track recent pieces for repetition detection
+                            // Track recent text for repetition detection
                             if !piece.isEmpty {
-                                recentPieces.append(piece)
-                                if recentPieces.count > 10 { recentPieces.removeFirst() }
-                                
-                                // Debug log for repetition issues
-                                if piece.lowercased().contains("rome") || piece.lowercased().contains("r o m") {
-//                                    FreeTokenLogger.shared.log("Token \(nextToken) generated piece: '\(piece)' with penalty window of \(recentForPenalty.count) tokens", level: .debug)
+                                recentText += piece
+                                // Keep sliding window of last ~300 characters
+                                if recentText.count > 300 {
+                                    recentText = String(recentText.suffix(300))
                                 }
                                 
-                                // Check for severe repetition (same piece repeated 3+ times in last 5 pieces)
-                                if recentPieces.count >= 5 {
-                                    let last5 = recentPieces.suffix(5)
-                                    let trimmedPiece = piece.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    if !trimmedPiece.isEmpty {
-                                        let matchCount = last5.filter { $0.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedPiece }.count
-                                        if matchCount >= 3 {
-                                            FreeTokenLogger.shared.log("generate detected repetition of '\(trimmedPiece)', stopping", level: .warning)
+                                // Check for phrase-level repetition (sequences of 15+ chars repeated 3+ times)
+                                if recentText.count >= 100 {
+                                    // Look for repeated sequences of at least 15 characters
+                                    let minSequenceLength = 15
+                                    let textToCheck = recentText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    
+                                    // Scan for potential repeated sequences
+                                    for startIdx in textToCheck.indices {
+                                        guard textToCheck.distance(from: startIdx, to: textToCheck.endIndex) >= minSequenceLength else { break }
+                                        
+                                        let endIdx = textToCheck.index(startIdx, offsetBy: minSequenceLength)
+                                        let sequence = String(textToCheck[startIdx..<endIdx])
+                                        
+                                        // Count occurrences of this sequence
+                                        var occurrences = 0
+                                        var searchRange = textToCheck.startIndex..<textToCheck.endIndex
+                                        
+                                        while let range = textToCheck.range(of: sequence, options: .literal, range: searchRange) {
+                                            occurrences += 1
+                                            searchRange = range.upperBound..<textToCheck.endIndex
+                                        }
+                                        
+                                        // If same sequence appears 3+ times, it's likely repetition
+                                        if occurrences >= 3 {
+                                            FreeTokenLogger.shared.log("generate detected repetition of '\(sequence)...', stopping", level: .warning)
                                             metrics.stopReason = "repetition"
                                             break
                                         }
                                     }
+                                    
+                                    if metrics.stopReason == "repetition" { break }
                                 }
                             }
                             
@@ -458,8 +475,8 @@ extension FreeToken {
                     
                     do {
                         let stopTokens = await session.getStopTokens()
-                        // Track recent generated string fragments for heuristic repetition detection (mirrors chat path)
-                        var recentPieces: [String] = []
+                        // Track recent generated text for phrase-level repetition detection
+                        var recentText = ""
                         let echoSource: String? = text
                         
                         for i in 0..<maxTokens {
@@ -496,20 +513,44 @@ extension FreeToken {
                             if !piece.isEmpty { 
                                 emitted += piece
                                 continuation.yield(piece) 
-                                // Repetition tracking (piece-level)
-                                recentPieces.append(piece)
-                                if recentPieces.count > 10 { recentPieces.removeFirst() }
-                                if recentPieces.count >= 5 {
-                                    let last5 = recentPieces.suffix(5)
-                                    let trimmedPiece = piece.trimmingCharacters(in: .whitespacesAndNewlines)
-                                    if !trimmedPiece.isEmpty {
-                                        let matchCount = last5.filter { $0.trimmingCharacters(in: .whitespacesAndNewlines) == trimmedPiece }.count
-                                        if matchCount >= 3 { // 3 of last 5 identical
-                                            FreeTokenLogger.shared.log("generate(raw) detected repetition of '\(trimmedPiece)', stopping", level: .warning)
+                                // Track recent text for repetition detection
+                                recentText += piece
+                                // Keep sliding window of last ~300 characters
+                                if recentText.count > 300 {
+                                    recentText = String(recentText.suffix(300))
+                                }
+                                
+                                // Check for phrase-level repetition (sequences of 15+ chars repeated 3+ times)
+                                if recentText.count >= 100 {
+                                    // Look for repeated sequences of at least 15 characters
+                                    let minSequenceLength = 15
+                                    let textToCheck = recentText.trimmingCharacters(in: .whitespacesAndNewlines)
+                                    
+                                    // Scan for potential repeated sequences
+                                    for startIdx in textToCheck.indices {
+                                        guard textToCheck.distance(from: startIdx, to: textToCheck.endIndex) >= minSequenceLength else { break }
+                                        
+                                        let endIdx = textToCheck.index(startIdx, offsetBy: minSequenceLength)
+                                        let sequence = String(textToCheck[startIdx..<endIdx])
+                                        
+                                        // Count occurrences of this sequence
+                                        var occurrences = 0
+                                        var searchRange = textToCheck.startIndex..<textToCheck.endIndex
+                                        
+                                        while let range = textToCheck.range(of: sequence, options: .literal, range: searchRange) {
+                                            occurrences += 1
+                                            searchRange = range.upperBound..<textToCheck.endIndex
+                                        }
+                                        
+                                        // If same sequence appears 3+ times, it's likely repetition
+                                        if occurrences >= 3 {
+                                            FreeTokenLogger.shared.log("generate(raw) detected repetition of '\(sequence)...', stopping", level: .warning)
                                             metrics.stopReason = "repetition"
                                             break
                                         }
                                     }
+                                    
+                                    if metrics.stopReason == "repetition" { break }
                                 }
                             }
                             

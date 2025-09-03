@@ -961,4 +961,41 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 60.0)
     }
     
+    func testWebSearch() throws {
+        let expectation = self.expectation(description: "Waiting for web search completion")
+        
+        
+        Task {
+            try await FreeToken.shared.resetDevice()
+            
+            _ = try FreeToken.shared.configure(appToken: "test-token", baseURL: URL(string: "http://localhost:3000/api/v1/"),
+                                       logLevel: .debug)
+            
+            await FreeToken.shared.registerDeviceSession(scope: "web-search") {
+                await FreeToken.shared.createMessageThread { mt in
+                    await FreeToken.shared.addMessageToThread(id: mt.id, message: .init(role: .user, content: "What's the latest headlines on the internet? Be sure to use web_search tool.")) { message in
+                        await FreeToken.shared.runMessageThread(id: mt.id) { result in
+                            XCTAssertTrue(true)
+                            expectation.fulfill()
+                        } error: { err in
+                            XCTFail("Failed to run message thread: \(err.message)")
+                            expectation.fulfill()
+                        }
+                    } error: { err in
+                        XCTFail("Failed to add message to thread: \(err.message)")
+                        expectation.fulfill()
+                    }
+                } error: { err in
+                    XCTFail("Failed to create message thread: \(err.message)")
+                    expectation.fulfill()
+                }
+            } error: { err in
+                XCTFail("Failed to register device session: \(err.message)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 300.0)
+    }
+    
 }

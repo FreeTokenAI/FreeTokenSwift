@@ -71,49 +71,29 @@ extension FreeToken {
             let cloudToolCalls = toolCalls.filter { cloudToolCallNames.contains($0.name) }
             let internalCalls = toolCalls.filter { builtInToolCallNames.contains($0.name) }
 
-            let toolCallResultsCollector = ToolCallResultsCollector()
-            let dispatchGroup = DispatchGroup()
-
-            func launchTask(_ task: @Sendable @escaping () async -> Void) {
-                dispatchGroup.enter()
-                Task {
-                    defer { dispatchGroup.leave() }
-                    await task()
-                }
-            }
+            var results = ""
 
             if !cloudToolCalls.isEmpty {
-                launchTask { [self] in
-                    let result = await self.handleInternalCloudCalls(toolCalls: cloudToolCalls, cloudToolCallHandler: cloudToolCallHandler)
-                    await toolCallResultsCollector.appendResult(result)
-                }
+                let result = await self.handleInternalCloudCalls(toolCalls: cloudToolCalls, cloudToolCallHandler: cloudToolCallHandler)
+                results += "\n\n\(result)"
             }
 
             if !remainingToolCalls.isEmpty {
-                launchTask { [self] in
-                    let result = await self.handleExternalCalls(toolCalls: remainingToolCalls, externalToolCallHandler: externalToolCallHandler)
-                    await toolCallResultsCollector.appendResult(result)
-                }
+                let result = await self.handleExternalCalls(toolCalls: remainingToolCalls, externalToolCallHandler: externalToolCallHandler)
+                results += "\n\n\(result)"
             }
 
             if !internalCalls.isEmpty {
-                launchTask { [self] in
-                    let result = await self.handleInternalLocalCalls(toolCalls: internalCalls)
-                    await toolCallResultsCollector.appendResult(result)
-                }
+                let result = await self.handleInternalLocalCalls(toolCalls: internalCalls)
+                results += "\n\n\(result)"
             }
 
             // If all lists are empty, notify immediately (avoid hanging)
             if cloudToolCalls.isEmpty && remainingToolCalls.isEmpty && internalCalls.isEmpty {
                 await successCallback("")
                 return
-            }
-
-            dispatchGroup.notify(queue: .main) {
-                Task {
-                    let results = await toolCallResultsCollector.getResults()
-                    await successCallback(results)
-                }
+            } else {
+                await successCallback(results)
             }
         }
         

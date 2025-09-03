@@ -818,7 +818,7 @@ extension FreeToken {
                     do {
                         let maxTokenCount = await aiResults.maxTokenCount
                         FreeToken.shared.logger("🧠 Beginning AI Generation for \(runIdentifier)", .info)
-                        for try await value in try await self.stateManager.generateForId(runIdentifier, runLocation: runLocation, runConfig: aiRunConfig) {
+                        for try await value in try await self.stateManager.generateForId(runIdentifier, messages: messages, runLocation: runLocation, runConfig: aiRunConfig) {
                             if Task.isCancelled { break }
                             if await aiResults.startTime == nil {
                                 await aiResults.setStartTime(DispatchTime.now())
