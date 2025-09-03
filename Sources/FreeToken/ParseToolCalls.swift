@@ -65,10 +65,9 @@ extension FreeToken {
                     if let data = arrayString.data(using: .utf8),
                        let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
                         for jsonObject in jsonArray {
-                            // Handle format: { "type": "function_call", "name": "...", "arguments": {...} }
-                            if let type = jsonObject["type"] as? String,
-                               type == "function_call" || type == "function",
-                               let name = jsonObject["name"] as? String,
+                            // Handle format: { "type": "anything or omitted", "name": "...", "arguments": {...} }
+                            // Type field is completely optional and can have any value
+                            if let name = jsonObject["name"] as? String,
                                toolNames.contains(name) {
                                 
                                 var arguments: [String: String] = [:]
@@ -87,15 +86,22 @@ extension FreeToken {
                 }
             }
             
-            // Also try to find individual JSON objects with type field (without array brackets)
-            let singleJsonWithTypePattern = #"\{\s*"type"\s*:\s*"(function_call|function)"\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
+            // Also try to find individual JSON objects with optional type field (without array brackets)
+            // The type field can appear before or after name, or be omitted entirely
+            // Pattern 1: type before name
+            let pattern1 = #"\{\s*"type"\s*:\s*"[^"]+"\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
+            // Pattern 2: name before type
+            let pattern2 = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"type"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
+            // Pattern 3: no type field
+            let pattern3 = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
+            
+            for singleJsonWithTypePattern in [pattern1, pattern2, pattern3] {
             if let singleJsonRegex = try? NSRegularExpression(pattern: singleJsonWithTypePattern, options: []) {
                 let singleJsonMatches = singleJsonRegex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
                 
                 for match in singleJsonMatches {
-                    guard Range(match.range(at: 1), in: messageContent) != nil,
-                          let nameRange = Range(match.range(at: 2), in: messageContent),
-                          let argsRange = Range(match.range(at: 3), in: messageContent),
+                    guard let nameRange = Range(match.range(at: 1), in: messageContent),
+                          let argsRange = Range(match.range(at: 2), in: messageContent),
                           let fullRange = Range(match.range, in: messageContent) else {
                         continue
                     }
@@ -129,46 +135,6 @@ extension FreeToken {
                     }
                 }
             }
-            
-            // Also support individual JSON objects (original format)
-            let jsonPattern = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{[^}]*\})\s*\}"#
-            let regex = try NSRegularExpression(pattern: jsonPattern, options: [])
-            let jsonMatches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
-            
-            for match in jsonMatches {
-                guard let nameRange = Range(match.range(at: 1), in: messageContent),
-                      let argsRange = Range(match.range(at: 2), in: messageContent),
-                      let fullRange = Range(match.range, in: messageContent) else {
-                    continue
-                }
-                
-                let toolName = String(messageContent[nameRange])
-                let argsJson = String(messageContent[argsRange])
-                let fullMatch = String(messageContent[fullRange])
-                
-                // Verify tool name is in allowed list
-                guard toolNames.contains(toolName) else {
-                    continue
-                }
-                
-                // Skip if already processed as part of an array
-                if matches.contains(where: { $0.contains(fullMatch) }) {
-                    continue
-                }
-                
-                // Parse JSON arguments
-                if let data = argsJson.data(using: .utf8),
-                   let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                    // Convert all values to strings
-                    var arguments: [String: String] = [:]
-                    for (key, value) in jsonObject {
-                        arguments[key] = String(describing: value)
-                    }
-                    
-                    let toolCall = ToolCall(name: toolName, arguments: arguments)
-                    toolCalls.append(toolCall)
-                    matches.append(fullMatch)
-                }
             }
             
             return (toolCalls, matches)

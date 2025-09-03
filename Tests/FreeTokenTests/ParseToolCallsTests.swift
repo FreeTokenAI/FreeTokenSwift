@@ -169,4 +169,61 @@ final class ParseToolCallsTests: XCTestCase {
         XCTAssertTrue(hasNoBrackets, "Should find tool call without brackets")
         XCTAssertTrue(hasWithBrackets, "Should find tool call with brackets")
     }
+    
+    func testFlexibleTypeField() throws {
+        // Test that type field is optional and can have any value
+        let messageContent = """
+        Tool calls with various type fields:
+        
+        { "type": "tool", "name": "web_search", "arguments": { "query": "custom type" } }
+        { "type": "random_value", "name": "article_lookup", "arguments": { "query": "any type" } }
+        { "name": "get_current_weather", "arguments": { "location": "NYC", "format": "celsius" } }
+        
+        In array format:
+        [
+            { "type": "something_else", "name": "web_search", "arguments": { "query": "array test" } },
+            { "name": "article_lookup", "arguments": { "query": "no type in array" } }
+        ]
+        """
+        
+        let parser = FreeToken.ParseToolCalls(messageContent: messageContent, toolNames: ["web_search", "article_lookup", "get_current_weather"])
+        let toolCalls = try parser.parse()
+        
+        XCTAssertEqual(toolCalls.count, 5, "Should find all 5 tool calls regardless of type field")
+        
+        // Check individual calls
+        let hasCustomType = toolCalls.contains { $0.name == "web_search" && $0.arguments["query"] == "custom type" }
+        let hasAnyType = toolCalls.contains { $0.name == "article_lookup" && $0.arguments["query"] == "any type" }
+        let hasNoType = toolCalls.contains { $0.name == "get_current_weather" && $0.arguments["location"] == "NYC" }
+        let hasArrayTest = toolCalls.contains { $0.name == "web_search" && $0.arguments["query"] == "array test" }
+        let hasNoTypeInArray = toolCalls.contains { $0.name == "article_lookup" && $0.arguments["query"] == "no type in array" }
+        
+        XCTAssertTrue(hasCustomType, "Should handle type='tool'")
+        XCTAssertTrue(hasAnyType, "Should handle type='random_value'")
+        XCTAssertTrue(hasNoType, "Should handle missing type field")
+        XCTAssertTrue(hasArrayTest, "Should handle type='something_else' in array")
+        XCTAssertTrue(hasNoTypeInArray, "Should handle missing type in array")
+    }
+    
+    func testTypeFieldPosition() throws {
+        // Test that type field can appear in different positions
+        let messageContent = """
+        { "type": "function", "name": "web_search", "arguments": { "query": "type first" } }
+        { "name": "article_lookup", "type": "function_call", "arguments": { "query": "type middle" } }
+        { "name": "get_current_weather", "arguments": { "location": "LA" }, "type": "tool" }
+        """
+        
+        let parser = FreeToken.ParseToolCalls(messageContent: messageContent, toolNames: ["web_search", "article_lookup", "get_current_weather"])
+        let toolCalls = try parser.parse()
+        
+        // Note: Currently only supporting type before name, name before type, or no type
+        // The third format (type after arguments) won't be detected with current patterns
+        XCTAssertGreaterThanOrEqual(toolCalls.count, 2, "Should find at least 2 tool calls")
+        
+        let hasTypeFirst = toolCalls.contains { $0.name == "web_search" && $0.arguments["query"] == "type first" }
+        let hasTypeMiddle = toolCalls.contains { $0.name == "article_lookup" && $0.arguments["query"] == "type middle" }
+        
+        XCTAssertTrue(hasTypeFirst, "Should handle type before name")
+        XCTAssertTrue(hasTypeMiddle, "Should handle name before type")
+    }
 }
