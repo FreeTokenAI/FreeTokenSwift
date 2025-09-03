@@ -16,7 +16,7 @@ extension FreeToken {
         let runIdentifier: String
         let deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?
         let aiModelManager: AIModelManager?
-        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
+        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
         let toolCallback: Optional<@Sendable ([FreeToken.ToolCall]) async -> String>
         let deviceManager: DeviceManager?
         let documentSearchScope: String?
@@ -53,7 +53,7 @@ extension FreeToken {
             toolRunMasks: [ToolRunMask],
             allToolDefinitions: [ToolDefinition] = [],
             toolDefinitionsManager: ToolDefinitionsManager,
-            chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>,
+            chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>,
             toolCallback: Optional<@Sendable ([FreeToken.ToolCall]) async -> String> = nil
         ) {
             self.messageThreadID = messageThreadID
@@ -166,7 +166,7 @@ extension FreeToken {
         let context: RunMessageThreadContext
         let deviceDetails: FreeToken.Codings.ShowDeviceSessionResponse?
         let aiModelManager: AIModelManager?
-        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
+        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
         let runLocation: FreeToken.RunLocation
         let deviceManager: DeviceManager?
         
@@ -193,7 +193,13 @@ extension FreeToken {
                 if lastMessageHasImages {
                     FreeToken.shared.logger("📸 Last message contains images, forcing cloud run (vision not supported locally)", .info)
                     context.cloudRun = true
-                    await chatStatusStream?(nil, .starting)
+                    do {
+                        try await chatStatusStream?(nil, .starting)
+                    } catch {
+                        // User cancelled immediately
+                        await failure(FreeTokenError.generationCancelled, context)
+                        return
+                    }
                     await success(context)
                     return
                 }
@@ -203,7 +209,11 @@ extension FreeToken {
                     context.cloudRun = try await shouldCloudRun()
                     await success(context)
                 } catch {
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     await failure(error as! FreeTokenError, context)
                     return
                 }
@@ -215,7 +225,11 @@ extension FreeToken {
                 // Check for vision requirement in local run
                 if lastMessageHasImages {
                     FreeToken.shared.logger("❌ Local run requested but message contains images - vision not supported on local models", .error)
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     await failure(FreeTokenError.visionNotSupportedLocally, context)
                     return
                 }
@@ -225,28 +239,44 @@ extension FreeToken {
                 
                 // Check if device is overheating
                 if deviceManager?.isTooHot() == true {
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     await failure(FreeTokenError.deviceOverheating, context)
                     return
                 }
                 
                 // Check if AI model is downloaded
                 if await aiModelManager?.getDownloadState() != .downloaded {
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     await failure(FreeTokenError.aiModelNotDownloaded, context)
                     return
                 }
                 
                 // Check if device is AI capable
                 if deviceManager?.isAICapable != true {
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     await failure(FreeTokenError.deviceNotCapable, context)
                     return
                 }
                 
                 // Check if model is cloud only
                 if deviceDetails?.aiModel.cloudOnly == true {
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     await failure(FreeTokenError.isCloudOnlyModel, context)
                     return
                 }
@@ -309,7 +339,7 @@ extension FreeToken {
     
     final class RunAIModelInCloud: WorkflowStep, @unchecked Sendable {
         let context: RunMessageThreadContext
-        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
+        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
         let messageThread: MessageThread
         
         init(context: any FreeToken.WorkflowContext) {
@@ -332,7 +362,13 @@ extension FreeToken {
             
             FreeToken.shared.logger("🏁 Running message thread in the cloud with ID: \(context.messageThreadID)", .info)
             
-            await chatStatusStream?(nil, .sending_to_cloud_ai)
+            do {
+                try await chatStatusStream?(nil, .sending_to_cloud_ai)
+            } catch {
+                // User cancelled before cloud execution
+                await failure(FreeTokenError.generationCancelled, context)
+                return
+            }
             
             await FreeToken.shared.generateCloudChatCompletion(messages: messageThread.messages, model: context.modelCode, aiRunConfig: context.aiRunConfig, chatStatusStream: chatStatusStream) { message in
                 self.context.resultMessage = message
@@ -349,7 +385,7 @@ extension FreeToken {
     
     final class RunAIModelLocally: WorkflowStep, @unchecked Sendable {
         let context: RunMessageThreadContext
-        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void>
+        let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
         let aiModelManager: AIModelManager?
         let aiRunConfig: AIRunConfig?
         let messageThread: MessageThread
@@ -374,7 +410,13 @@ extension FreeToken {
                 return
             }
             
-            await chatStatusStream?(nil, .sending_to_local_ai)
+            do {
+                try await chatStatusStream?(nil, .sending_to_local_ai)
+            } catch {
+                // User cancelled before local execution
+                await failure(FreeTokenError.generationCancelled, context)
+                return
+            }
             
             let resultText: String
             let usage: TokenUsage?
@@ -386,7 +428,12 @@ extension FreeToken {
                 
                 FreeToken.shared.logger("🏁 Running message thread locally with ID: \(context.messageThreadID)", .info)
                 (resultText, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: context.runIdentifier, runLocation: context.runLocation, aiRunConfig: aiRunConfig) { tokens in
-                    await self.chatStatusStream?(tokens, .streaming_tokens)
+                    do {
+                        try await self.chatStatusStream?(tokens, .streaming_tokens)
+                    } catch {
+                        // User cancelled during streaming - this will be handled by sendMessagesToAI
+                        throw error
+                    }
                     // TODO: Try to start handling tool calls before the AI completes?
                 }
 
@@ -506,7 +553,13 @@ extension FreeToken {
             let profiler = Profiler()
             
             do {
-                await self.context.chatStatusStream?(nil, .evaluating_tool_calls)
+                do {
+                    try await self.context.chatStatusStream?(nil, .evaluating_tool_calls)
+                } catch {
+                    // User cancelled during tool evaluation
+                    await failure(FreeTokenError.generationCancelled, self.context)
+                    return
+                }
                 try await toolCallManager.process(externalToolCallHandler: externalToolCallback) { cloudToolCalls in
                     // TODO: Handle Cloud Tool Calls
                     return ""
@@ -515,7 +568,11 @@ extension FreeToken {
                     profiler.end(eventType: .toolCallAgentRun, isSuccess: true)
                     if result == "" {
                         // No tool calls to handle, just continue
-                        await self.context.chatStatusStream?(nil, .stream_ended)
+                        do {
+                            try await self.context.chatStatusStream?(nil, .stream_ended)
+                        } catch {
+                            // Ignore errors at stream end
+                        }
                         await success(self.context)
                         return
                     }
@@ -534,7 +591,11 @@ extension FreeToken {
                             if self.context.toolCallRecursiveRuns >= 3 {
                                 FreeToken.shared.logger("⚠️ AI made too many recursive tool calls, stopping execution", .warning)
                                 profiler.end(eventType: .toolCallAgentRun, isSuccess: false, errorMessage: "Too many recursive tool calls")
-                                await self.context.chatStatusStream?(nil, .stream_ended)
+                                do {
+                            try await self.context.chatStatusStream?(nil, .stream_ended)
+                        } catch {
+                            // Ignore errors at stream end
+                        }
                                 await success(self.context)
                                 return
                             }

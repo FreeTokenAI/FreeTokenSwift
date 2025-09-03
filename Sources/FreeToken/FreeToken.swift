@@ -936,11 +936,25 @@ public class FreeToken: @unchecked Sendable {
     /// Generate an AI Completion
     ///
     /// ```
+    ///     // Basic usage
     ///     client.generateCompletion(prompt: "A supernova is") { response in
     ///         // Use the response to the completion how you would like:
     ///         // response.completion
     ///      } error: { error in
     ///         // Handle any errors
+    ///     }
+    ///     
+    ///     // With token streaming
+    ///     client.generateCompletion(
+    ///         prompt: "A supernova is",
+    ///         tokenStream: { token in
+    ///             print(token, terminator: "")  // Print tokens as they arrive
+    ///             // Throw an error to cancel generation
+    ///         }
+    ///     ) { response in
+    ///         print("\nComplete: \(response.completion)")
+    ///     } error: { error in
+    ///         // Handle any errors (including .generationCancelled)
     ///     }
     /// ```
     ///
@@ -956,12 +970,13 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - prompt: The prompt you want to send to the AI for completion
     ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface. (Think of this like a model ID, unique to the individual AI model)
-    ///     - maxTokens: Optional maximum number of tokens to generate in the completion
+    ///     - aiRunConfig: Optional configuration for AI generation including max tokens, temperature, etc.
+    ///     - tokenStream: Optional closure for streaming tokens as they're generated. Throw an error to cancel generation.
     ///     - success: A closure to capture the results of the call to generate the completion
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ token: String) async throws -> Void> = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -969,7 +984,7 @@ public class FreeToken: @unchecked Sendable {
         
         // Check if server forces cloud execution
         if deviceDetails?.forceCloudRun == true {
-            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
             return
         }
         
@@ -984,7 +999,7 @@ public class FreeToken: @unchecked Sendable {
             } else {
                 FreeToken.shared.logger("⏭️ Completion called for model code \(modelCode) - model not loaded, running in cloud.", .warning)
                 // Cloud Completion with model code
-                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
                 return
             }
         } else {
@@ -995,22 +1010,35 @@ public class FreeToken: @unchecked Sendable {
         
         if await aiModelManager?.getDownloadState() == .downloaded, deviceManager?.isTooHot() == false  {
             // Generate local completion
-            await generateLocalCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+            await generateLocalCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
             return
         } else {
             // Generate cloud completion
-            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, success: successCompletion, error: errorCompletion)
+            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
         }
     }
     
     /// Generate an AI Completion in the FreeToken Cloud
     ///
     /// ```
+    ///     // Basic usage
     ///     client.generateCloudCompletion(prompt: "Complete the following phrase. My favorite star is") { response in
     ///         // Process the resulting text
     ///         // response.completion
     ///      } error: { error in
     ///         // Handle error response
+    ///     }
+    ///     
+    ///     // With token streaming
+    ///     client.generateCloudCompletion(
+    ///         prompt: "Complete the following phrase. My favorite star is",
+    ///         tokenStream: { token in
+    ///             print(token, terminator: "")  // Stream tokens from cloud
+    ///         }
+    ///     ) { response in
+    ///         print("\nComplete response: \(response.completion)")
+    ///     } error: { error in
+    ///         // Handle errors
     ///     }
     /// ```
     ///
@@ -1021,12 +1049,13 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - prompt: Prompt to have the AI complete
     ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface. (Think of this like a model ID, unique to the individual AI model)
-    ///     - maxTokens: Optional maximum number of tokens to generate in the completion
+    ///     - aiRunConfig: Optional configuration for AI generation including max tokens, temperature, etc.
+    ///     - tokenStream: Optional closure for streaming tokens as they're generated. Throw an error to cancel generation.
     ///     - success: A closure to capture the results of the AI completion
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ token: String) async throws -> Void> = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -1039,16 +1068,106 @@ public class FreeToken: @unchecked Sendable {
 
         let request = Codings.CreateCompletionRequest(prompt: prompt, model: modelCode, maxTokens: maxTokens)
         let profiler = Profiler()
-        await postData(path: "completions", data: request, responseType: Codings.CreateCompletionResponse.self) { result in
-            switch result {
-            case .success(let response):
-                profiler.end(eventType: Profiler.EventType.generateCloudCompletion, isSuccess: true)
-                FreeToken.shared.logger("Completion generated succesfully", .info)
-                await successCompletion(Completion(from: response))
-            case .failure(let error):
-                profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: error.message)
-                FreeToken.shared.logger("Completion failed to generate", .error)
-                await errorCompletion(error)
+        
+        // Check if we need streaming support
+        if let tokenStream = tokenStream {
+            // Use streaming version - convert to chat format for streaming support
+            let messages = [Codings.CodableMessage(role: "user", content: prompt, attachments: nil)]
+            let chatRequest = Codings.CreateCloudChatCompletion(messages: messages, model: modelCode, topK: nil, topP: nil, temperature: nil, maxTokens: maxTokens)
+            
+            actor StreamingState {
+                private var _isCancelled = false
+                private var _completionText = ""
+                
+                var isCancelled: Bool {
+                    return _isCancelled
+                }
+                
+                var completionText: String {
+                    return _completionText
+                }
+                
+                func appendText(_ text: String) {
+                    _completionText += text
+                }
+                
+                func cancel() {
+                    _isCancelled = true
+                }
+            }
+            
+            let streamingState = StreamingState()
+            
+            await streamPostData(path: "completions/chat", data: chatRequest, responseType: Codings.CloudChatResponse.self) { chunk in
+                // Check if already cancelled
+                if await streamingState.isCancelled {
+                    return
+                }
+                
+                // With SSE preprocessing, we get clean JSON chunks that can be parsed directly
+                if chunk.range(of: "message_chunk") != nil && !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    if let data = chunk.data(using: .utf8) {
+                        do {
+                            let decoder = JSONDecoder()
+                            let messageContentChunk = try decoder.decode(Codings.MessageContentChunk.self, from: data)
+                            
+                            if !messageContentChunk.messageChunk.isEmpty {
+                                await streamingState.appendText(messageContentChunk.messageChunk)
+                                do {
+                                    try await tokenStream(messageContentChunk.messageChunk)
+                                } catch {
+                                    // User cancelled generation through tokenStream
+                                    FreeToken.shared.logger("⚠️ Token stream threw error, cancelling generation: \(error)", .warning)
+                                    await streamingState.cancel()
+                                }
+                            }
+                        } catch {
+                            FreeToken.shared.logger("🔴 Error decoding message content chunk: \(chunk) - ERROR: \(error)", .error)
+                        }
+                    }
+                }
+            } completion: { result in
+                // Check if cancelled by user
+                if await streamingState.isCancelled {
+                    await errorCompletion(FreeTokenError.generationCancelled)
+                    return
+                }
+                
+                switch result {
+                case .success(let response):
+                    if let errorResponse = response.error {
+                        FreeToken.shared.logger("🔴 Error in cloud completion: \(errorResponse.message)", .error)
+                        profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: errorResponse.message)
+                        await errorCompletion(FreeTokenError.cloudCompletionFailed(message: errorResponse.message))
+                        return
+                    }
+                    
+                    profiler.end(eventType: Profiler.EventType.generateCloudCompletion, isSuccess: true)
+                    FreeToken.shared.logger("Completion generated successfully", .info)
+                    
+                    // Create completion from accumulated text
+                    let completion = Completion(response: await streamingState.completionText)
+                    await successCompletion(completion)
+                    
+                case .failure(let error):
+                    profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: error.message)
+                    FreeToken.shared.logger("Completion failed to generate", .error)
+                    await errorCompletion(error)
+                }
+            }
+        } else {
+            // Non-streaming version
+            await postData(path: "completions", data: request, responseType: Codings.CreateCompletionResponse.self) { result in
+                switch result {
+                case .success(let response):
+                    profiler.end(eventType: Profiler.EventType.generateCloudCompletion, isSuccess: true)
+                    FreeToken.shared.logger("Completion generated successfully", .info)
+                    await successCompletion(Completion(from: response))
+                case .failure(let error):
+                    profiler.end(eventType: .generateCloudCompletion, isSuccess: false, errorMessage: error.message)
+                    FreeToken.shared.logger("Completion failed to generate", .error)
+                    await errorCompletion(error)
+                }
             }
         }
     }
@@ -1056,11 +1175,27 @@ public class FreeToken: @unchecked Sendable {
     /// Generate AI completion locally on device
     ///
     /// ```
+    ///     // Basic usage
     ///     client.generateLocalCompletion(prompt: "Message to summarize: \(message). MESSAGE SUMMARY:") { response in
     ///         // Process the resulting text
     ///         // response.completion
     ///     } error: { error in
     ///         // Handle error response
+    ///     }
+    ///     
+    ///     // With token streaming for real-time output
+    ///     client.generateLocalCompletion(
+    ///         prompt: "Message to summarize: \(message). MESSAGE SUMMARY:",
+    ///         tokenStream: { token in
+    ///             print(token, terminator: "")  // Stream tokens locally
+    ///             // Can throw error to cancel
+    ///         }
+    ///     ) { response in
+    ///         print("\nSummary complete: \(response.completion)")
+    ///     } error: { error in
+    ///         if case .generationCancelled = error {
+    ///             print("Generation was cancelled")
+    ///         }
     ///     }
     /// ```
     ///
@@ -1070,12 +1205,13 @@ public class FreeToken: @unchecked Sendable {
     /// - Parameters:
     ///     - prompt: Prompt to have the AI complete
     ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface
-    ///     - maxTokens: Optional maximum number of tokens to generate in the completion
+    ///     - aiRunConfig: Optional configuration for AI generation including max tokens, temperature, etc.
+    ///     - tokenStream: Optional closure for streaming tokens as they're generated. Throw an error to cancel generation.
     ///     - success: A closure that is called after the successful call to the AI
     ///     - error: A closure to capture any errors that occur during the call
     ///
     /// - Returns: Void
-    public func generateLocalCompletion(prompt: String, modelCode: String? = nil, aiRunConfig: AIRunConfig? = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    public func generateLocalCompletion(prompt: String, modelCode: String? = nil, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ token: String) async throws -> Void> = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -1117,22 +1253,27 @@ public class FreeToken: @unchecked Sendable {
             let response: String
             let usage: TokenUsage?
             
-            (response, usage) = try await aiModelManager.sendTextToAI(text: prompt, runLocation: .localRun)
+            (response, usage) = try await aiModelManager.sendTextToAI(text: prompt, runLocation: .localRun, aiRunConfig: aiRunConfig, tokenStream: tokenStream)
             let completion = Completion(response: response)
 
             profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: usage)
             await successCompletion(completion)
         } catch {
-            let error = FreeTokenError.encoding(message: error.localizedDescription)
-            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
-            await errorCompletion(error)
+            if let error = error as? FreeTokenError {
+                profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
+                await errorCompletion(error)
+            } else {
+                let error = FreeTokenError.encoding(message: error.localizedDescription)
+                profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
+                await errorCompletion(error)
+            }
         }
     }
     
     /// Generate a chat completion in the cloud
     ///
     ///
-    func generateCloudChatCompletion(messages: [Message], model: String? = nil, aiRunConfig: AIRunConfig? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void> = nil, success successCallback: @escaping @Sendable (Message) async -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    func generateCloudChatCompletion(messages: [Message], model: String? = nil, aiRunConfig: AIRunConfig? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil, success successCallback: @escaping @Sendable (Message) async -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCallback(FreeTokenError.deviceNotRegistered)
             return
@@ -1176,7 +1317,26 @@ public class FreeToken: @unchecked Sendable {
         
         let profiler = Profiler()
         
+        actor CancellationState {
+            private var _isCancelled = false
+            
+            var isCancelled: Bool {
+                return _isCancelled
+            }
+            
+            func cancel() {
+                _isCancelled = true
+            }
+        }
+        
+        let cancellationState = CancellationState()
+        
         await streamPostData(path: "completions/chat", data: request, responseType: Codings.CloudChatResponse.self) { chunk in
+            // Check if already cancelled
+            if await cancellationState.isCancelled {
+                return
+            }
+            
             if let chatStatusStream = chatStatusStream {
                 // With SSE preprocessing, we get clean JSON chunks that can be parsed directly
                 if chunk.range(of: "message_chunk") != nil && !chunk.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
@@ -1190,7 +1350,13 @@ public class FreeToken: @unchecked Sendable {
                             // If the content is empty, we skip it
                             if !messageContentChunk.messageChunk.isEmpty {
                                 // Send the message chunk to the chat status stream via actor for sequential delivery
-                                await chatStatusStream(messageContentChunk.messageChunk, .streaming_tokens)
+                                do {
+                                    try await chatStatusStream(messageContentChunk.messageChunk, .streaming_tokens)
+                                } catch {
+                                    // User threw an error in chatStatusStream, cancel generation
+                                    FreeToken.shared.logger("⚠️ Chat status stream threw error, cancelling generation: \(error)", .warning)
+                                    await cancellationState.cancel()
+                                }
                             }
                         } catch {
                             FreeToken.shared.logger("🔴 Error decoding message content chunk: \(chunk) - ERROR: \(error)", .error)
@@ -1199,10 +1365,19 @@ public class FreeToken: @unchecked Sendable {
                 }
             }
         } completion: { result in
+            // Check if cancelled by user
+            if await cancellationState.isCancelled {
+                await errorCallback(FreeTokenError.generationCancelled)
+                return
+            }
             switch result {
             case .success(let response):
                 if let errorResponse = response.error {
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     FreeToken.shared.logger("🔴 Error in cloud chat completion: \(errorResponse.message)", .error)
 
                     profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: false, errorMessage: errorResponse.message)
@@ -1221,25 +1396,41 @@ public class FreeToken: @unchecked Sendable {
                         let message = try await Message.fromCloudResponse(responseMessage, tokenUsage: usage)
                         profiler.end(eventType: Profiler.EventType.generateCloudChatCompletion, isSuccess: true, tokenStats: usage)
                         if let chatStatusStream = chatStatusStream {
-                            await chatStatusStream(nil, .stream_ended)
+                            do {
+                                try await chatStatusStream(nil, .stream_ended)
+                            } catch {
+                                // Ignore errors at the end
+                            }
                         }
                         
                         // Call the success callback
                         await successCallback(message)
                     } catch {
-                        await chatStatusStream?(nil, .failed)
+                        do {
+                            try await chatStatusStream?(nil, .failed)
+                        } catch {
+                            // Ignore errors in failed status
+                        }
                         FreeToken.shared.logger("🔴 Failed to parse cloud response message with images: \(error)", .error)
                         await errorCallback(FreeTokenError.cloudCompletionInvalidResponse)
                     }
                 } else {
                     // Error that there wasn't the right response
-                    await chatStatusStream?(nil, .failed)
+                    do {
+                        try await chatStatusStream?(nil, .failed)
+                    } catch {
+                        // Ignore errors in failed status
+                    }
                     FreeToken.shared.logger("🔴 Invalid response from cloud chat completion", .error)
                     await errorCallback(FreeTokenError.cloudCompletionInvalidResponse)
                 }
             case .failure(let error):
                 // Handle the error
-                await chatStatusStream?(nil, .failed)
+                do {
+                    try await chatStatusStream?(nil, .failed)
+                } catch {
+                    // Ignore errors in failed status
+                }
                 FreeToken.shared.logger("🔴 Failed to generate chat completion: \(error)", .error)
                 
                 // Call the error callback
@@ -1619,6 +1810,7 @@ public class FreeToken: @unchecked Sendable {
     /// Run a message thread through the AI
     ///
     /// ```
+    ///     // Basic usage
     ///     client.runMessageThread(id: "msgthr-id", success: { response in
     ///         // The thread has run successfully
     ///         // Use the result message in your UI immediately (without fetching the thread)
@@ -1626,6 +1818,28 @@ public class FreeToken: @unchecked Sendable {
     ///     }, error: { error in
     ///         // Handle the error - Retry?
     ///     })
+    ///     
+    ///     // With streaming and cancellation support
+    ///     client.runMessageThread(
+    ///         id: "msgthr-id",
+    ///         chatStatusStream: { token, status in
+    ///             if let token = token {
+    ///                 print(token, terminator: "")
+    ///             }
+    ///             // Throw error to cancel generation
+    ///             if shouldCancel {
+    ///                 throw MyError.userCancelled
+    ///             }
+    ///         },
+    ///         success: { response in
+    ///             print("\nThread complete")
+    ///         },
+    ///         error: { error in
+    ///             if case .generationCancelled = error {
+    ///                 print("Thread was cancelled")
+    ///             }
+    ///         }
+    ///     )
     /// ```
     ///
     /// > Tip: You can control where the AI runs with the `runLocation` parameter. Use `.cloudRun` to force cloud execution, `.localRun` to force local execution, or `.automatic` (default) to let the system decide.
@@ -1646,7 +1860,7 @@ public class FreeToken: @unchecked Sendable {
     ///     - toolAccess: Optional ToolRunMask to control which tools can be run during the message thread
     ///     - success: A closure to capture the result of the run of the message thread
     ///     - error: A closure to capture any errors that occur during the call
-    ///     - chatStatusStream: Optional closure to capture the status of the chat stream
+    ///     - chatStatusStream: Optional closure to capture the status and streaming tokens. Throw an error to cancel generation.
     ///     - toolCallback: Optional closure to handle tool calls
     ///
     /// - Returns: Void
@@ -1661,12 +1875,23 @@ public class FreeToken: @unchecked Sendable {
         toolAccess: [ToolRunMask] = [.allowAll],
         success successCompletion: @escaping @Sendable (Message) async -> Void,
         error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void,
-        chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async -> Void> = nil,
+        chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
         toolCallback: Optional<@Sendable ([ToolCall]) async -> String> = nil
     ) async {
-        await chatStatusStream?(nil, .starting)
+        do {
+            try await chatStatusStream?(nil, .starting)
+        } catch {
+            // User cancelled immediately
+            await errorCompletion(FreeTokenError.generationCancelled)
+            return
+        }
+        
         guard isDeviceRegistered() else {
-            await chatStatusStream?(nil, .failed)
+            do {
+                try await chatStatusStream?(nil, .failed)
+            } catch {
+                // Ignore errors in failed status
+            }
             await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
         }

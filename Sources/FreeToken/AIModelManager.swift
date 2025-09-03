@@ -708,7 +708,7 @@ extension FreeToken {
             }
         }
         
-        func sendTextToAI(text: String, runLocation: RunLocation = .automatic, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
+        func sendTextToAI(text: String, runLocation: RunLocation = .automatic, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async throws -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
             return try await AITaskQueue.shared.enqueue(name: "sendTextToAI", runLocation: runLocation) {
                 if self.deviceManager.isHighlanderMode {
                     await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
@@ -736,7 +736,13 @@ extension FreeToken {
                             print(value, terminator: "")
                             await aiResults.appendResponseContent(value)
                             if let streamHandler = tokenStream {
-                                await streamHandler(value)
+                                do {
+                                    try await streamHandler(value)
+                                } catch {
+                                    // User cancelled generation through tokenStream
+                                    FreeToken.shared.logger("⚠️ Token stream threw error, cancelling generation: \(error)", .warning)
+                                    throw FreeTokenError.generationCancelled
+                                }
                             }
                             await aiResults.addToTokenCount(1)
                             let tokenCount = await aiResults.tokenCount
@@ -749,7 +755,11 @@ extension FreeToken {
                     } catch {
                         FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
                         
-                        throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+                        if error is FreeTokenError {
+                            throw error
+                        } else {
+                            throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+                        }
                     }
                 }
                 
@@ -784,7 +794,7 @@ extension FreeToken {
             }
         }
         
-        func sendMessagesToAI(messages: [Message], runIdentifier: String, runLocation: RunLocation = .automatic, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
+        func sendMessagesToAI(messages: [Message], runIdentifier: String, runLocation: RunLocation = .automatic, noContextCache: Bool = false, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ tokens: String) async throws -> Void> = nil) async throws -> (response: String, usage: TokenUsage?) {
             
             guard messages.count > 0 else {
                 throw FreeTokenError.noMessagesToSend
@@ -817,7 +827,13 @@ extension FreeToken {
                             print(value, terminator: "")
                             await aiResults.appendResponseContent(value)
                             if let streamHandler = tokenStream {
-                                await streamHandler(value)
+                                do {
+                                    try await streamHandler(value)
+                                } catch {
+                                    // User cancelled generation through tokenStream
+                                    FreeToken.shared.logger("⚠️ Token stream threw error, cancelling generation: \(error)", .warning)
+                                    throw FreeTokenError.generationCancelled
+                                }
                             }
                             await aiResults.addToTokenCount(1)
                             let tokenCount = await aiResults.tokenCount
@@ -829,8 +845,12 @@ extension FreeToken {
                         inputTokenCount = try await self.stateManager.tokenCountFor(messages: messages)
                     } catch {
                         FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
+                        if error is FreeTokenError {
+                            throw error
+                        } else {
+                            throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
+                        }
                         
-                        throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
                     }
                 }
                 

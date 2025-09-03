@@ -52,6 +52,7 @@ extension FreeToken {
         case failedToRunAIWithError(message: String? = nil)
         case aiQueueTimeout
         case notEnoughMemoryForModel(message: String? = nil)
+        case generationCancelled
         
         // MARK: - EmbeddingManager Class Errors:
         case embeddingFailed
@@ -176,6 +177,7 @@ extension FreeToken.FreeTokenError {
         case .failedToRunAIWithError(_): return "failedToRunAIWithError"
         case .aiQueueTimeout: return "aiQueueTimeout"
         case .notEnoughMemoryForModel(_): return "notEnoughMemoryForModel"
+        case .generationCancelled: return "generationCancelled"
         
         case .embeddingFailed: return "embeddingFailed"
         case .modelAlreadyDownloading: return "modelDownloadingError"
@@ -293,6 +295,7 @@ extension FreeToken.FreeTokenError {
         case .failedToRunAIWithError(let message): return "Failed to run AI with error" + ((message != nil) ? (": \(message!)") : "")
         case .aiQueueTimeout: return "AI queue timed out waiting for execution"
         case .notEnoughMemoryForModel(let message): return "Not enough memory to load the model" + ((message != nil) ? (": \(message!)") : "")
+        case .generationCancelled: return "AI generation was cancelled by user request"
         
         case .embeddingFailed: return "The embedding model failed on the device."
         case .modelAlreadyDownloading: return "The embedding model is downloading. Multiple download calls prohibited."
@@ -414,6 +417,7 @@ extension FreeToken.FreeTokenError {
         case .failedToRunAIWithError(_): return 2010
         case .aiQueueTimeout: return 2011
         case .notEnoughMemoryForModel(_): return 2012
+        case .generationCancelled: return 2013
         case .embeddingFailed: return 3000
         case .modelAlreadyDownloading: return 3001
         case .modelDownload: return 3002
@@ -507,6 +511,7 @@ extension FreeToken.FreeTokenError {
              (.aiModelNotLoaded, .aiModelNotLoaded),
              (.noMessagesToSend, .noMessagesToSend),
              (.messagesMustAlternate, .messagesMustAlternate),
+             (.generationCancelled, .generationCancelled),
              (.embeddingFailed, .embeddingFailed),
              (.modelAlreadyDownloading, .modelAlreadyDownloading),
              (.modelDownload, .modelDownload),

@@ -939,4 +939,26 @@ final class FreeTokenTests: XCTestCase {
         XCTAssert(state == .downloaded, "Expected model to be downloaded, got \(state)")
     }
     
+    func testCancelLocalCompletion() throws {
+        let expectation = self.expectation(description: "Waiting for cancel local completion")
+        
+        Task {
+            await FreeToken.shared.generateCompletion(prompt: "Create a short story about how a man went the moon") { token in
+                throw FreeToken.FreeTokenError.generationCancelled
+            } success: { completion in
+                XCTFail("Expected generation to be cancelled, but got completion: \(completion.response)")
+                expectation.fulfill()
+            } error: { error in
+                if error == .generationCancelled {
+                    XCTAssertTrue(true, "Generation was cancelled as expected")
+                } else {
+                    XCTFail("Expected generation to be cancelled, got error: \(error.message)")
+                }
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 60.0)
+    }
+    
 }
