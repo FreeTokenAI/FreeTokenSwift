@@ -78,7 +78,6 @@ extension FreeToken {
             var llama: LlamaManager
             let config: AIModelConfiguration
             let deviceManager: DeviceManager
-            let queue: AITaskQueue
             let sessionsManager: AISessionsManager
             let sessionID: String
             var messages: [Message]
@@ -88,7 +87,6 @@ extension FreeToken {
                 self.messages = messages
                 self.config = config
                 self.deviceManager = deviceManager
-                self.queue = queue
                 self.sessionsManager = sessionsManager
                 self.sessionID = sessionID
                 
@@ -226,6 +224,11 @@ extension FreeToken {
         
             func unload() async {
                 await self.llama.unload()
+            }
+            
+            func reset() async {
+                await self.llama.resetSession()
+                self.messages = []
             }
         }
         
@@ -388,7 +391,7 @@ extension FreeToken {
                     if let session = self.sessions[id] {
                         if session.config.equals(config) {
                             if originalID != self.lastRunID {
-                                await session.llama.resetSession()
+                                await session.reset()
                             }
                             
                             try await session.catchUp(allThreadMessages: preparedMessages) // Load all the tokens into the thread
