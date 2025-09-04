@@ -155,6 +155,54 @@ await client.runMessageThread(
 )
 ```
 
+#### Run a Message Thread with Status Updates
+
+You can monitor the progress of message thread execution using the `chatStatusStream` callback:
+
+```swift
+await client.runMessageThread(
+    id: "thread-id",
+    chatStatusStream: { token, status in
+        switch status {
+        case .starting:
+            print("Starting AI operation...")
+        case .sending_to_local_ai:
+            print("Sending to local AI...")
+        case .sending_to_cloud_ai:
+            print("Sending to cloud AI...")
+        case .streaming_tokens:
+            if let token = token {
+                print(token, terminator: "")
+            }
+        case .evaluating_tool_calls:
+            print("Evaluating tool calls...")
+        case .new_message_created:
+            print("New message saved to thread")
+        case .stream_ended:
+            print("\nStream completed")
+        case .failed:
+            print("Operation failed")
+        }
+    },
+    success: { response in
+        print("\nFinal response: \(response.content)")
+    },
+    error: { error in
+        print("Failed: \(error)")
+    }
+)
+```
+
+Available status cases:
+- `.starting` - Initial status when the operation begins
+- `.sending_to_local_ai` - Request is being sent to local on-device AI
+- `.sending_to_cloud_ai` - Request is being sent to cloud AI  
+- `.streaming_tokens` - AI is actively streaming response tokens (includes token parameter)
+- `.evaluating_tool_calls` - AI is evaluating function/tool calls
+- `.new_message_created` - A new message (AI response or tool result) has been saved to the thread
+- `.stream_ended` - The response stream has completed successfully
+- `.failed` - The operation has failed
+
 #### Delete, Get, and Inspect Threads
 
 Basic thread management operations allow you to delete threads, retrieve threads with messages, and fetch individual messages.

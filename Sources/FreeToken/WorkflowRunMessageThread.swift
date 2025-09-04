@@ -489,6 +489,8 @@ extension FreeToken {
                 switch result {
                 case .success(let resultMessage):
                     self.context.resultMessage = resultMessage
+                    // Emit new_message_created event
+                    try? await self.context.chatStatusStream?(nil, .new_message_created)
                     FreeToken.shared.logger("✅ Message added to thread successfully", .info)
                     await success(self.context)
                 case .failure(let error):
@@ -588,6 +590,8 @@ extension FreeToken {
                     await self.messagesManager.addMessage(message: toolMessage, messageThreadID: self.messageThread.id) { result in
                         switch result {
                         case .success(_):
+                            // Emit new_message_created event for tool message
+                            try? await self.context.chatStatusStream?(nil, .new_message_created)
                             if self.context.toolCallRecursiveRuns >= 3 {
                                 FreeToken.shared.logger("⚠️ AI made too many recursive tool calls, stopping execution", .warning)
                                 profiler.end(eventType: .toolCallAgentRun, isSuccess: false, errorMessage: "Too many recursive tool calls")

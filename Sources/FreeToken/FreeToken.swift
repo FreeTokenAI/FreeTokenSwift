@@ -98,6 +98,8 @@ public class FreeToken: @unchecked Sendable {
         case sending_to_cloud_ai = "sending_to_cloud_ai"
         /// AI is evaluating function/tool calls
         case evaluating_tool_calls = "evaluating_tool_calls"
+        /// A new message has been created and saved
+        case new_message_created = "new_message_created"
     }
     
     enum ClientConfigStatus: Equatable {
