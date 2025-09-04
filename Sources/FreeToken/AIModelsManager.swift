@@ -134,6 +134,29 @@ extension FreeToken {
             }
         }
         
+        func unloadModel(modelCode: String) async {
+            if let wrapper = aiModelManagers.first(where: { $0.modelCode == modelCode }) {
+                await wrapper.aiModelManager.unloadModel()
+            }
+        }
+        
+        func getModelRepo(for modelCode: String) -> String? {
+            guard let wrapper = aiModelManagers.first(where: { $0.modelCode == modelCode }) else {
+                return nil
+            }
+            return wrapper.initializeOptions.modelConfig.modelTypes?.llamaCpp.repo
+        }
+        
+        func getModelFiles(for modelCode: String) -> (repo: String, modelFileName: String?, mmprojFileName: String?)? {
+            guard let wrapper = aiModelManagers.first(where: { $0.modelCode == modelCode }) else {
+                return nil
+            }
+            guard let llamaCpp = wrapper.initializeOptions.modelConfig.modelTypes?.llamaCpp else {
+                return nil
+            }
+            return (repo: llamaCpp.repo, modelFileName: llamaCpp.modelFileName, mmprojFileName: llamaCpp.mmproj)
+        }
+        
         func latestUsedModelCode() async -> String?  {
             // Sort the managers by last used date, descending
             var managers: [String: [ String: Any ]] = [:]

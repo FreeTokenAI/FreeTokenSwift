@@ -343,10 +343,13 @@ public class FreeToken: @unchecked Sendable {
     
     /// Delete AI Model Cache
     ///
-    /// > Warning: This method deletes the entire AI model cache directory, including all downloaded models.
+    /// Deletes AI model cache from disk. Can delete a specific model or all models.
     ///
+    /// - Parameter modelCode: Optional model code to delete a specific model. If nil, deletes all models.
     /// - Returns: Void
-    public func deleteAIModelCache() async {
+    ///
+    /// > Warning: When modelCode is nil, this method deletes the entire AI model cache directory, including all downloaded models.
+    public func deleteAIModelCache(modelCode: String? = nil) async {
 #if os(macOS)
         let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser
             .appendingPathComponent(".FreeToken")
@@ -357,14 +360,64 @@ public class FreeToken: @unchecked Sendable {
             .appendingPathComponent("Models")
 #endif
         
-        await aiModelManager?.unloadModel()
-        
-        // Delete the whole directory
-        do {
-            try FileManager.default.removeItem(at: defaultRootDirectory)
-            FreeToken.shared.logger("🗑️ AI model cache reset successfully", .info)
-        } catch {
-            FreeToken.shared.logger("🔴 Failed to reset AI model cache: \(error.localizedDescription)", .error)
+        if let modelCode = modelCode {
+            // Delete specific model
+            await aiModelsManager.unloadModel(modelCode: modelCode)
+            
+            // Get the model files for the specific model
+            guard let modelFiles = aiModelsManager.getModelFiles(for: modelCode) else {
+                FreeToken.shared.logger("🔴 Model with code '\(modelCode)' not found", .error)
+                return
+            }
+            
+            // Sanitize the repo name (replace "/" with "_")
+            let sanitizedRepo = modelFiles.repo.replacingOccurrences(of: "/", with: "_")
+            let modelDirectory = defaultRootDirectory.appendingPathComponent(sanitizedRepo)
+            
+            // Delete the specific model files (not the entire directory)
+            var deletedFiles = 0
+            
+            // Delete the main model file
+            if let modelFileName = modelFiles.modelFileName {
+                let modelFileURL = modelDirectory.appendingPathComponent(modelFileName)
+                do {
+                    try FileManager.default.removeItem(at: modelFileURL)
+                    deletedFiles += 1
+                    FreeToken.shared.logger("🗑️ Deleted model file: \(modelFileName)", .info)
+                } catch {
+                    FreeToken.shared.logger("⚠️ Failed to delete model file '\(modelFileName)': \(error.localizedDescription)", .warning)
+                }
+            }
+            
+            // Delete the mmproj file if it exists
+            if let mmprojFileName = modelFiles.mmprojFileName {
+                let mmprojFileURL = modelDirectory.appendingPathComponent(mmprojFileName)
+                do {
+                    try FileManager.default.removeItem(at: mmprojFileURL)
+                    deletedFiles += 1
+                    FreeToken.shared.logger("🗑️ Deleted mmproj file: \(mmprojFileName)", .info)
+                } catch {
+                    FreeToken.shared.logger("⚠️ Failed to delete mmproj file '\(mmprojFileName)': \(error.localizedDescription)", .warning)
+                }
+            }
+            
+            if deletedFiles > 0 {
+                FreeToken.shared.logger("✅ AI model '\(modelCode)' cache deleted successfully (\(deletedFiles) file(s) removed)", .info)
+            } else {
+                FreeToken.shared.logger("⚠️ No files were deleted for model '\(modelCode)'", .warning)
+            }
+        } else {
+            // Delete all models (existing behavior)
+            await aiModelsManager.unloadAllModels()
+            aiModelsManager.reset()
+            
+            // Delete the whole directory
+            do {
+                try FileManager.default.removeItem(at: defaultRootDirectory)
+                FreeToken.shared.logger("🗑️ AI model cache reset successfully", .info)
+            } catch {
+                FreeToken.shared.logger("🔴 Failed to reset AI model cache: \(error.localizedDescription)", .error)
+            }
         }
     }
     
