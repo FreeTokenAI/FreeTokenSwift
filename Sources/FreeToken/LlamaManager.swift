@@ -346,10 +346,10 @@ extension FreeToken {
                                     recentText = String(recentText.suffix(300))
                                 }
                                 
-                                // Check for phrase-level repetition (sequences of 15+ chars repeated 3+ times)
+                                // Check for phrase-level repetition (sequences of 25+ chars repeated 3+ times consecutively)
                                 if recentText.count >= 100 {
-                                    // Look for repeated sequences of at least 15 characters
-                                    let minSequenceLength = 15
+                                    // Look for repeated sequences of at least 25 characters (increased from 15)
+                                    let minSequenceLength = 25
                                     let textToCheck = recentText.trimmingCharacters(in: .whitespacesAndNewlines)
                                     
                                     // Scan for potential repeated sequences
@@ -359,20 +359,35 @@ extension FreeToken {
                                         let endIdx = textToCheck.index(startIdx, offsetBy: minSequenceLength)
                                         let sequence = String(textToCheck[startIdx..<endIdx])
                                         
-                                        // Count occurrences of this sequence
-                                        var occurrences = 0
+                                        // Find all positions of this sequence
+                                        var positions: [String.Index] = []
                                         var searchRange = textToCheck.startIndex..<textToCheck.endIndex
                                         
                                         while let range = textToCheck.range(of: sequence, options: .literal, range: searchRange) {
-                                            occurrences += 1
+                                            positions.append(range.lowerBound)
                                             searchRange = range.upperBound..<textToCheck.endIndex
                                         }
                                         
-                                        // If same sequence appears 3+ times, it's likely repetition
-                                        if occurrences >= 3 {
-                                            FreeTokenLogger.shared.log("generate detected repetition of '\(sequence)...', stopping", level: .warning)
-                                            metrics.stopReason = "repetition"
-                                            break
+                                        // Check if we have 3+ occurrences that are consecutive or nearly consecutive
+                                        if positions.count >= 3 {
+                                            // Check if positions are close together (within 2x sequence length)
+                                            var consecutiveCount = 1
+                                            for i in 1..<positions.count {
+                                                let distance = textToCheck.distance(from: positions[i-1], to: positions[i])
+                                                // If sequences are within 2x the sequence length, consider them consecutive
+                                                if distance <= minSequenceLength * 2 {
+                                                    consecutiveCount += 1
+                                                    if consecutiveCount >= 3 {
+                                                        FreeTokenLogger.shared.log("generate detected repetition of '\(sequence)...', stopping", level: .warning)
+                                                        metrics.stopReason = "repetition"
+                                                        break
+                                                    }
+                                                } else {
+                                                    // Reset counter if sequences are too far apart
+                                                    consecutiveCount = 1
+                                                }
+                                            }
+                                            if metrics.stopReason == "repetition" { break }
                                         }
                                     }
                                     
@@ -528,10 +543,10 @@ extension FreeToken {
                                     recentText = String(recentText.suffix(300))
                                 }
                                 
-                                // Check for phrase-level repetition (sequences of 15+ chars repeated 3+ times)
+                                // Check for phrase-level repetition (sequences of 25+ chars repeated 3+ times consecutively)
                                 if recentText.count >= 100 {
-                                    // Look for repeated sequences of at least 15 characters
-                                    let minSequenceLength = 15
+                                    // Look for repeated sequences of at least 25 characters (increased from 15)
+                                    let minSequenceLength = 25
                                     let textToCheck = recentText.trimmingCharacters(in: .whitespacesAndNewlines)
                                     
                                     // Scan for potential repeated sequences
@@ -541,20 +556,35 @@ extension FreeToken {
                                         let endIdx = textToCheck.index(startIdx, offsetBy: minSequenceLength)
                                         let sequence = String(textToCheck[startIdx..<endIdx])
                                         
-                                        // Count occurrences of this sequence
-                                        var occurrences = 0
+                                        // Find all positions of this sequence
+                                        var positions: [String.Index] = []
                                         var searchRange = textToCheck.startIndex..<textToCheck.endIndex
                                         
                                         while let range = textToCheck.range(of: sequence, options: .literal, range: searchRange) {
-                                            occurrences += 1
+                                            positions.append(range.lowerBound)
                                             searchRange = range.upperBound..<textToCheck.endIndex
                                         }
                                         
-                                        // If same sequence appears 3+ times, it's likely repetition
-                                        if occurrences >= 3 {
-                                            FreeTokenLogger.shared.log("generate(raw) detected repetition of '\(sequence)...', stopping", level: .warning)
-                                            metrics.stopReason = "repetition"
-                                            break
+                                        // Check if we have 3+ occurrences that are consecutive or nearly consecutive
+                                        if positions.count >= 3 {
+                                            // Check if positions are close together (within 2x sequence length)
+                                            var consecutiveCount = 1
+                                            for i in 1..<positions.count {
+                                                let distance = textToCheck.distance(from: positions[i-1], to: positions[i])
+                                                // If sequences are within 2x the sequence length, consider them consecutive
+                                                if distance <= minSequenceLength * 2 {
+                                                    consecutiveCount += 1
+                                                    if consecutiveCount >= 3 {
+                                                        FreeTokenLogger.shared.log("generate(raw) detected repetition of '\(sequence)...', stopping", level: .warning)
+                                                        metrics.stopReason = "repetition"
+                                                        break
+                                                    }
+                                                } else {
+                                                    // Reset counter if sequences are too far apart
+                                                    consecutiveCount = 1
+                                                }
+                                            }
+                                            if metrics.stopReason == "repetition" { break }
                                         }
                                     }
                                     
