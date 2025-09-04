@@ -439,7 +439,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         guard let unwrappedModelCode = resolvedModelCode else {
-            FreeToken.shared.logger("🔴 AI Model code is nil", .error)
+            FreeToken.shared.logger("🔴 Cannot get download state because there is no model loaded.", .error)
             throw FreeTokenError.unknownAIModelCode
         }
         
@@ -1284,10 +1284,15 @@ public class FreeToken: @unchecked Sendable {
                 aiModelManager = modelManager
             } else {
                 // Model not loaded
-                await errorCompletion(FreeTokenError.aiModelNotDownloaded)
+                await errorCompletion(FreeTokenError.aiModelNotLoaded)
                 return
             }
         } else {
+            guard self.aiModelManager != nil else {
+                await errorCompletion(FreeTokenError.aiModelNotLoaded)
+                return
+            }
+            
             // Use the default AI Model Manager
             aiModelManager = self.aiModelManager!
         }
@@ -2105,14 +2110,19 @@ public class FreeToken: @unchecked Sendable {
             }
         }
         
+        guard let aiModelManager = aiModelManager else {
+            await errorCompletion(FreeTokenError.aiModelNotLoaded)
+            return
+        }
+        
         // Check if the AI Model is downloaded
-        guard await aiModelManager?.getDownloadState() == .downloaded else {
+        guard await aiModelManager.getDownloadState() == .downloaded else {
             await errorCompletion(FreeTokenError.aiModelNotDownloaded)
             return
         }
         
         
-        let response = await aiModelManager!.loadModel()
+        let response = await aiModelManager.loadModel()
         switch response {
         case .success(let isSuccess):
             await successCompletion(isSuccess)
@@ -2308,7 +2318,7 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotRegistered
         }
         
-        let aiModelManager: AIModelManager?
+        let aiModelManager: AIModelManager
         if let modelCode = modelCode {
             if let manager = aiModelsManager.getManager(for: modelCode) {
                 aiModelManager = manager
@@ -2316,8 +2326,12 @@ public class FreeToken: @unchecked Sendable {
                 throw FreeTokenError.aiModelNotDownloaded
             }
         } else {
+            guard self.aiModelManager != nil else {
+                throw FreeTokenError.aiModelNotLoaded
+            }
+            
             // Use the default AI Model Manager
-            aiModelManager = self.aiModelManager
+            aiModelManager = self.aiModelManager!
             
             guard deviceDetails?.aiModel.cloudOnly == false else {
                 throw FreeTokenError.isCloudOnlyModel
@@ -2336,7 +2350,7 @@ public class FreeToken: @unchecked Sendable {
         do {
             let response: String
             let usage: TokenUsage?
-            (response, usage) = try await aiModelManager!.sendMessagesToAI(messages: messages, runIdentifier: runId, runLocation: .localRun, aiRunConfig: aiRunConfig, tokenStream: outputStream)
+            (response, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: runId, runLocation: .localRun, aiRunConfig: aiRunConfig, tokenStream: outputStream)
             profiler.end(eventType: .generateLocalChatCompletion, isSuccess: true, tokenStats: usage)
             let message = Message(role: .assistant, content: response, tokenUsage: usage)
             

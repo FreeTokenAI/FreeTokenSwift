@@ -37,6 +37,7 @@ extension FreeToken {
         case deviceNotCapable
         case unknownAIModelCode
         case visionNotSupportedLocally
+        case defaultAIModelNotAvailable
         
         // MARK: - AIModelManager Class Errors:
         case unsupportedVersion
@@ -163,6 +164,7 @@ extension FreeToken.FreeTokenError {
         case .deviceNotCapable: return "deviceNotCapable"
         case .unknownAIModelCode: return "unknownAIModelCode"
         case .visionNotSupportedLocally: return "visionNotSupportedLocally"
+        case .defaultAIModelNotAvailable: return "defaultAIModelNotAvailable"
 
         case .unsupportedVersion: return "unsupportedVersion"
         case .aiModelNotDownloaded: return "aiModelNotDownloaded"
@@ -281,6 +283,7 @@ extension FreeToken.FreeTokenError {
         case .deviceNotCapable: return "Cannot run AI locally: this device is not capable of running AI models"
         case .unknownAIModelCode: return "AI Model Code is not known. Please check and try again."
         case .visionNotSupportedLocally: return "Vision/image processing is not supported on local models. Please use cloud execution for messages with images."
+        case .defaultAIModelNotAvailable: return "The Agent's default model has been unloaded. Please run .resetDevice and .registerDeviceSession again."
         
         case .unsupportedVersion: return "The AI model sent by the server is not supported by this client"
         case .aiModelNotDownloaded: return "AI model has not yet been downloded. Try .downloadAIModel() first"
@@ -411,6 +414,7 @@ extension FreeToken.FreeTokenError {
         case .aiModelNotLoaded: return 2004
         case .noMessagesToSend: return 2005
         case .visionModelRequired: return 2006
+        case .defaultAIModelNotAvailable: return 2014
         case .messagesMustAlternate: return 2007
         case .aiRunFailed(_): return 2008
         case .unsupportedModelType(_): return 2009
