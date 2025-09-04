@@ -27,6 +27,14 @@ extension FreeToken {
             self.session = session
         }
         
+        /// Reset the template builder, clearing all cached messages and tokens
+        func reset() {
+            messages.removeAll()
+            spans.removeAll()
+            tokens.removeAll()
+            FreeTokenLogger.shared.log("\(logPrefix) reset - cleared all messages and tokens", level: .debug)
+        }
+        
         func addMessages(_ newMessages: [Message]) async throws -> [Span] {
             guard !newMessages.isEmpty else { return [] }
             

@@ -189,7 +189,15 @@ extension FreeToken {
             // Instead of unloading (which frees model/context then reuses dangling pointers), perform an in-place reset.
             // This preserves the underlying model/context/sampler pointers and avoids use-after-free.
             await session.resetForRebuild()
+            // Clear the template builder when rebuilding to prevent stale messages
+            templateBuilder.reset()
             spans.removeAll(keepingCapacity: true)
+            
+            // Rebuild template builder state with kept messages if any
+            if !keptMessages.isEmpty {
+                _ = try await templateBuilder.addMessages(keptMessages)
+            }
+            
             var cursor = 0
             for msg in keptMessages {
                 let tokens = try await session.tokenize(msg.content)
@@ -593,6 +601,8 @@ extension FreeToken {
         
         func resetSession() async {
             await session.resetForRebuild()
+            // Clear the template builder's message cache to prevent stale messages
+            templateBuilder.reset()
         }
 
         // MARK: - Stop Sequence Trimming
