@@ -158,59 +158,71 @@ extension FreeToken {
         }
         
         private func internal_articleLookup(query: String, searchScope: String?, privateDocumentStoreIds: [String]?, success successCallback: @escaping @Sendable (_ result: String) async -> Void) async {
-            await FreeToken.shared.searchDocuments(query: query, searchScope: searchScope, privateDocumentStoreIds: privateDocumentStoreIds, maxResults: 3) { searchResults in
-                var result = "Article excerpts to help answer the user's question:"
-                
-                for documentChunk in searchResults.documentChunks {
-                    var metadata = ""
-                    if documentChunk.documentMetadata != nil {
-                        metadata = documentChunk.documentMetadata!
+            let result = await withCheckedContinuation { continuation in
+                Task {
+                    await FreeToken.shared.searchDocuments(query: query, searchScope: searchScope, privateDocumentStoreIds: privateDocumentStoreIds, maxResults: 3) { searchResults in
+                        var result = "Article excerpts to help answer the user's question:"
+                        
+                        for documentChunk in searchResults.documentChunks {
+                            var metadata = ""
+                            if documentChunk.documentMetadata != nil {
+                                metadata = documentChunk.documentMetadata!
+                            }
+                            
+                            result.append("""
+                            \(metadata)
+                            
+                            \(documentChunk.contentChunk)
+                        
+                        """)
+                        }
+                        
+                        continuation.resume(returning: result)
+                    } error: { error in
+                        // NoOp
+                        FreeToken.shared.logger("Internal article lookup failed to retrieve documents from cloud. Ignoring", .warning)
+                        continuation.resume(returning: "")
                     }
-                    
-                    result.append("""
-                    \(metadata)
-                    
-                    \(documentChunk.contentChunk)
-                
-                """)
                 }
-                
-                await successCallback(result)
-            } error: { error in
-                // NoOp
-                FreeToken.shared.logger("Internal article lookup failed to retrieve documents from cloud. Ignoring", .warning)
-                await successCallback("")
             }
+            
+            await successCallback(result)
         }
         
-        private func internal_webSearch(query: String, success successCallback: @escaping @Sendable (_ result: String) -> Void) async {
+        private func internal_webSearch(query: String, success successCallback: @escaping @Sendable (_ result: String) async -> Void) async {
             
-            await FreeToken.shared.webSearch(query: query) { searchResults in
-                var result = "WEB SEARCH RESULTS\n\nUse these results to answer the user's question:"
-                
-                for webResult in searchResults {
-                    result.append("""
-                    =================================================
-                    WEB SEARCH RESULT: 
-                    TITLE: \(webResult.title)
-                    URL: \(webResult.url != nil ? webResult.url!.absoluteString : "No URL provided")
-                    DESCRIPTION: \(webResult.description)
-                    RESULT AGE: \(webResult.age)
-                    \(webResult.metadata.isEmpty ? "" : "ADDITIONAL METADATA: \(webResult.metadata)")
-                    RELEVANT CONTENT CHUNKS: 
-                    \(webResult.snippet)
-                    
-                """)
+            let result = await withCheckedContinuation { continuation in
+                Task {
+                    await FreeToken.shared.webSearch(query: query) { searchResults in
+                        var result = "WEB SEARCH RESULTS\n\nUse these results to answer the user's question:"
+                        
+                        for webResult in searchResults {
+                            result.append("""
+                            =================================================
+                            WEB SEARCH RESULT: 
+                            TITLE: \(webResult.title)
+                            URL: \(webResult.url != nil ? webResult.url!.absoluteString : "No URL provided")
+                            DESCRIPTION: \(webResult.description)
+                            RESULT AGE: \(webResult.age)
+                            \(webResult.metadata.isEmpty ? "" : "ADDITIONAL METADATA: \(webResult.metadata)")
+                            RELEVANT CONTENT CHUNKS: 
+                            \(webResult.snippet)
+                            
+                        """)
+                        }
+                        
+                        result.append("\n\nALWAYS cite URLs of web searches in your response\n\n------ END WEB SEARCH RESULTS ------\n\n")
+                        
+                        continuation.resume(returning: result)
+                    } error: { error in
+                        // NoOp
+                        FreeToken.shared.logger("Internal web search failed to retrieve documents from cloud. Ignoring", .warning)
+                        continuation.resume(returning: "")
+                    }
                 }
-                
-                result.append("\n\nALWAYS cite URLs of web searches in your response\n\n------ END WEB SEARCH RESULTS ------\n\n")
-                
-                successCallback(result)
-            } error: { error in
-                // NoOp
-                FreeToken.shared.logger("Internal web search failed to retrieve documents from cloud. Ignoring", .warning)
-                successCallback("")
             }
+            
+            await successCallback(result)
         }
     }
 }
