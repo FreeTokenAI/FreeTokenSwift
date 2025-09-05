@@ -201,7 +201,7 @@ extension FreeToken {
                             =================================================
                             WEB SEARCH RESULT: 
                             TITLE: \(webResult.title)
-                            URL: \(webResult.url != nil ? webResult.url!.absoluteString : "No URL provided")
+                            URL: \(webResult.url != nil ? webResult.url! : "No URL provided")
                             DESCRIPTION: \(webResult.description)
                             RESULT AGE: \(webResult.age)
                             \(webResult.metadata.isEmpty ? "" : "ADDITIONAL METADATA: \(webResult.metadata)")

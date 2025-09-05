@@ -28,12 +28,12 @@ extension FreeToken {
         
         struct WebSearchResult: Decodable {
             let title: String
-            let url: URL?
+            let url: String?
             let type: String
             let snippet: String
             let description: String
             let age: String
-            let thumbnail: URL?
+            let thumbnail: String?
             let metadata: String
         }
         
@@ -732,12 +732,12 @@ extension FreeToken {
     }
     
     public class WebSearchResult {
-        public let url: URL?
+        public let url: String?
         public let title: String
         public let snippet: String
         public let description: String
         public let age: String
-        public let thumbnail: URL?
+        public let thumbnail: String?
         public let metadata: String
         
         internal init(from webSearchResultResponse: Codings.WebSearchResult) {

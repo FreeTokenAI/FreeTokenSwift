@@ -1840,10 +1840,13 @@ public class FreeToken: @unchecked Sendable {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.webSearch, isSuccess: true)
                 let results = response.results.map { WebSearchResult(from: $0) }
+                for result in results {
+                    FreeToken.shared.logger("🌐 Web Search Result: \(result.title)", .info)
+                }
                 successCompletion(results)
             case .failure(let error):
                 profiler.end(eventType: .webSearch, isSuccess: false, errorMessage: error.message)
-                FreeToken.shared.logger("Web search failed with error \(error.message)", .error)
+                FreeToken.shared.logger("🔴 Web search failed with error \(error.message)", .error)
                 errorCompletion(error)
             }
         }
