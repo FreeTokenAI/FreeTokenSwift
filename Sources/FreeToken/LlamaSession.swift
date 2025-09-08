@@ -45,7 +45,6 @@ extension FreeToken {
         private let template: String
         private let batch: llama_batch
         private let batchSize: Int32
-        private var tokenCache: [Int32: String] = [:]
         private var pos: Int32 = 0
         private var isUnloaded: Bool = false
         @inline(__always) private func ensureActive(_ fn: StaticString = #function) throws { if isUnloaded { throw FreeToken.FreeTokenError.aiRunFailed(message: "LlamaSession was unloaded; call site: \(fn)") } }
@@ -137,41 +136,6 @@ extension FreeToken {
             }
         }
         
-        @inline(__always)
-        func detokenize(tokens: [Int32]) -> String {
-            if isUnloaded { return "" }
-            var out = String(); out.reserveCapacity(tokens.count * 4)
-            for t in tokens {
-                if let cached = tokenCache[t] {
-                    out += cached
-                } else {
-                    let piece = LlamaAPI.tokenToPiece(model: model.model, token: t)
-                    tokenCache[t] = piece
-                    out += piece
-                }
-            }
-            return out
-        }
-    
-        /// Tokenize multiple texts in parallel (safe since it's read-only)
-        func tokenizeParallel(_ texts: [String]) async throws -> [[Int]] {
-            try ensureActive()
-            return try await withThrowingTaskGroup(of: (Int, [Int]).self) { group in
-                for (index, text) in texts.enumerated() {
-                    group.addTask { [weak self] in
-                        guard let self = self else { throw FreeToken.FreeTokenError.aiRunFailed(message: "Session deallocated") }
-                        let tokens = try await self.tokenize(text)
-                        return (index, tokens)
-                    }
-                }
-    
-                var results = Array(repeating: [Int](), count: texts.count)
-                for try await (index, tokens) in group {
-                    results[index] = tokens
-                }
-                return results
-            }
-        }
         
         /// Optimized batch evaluation using C bridge
         /// - Parameters:
@@ -181,6 +145,10 @@ extension FreeToken {
         func evalOptimized(tokens: [Int], feedToSampler: Bool = true, needsLogits: Bool = true) async throws {
             try ensureActive()
             guard !tokens.isEmpty else { return }
+    
+            // DEBUG: Track position before and after
+            let startPos = pos
+            FreeTokenLogger.shared.log("EVAL_DEBUG: Starting eval at pos=\(startPos) for \(tokens.count) tokens, feedToSampler=\(feedToSampler)", level: .debug)
     
             let start = CFAbsoluteTimeGetCurrent()
     
@@ -221,11 +189,14 @@ extension FreeToken {
             }
     
             pos += Int32(tokens.count)
+            
+            // DEBUG: Confirm position advanced correctly
+            FreeTokenLogger.shared.log("EVAL_DEBUG: Position advanced from \(startPos) to \(pos) (delta=\(Int32(tokens.count)))", level: .debug)
     
             let elapsed = CFAbsoluteTimeGetCurrent() - start
             if elapsed > 0 {
                 let tps = Double(tokens.count) / elapsed
-                FreeTokenLogger.shared.log("eval (C bridge) tokens=\(tokens.count) time=\(String(format: "%.3f", elapsed))s tps=\(String(format: "%.1f", tps))", level: .debug)
+                FreeTokenLogger.shared.log("eval (C bridge) tokens=\(tokens.count) time=\(String(format: "%.3f", elapsed))s tps=\(String(format: "%.1f", tps)) finalPos=\(pos)", level: .debug)
             }
         }
     
@@ -271,18 +242,6 @@ extension FreeToken {
         }
         
         // MARK: - Get Special Tokens
-
-        /// Get the EOS token ID for the model
-        func getEOSToken() -> Int32 {
-            if isUnloaded { return -1 }
-            return { let v = llama_model_get_vocab(model.model); return v != nil ? llama_vocab_eos(v) : -1 }()
-        }
-    
-        /// Get the EOT (end-of-turn) token ID for the model
-        func getEOTToken() -> Int32 {
-            if isUnloaded { return -1 }
-            return { let v = llama_model_get_vocab(model.model); return v != nil ? llama_vocab_eot(v) : -1 }()
-        }
     
         /// Get all stop tokens (EOS, EOT) for the model
         func getStopTokens() -> Set<Int32> {
@@ -298,16 +257,6 @@ extension FreeToken {
             if isUnloaded { return }
             freetoken_session_reset_sampler(session)
             FreeTokenLogger.shared.log("Sampler reset for stateless generation", level: .debug)
-        }
-    
-        /// Clear the entire KV cache
-        func clearKVCache() async {
-            if isUnloaded { return }
-            let memory = llama_get_memory(context)
-            // Remove all tokens for this sequence (p1 = -1 means to end)
-            llama_memory_seq_rm(memory, 0, 0, -1)
-            pos = 0
-            FreeTokenLogger.shared.log("KV cache cleared", level: .debug)
         }
     
         /// Remove tokens from KV cache in the given range [from, to)
@@ -351,7 +300,6 @@ extension FreeToken {
             LlamaAPI.freeContext(context)
             pos = 0
             llama_batch_free(batch)
-            tokenCache.removeAll()
             model.free()
             isUnloaded = true
         }
@@ -361,15 +309,17 @@ extension FreeToken {
         /// NOTE: Does NOT free sampler/session because they remain in use; just clears KV + sampler history and local caches.
         func resetForRebuild() {
             if isUnloaded { return }
+            
+            // DEBUG: Log position before reset
+            let oldPos = pos
+            
             // Clear KV cache for sequence 0
             let memory = llama_get_memory(context)
             llama_memory_seq_rm(memory, 0, 0, -1)
             pos = 0
             // Reset sampler penalties/history
             resetSampler()
-            // Clear local caches
-            tokenCache.removeAll()
-            FreeTokenLogger.shared.log("Session resetForRebuild: cleared KV, sampler, caches (model/context preserved)", level: .debug)
+            FreeTokenLogger.shared.log("Session resetForRebuild: cleared KV, sampler. Position reset from \(oldPos) to 0", level: .debug)
         }
         
         // MARK: Chat Template

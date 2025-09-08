@@ -111,23 +111,6 @@ extension FreeToken {
         }
     }
     
-    /// Snapshot of a tracked message and its token count (used externally for context sizing/UI).
-    struct KVMessage {
-        let message: Message
-        let tokenCount: Int
-    }
-    // Internal representation of a tracked message span in the KV cache.
-    /// Internal representation of a message's token span within the logical KV stream.
-    struct _LlamaKVSpan {
-    var start: Int
-    var end: Int // exclusive
-    let hash: UInt64
-    let message: Message
-    var tokenCount: Int { end - start }
-    let tokens: [Int32] // stored tokens for repetition penalties & potential reconstruction
-}
-}
-
-extension Array where Element == FreeToken._LlamaKVSpan {
-    func totalTokens() -> Int { self.last?.end ?? 0 }
+    // Removed KVMessage and _LlamaKVSpan - no longer needed in token-based approach
+    // Token positions are tracked directly as n_past and n_keep in LlamaManager
 }
