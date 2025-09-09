@@ -1339,6 +1339,25 @@ public class FreeToken: @unchecked Sendable {
             return
         }
 
+        // Check if any messages contain image attachments
+        let hasImageAttachments = messages.contains { message in
+            guard let attachments = message.attachments else { return false }
+            return !attachments.isEmpty
+        }
+        
+        // If there are image attachments and no specific model is requested, check the default model's capabilities
+        if hasImageAttachments && model == nil {
+            let supportsImageToText = deviceDetails?.aiModel.capabilities.imageToText ?? false
+            if !supportsImageToText {
+                FreeToken.shared.logger("🔴 Default model does not support image-to-text capabilities", .error)
+                await errorCallback(FreeTokenError.visionModelRequired)
+                return
+            }
+        }
+        // Note: When a specific model code is provided, we currently cannot validate its capabilities
+        // without fetching model information from the server. This validation would need to be done
+        // server-side or by implementing a model info API endpoint.
+
         let preparedMessages: [Message]
         do {
             let promptTemplateConfig = deviceDetails!.aiModel.config.promptTemplateConfig

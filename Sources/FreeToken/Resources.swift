@@ -213,6 +213,9 @@ extension FreeToken {
             let config: AiModelConfigResponse
             let clientsConfig: [String: ShowClientConfig]
             let trainingCutoffDate: String
+            let capabilities: AiModelCapabilities
+            let recommendedPlatforms: AiModelRecommendedPlatforms
+            
             let cloudOnly: Bool
             let jsonToolCalls: Bool?
             
@@ -223,8 +226,32 @@ extension FreeToken {
                 case config
                 case clientsConfig = "clients_config"
                 case trainingCutoffDate = "training_cutoff_date"
+                case capabilities
+                case recommendedPlatforms = "recommended_platforms"
                 case cloudOnly = "cloud_only"
                 case jsonToolCalls = "json_tool_calls"
+            }
+        }
+        
+        struct AiModelRecommendedPlatforms: Decodable {
+            let macOS: Bool
+            let iOS: Bool
+            let web: Bool
+            
+            enum CodingKeys: String, CodingKey {
+                case macOS = "macos"
+                case iOS = "ios"
+                case web
+            }
+        }
+        
+        struct AiModelCapabilities: Decodable {
+            let text: Bool
+            let imageToText: Bool
+            
+            enum CodingKeys: String, CodingKey {
+                case text
+                case imageToText = "image_to_text"
             }
         }
         
@@ -1365,6 +1392,8 @@ extension FreeToken {
         public let trainingCutoffDate: String
         public let cloudOnly: Bool
         public let jsonToolCalls: Bool
+        public let capabilities: AIModelCapabilities
+        public let recommendedPlatforms: AIModelRecommendedPlatforms
         internal let coding: Codings.AiModelResponse
         
         init(from: Codings.AiModelResponse) {
@@ -1374,6 +1403,28 @@ extension FreeToken {
             self.cloudOnly = from.cloudOnly
             self.jsonToolCalls = from.jsonToolCalls ?? false
             self.coding = from
+            self.capabilities = AIModelCapabilities(from: from.capabilities)
+            self.recommendedPlatforms = AIModelRecommendedPlatforms(from: from.recommendedPlatforms)
+        }
+    }
+    
+    public struct AIModelCapabilities: Sendable {
+        public let text: Bool
+        public let imageToText: Bool
+        
+        init(from modelCapabilities: Codings.AiModelCapabilities) {
+            self.text = modelCapabilities.text
+            self.imageToText = modelCapabilities.imageToText
+        }
+    }
+    
+    public struct AIModelRecommendedPlatforms: Sendable {
+        public let macOS: Bool
+        public let iOS: Bool
+        
+        init(from modelRecommendedPlatforms: Codings.AiModelRecommendedPlatforms) {
+            self.macOS = modelRecommendedPlatforms.macOS
+            self.iOS = modelRecommendedPlatforms.iOS
         }
     }
     

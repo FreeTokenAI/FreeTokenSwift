@@ -184,24 +184,40 @@ extension FreeToken {
             success: @escaping @Sendable (_ context: any WorkflowContext) async -> Void,
             failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
         ) async -> Void {
-            // Check if the last message contains images (vision capability required)
-            let lastMessageHasImages = context.messageThread?.messages.last?.attachments?.contains { $0.type == .image } ?? false
+            // Check if any message in the thread contains images (vision capability required)
+            let threadHasImages = context.messageThread?.messages.contains { message in
+                message.attachments?.contains { $0.type == .image } ?? false
+            } ?? false
             
             switch runLocation {
             case .automatic:
-                // If last message has images, force cloud run (local models don't support vision)
-                if lastMessageHasImages {
-                    FreeToken.shared.logger("📸 Last message contains images, forcing cloud run (vision not supported locally)", .info)
-                    context.cloudRun = true
-                    do {
-                        try await chatStatusStream?(nil, .starting)
-                    } catch {
-                        // User cancelled immediately
-                        await failure(FreeTokenError.generationCancelled, context)
+                // If thread has images and model supports imageToText, force cloud run (local models don't support vision)
+                if threadHasImages {
+                    // Check if the model supports imageToText
+                    let supportsImageToText = deviceDetails?.aiModel.capabilities.imageToText ?? false
+                    
+                    if supportsImageToText {
+                        FreeToken.shared.logger("📸 Thread contains images and model supports imageToText, routing to cloud (vision not supported locally)", .info)
+                        context.cloudRun = true
+                        do {
+                            try await chatStatusStream?(nil, .starting)
+                        } catch {
+                            // User cancelled immediately
+                            await failure(FreeTokenError.generationCancelled, context)
+                            return
+                        }
+                        await success(context)
+                        return
+                    } else {
+                        FreeToken.shared.logger("❌ Thread contains images but model does not support imageToText", .error)
+                        do {
+                            try await chatStatusStream?(nil, .failed)
+                        } catch {
+                            // Ignore errors in failed status
+                        }
+                        await failure(FreeTokenError.visionModelRequired, context)
                         return
                     }
-                    await success(context)
-                    return
                 }
                 
                 // Automatically determine if this should be a cloud run or not
@@ -219,12 +235,26 @@ extension FreeToken {
                 }
             case .cloudRun:
                 FreeToken.shared.logger("☁️ Force cloud run requested", .info)
+                // Even for cloud run, check if model supports imageToText when images are present
+                if threadHasImages {
+                    let supportsImageToText = deviceDetails?.aiModel.capabilities.imageToText ?? false
+                    if !supportsImageToText {
+                        FreeToken.shared.logger("❌ Cloud run requested but model does not support imageToText", .error)
+                        do {
+                            try await chatStatusStream?(nil, .failed)
+                        } catch {
+                            // Ignore errors in failed status
+                        }
+                        await failure(FreeTokenError.visionModelRequired, context)
+                        return
+                    }
+                }
                 context.cloudRun = true
                 await success(context)
             case .localRun:
                 // Check for vision requirement in local run
-                if lastMessageHasImages {
-                    FreeToken.shared.logger("❌ Local run requested but message contains images - vision not supported on local models", .error)
+                if threadHasImages {
+                    FreeToken.shared.logger("❌ Local run requested but thread contains images - vision not supported on local models", .error)
                     do {
                         try await chatStatusStream?(nil, .failed)
                     } catch {
