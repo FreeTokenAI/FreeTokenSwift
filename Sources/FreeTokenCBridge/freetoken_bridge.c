@@ -417,7 +417,7 @@ int32_t freetoken_tokens_to_text(
     int32_t remaining = buffer_size;
     
     for (int i = 0; i < count && remaining > 0; i++) {
-        int32_t written = llama_token_to_piece(vocab, tokens[i], current, remaining, 0, false);
+        int32_t written = llama_token_to_piece(vocab, tokens[i], current, remaining, 0, true);
         if (written <= 0) break;
         
         current += written;

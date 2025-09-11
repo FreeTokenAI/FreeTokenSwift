@@ -117,15 +117,19 @@ extension FreeToken {
         case downloadHashVerificationFailed(url: String, expected: String, actual: String)
         case failedToFetchModelFiles(String)
         
-    // MARK: - Llama Manager Errors
-    case llamaUnexpectedInsertion
-    case llamaMultimodalNotSupported
-    case llamaContextOverflow
-    case llamaBusy
-    case llamaInvariantViolation(message: String? = nil)
-    case llamaModelLoadFailed(message: String? = nil)
-    case llamaTokenizationFailed
-    case llamaGenerationStopped
+        // MARK: - Llama Manager Errors
+        case llamaUnexpectedInsertion
+        case llamaMultimodalNotSupported
+        case llamaContextOverflow
+        case llamaBusy
+        case llamaInvariantViolation(message: String? = nil)
+        case llamaModelLoadFailed(message: String? = nil)
+        case llamaTokenizationFailed
+        case llamaGenerationStopped
+        case llamaFailedToWriteSessionStateToFile
+        case llamaFailedToReadSessionStateFromFile
+        case llamaEvaluatingEmptyContext
+        case llamaUnexpectedInternalState
         
         // MARK: - Custom Error:
         case error(message: String, code: Int? = nil)
@@ -234,14 +238,18 @@ extension FreeToken.FreeTokenError {
         case .downloadSessionLimitExceeded(_): return "downloadSessionLimitExceeded"
         case .downloadHashVerificationFailed(_, _, _): return "downloadHashVerificationFailed"
         case .failedToFetchModelFiles(_): return "failedToFetchModelFiles"
-    case .llamaUnexpectedInsertion: return "llamaUnexpectedInsertion"
-    case .llamaMultimodalNotSupported: return "llamaMultimodalNotSupported"
-    case .llamaContextOverflow: return "llamaContextOverflow"
-    case .llamaBusy: return "llamaBusy"
-    case .llamaInvariantViolation(_): return "llamaInvariantViolation"
-    case .llamaModelLoadFailed(_): return "llamaModelLoadFailed"
-    case .llamaTokenizationFailed: return "llamaTokenizationFailed"
-    case .llamaGenerationStopped: return "llamaGenerationStopped"
+        case .llamaUnexpectedInsertion: return "llamaUnexpectedInsertion"
+        case .llamaMultimodalNotSupported: return "llamaMultimodalNotSupported"
+        case .llamaContextOverflow: return "llamaContextOverflow"
+        case .llamaBusy: return "llamaBusy"
+        case .llamaInvariantViolation(_): return "llamaInvariantViolation"
+        case .llamaModelLoadFailed(_): return "llamaModelLoadFailed"
+        case .llamaTokenizationFailed: return "llamaTokenizationFailed"
+        case .llamaGenerationStopped: return "llamaGenerationStopped"
+        case .llamaFailedToWriteSessionStateToFile: return "llamaFailedToWriteSessionStateToFile"
+        case .llamaFailedToReadSessionStateFromFile: return "llamaFailedToReadSessionStateFromFile"
+        case .llamaEvaluatingEmptyContext: return "llamaEvaluatingEmptyContext"
+        case .llamaUnexpectedInternalState: return "llamaUnexpectedInternalState"
         
         case .error(_, _):
             return "error"
@@ -364,14 +372,18 @@ extension FreeToken.FreeTokenError {
         case .downloadSessionLimitExceeded(let limit): return "Maximum concurrent session limit exceeded (\(limit) sessions). Complete or remove existing sessions before creating new ones."
         case .downloadHashVerificationFailed(let url, let expected, let actual): return "Hash verification failed for \(url). Expected: \(expected), Actual: \(actual). The file may be corrupted or tampered with."
         case .failedToFetchModelFiles(let message): return "Failed to fetch model files: \(message)"
-    case .llamaUnexpectedInsertion: return "Unexpected middle insertion or reordering detected in llama context update"
-    case .llamaMultimodalNotSupported: return "Local llama inference does not support image or multimodal attachments"
-    case .llamaContextOverflow: return "Insufficient context capacity for requested operation after pruning"
-    case .llamaBusy: return "Llama manager is busy processing another operation"
-    case .llamaInvariantViolation(let message): return "Llama context invariant violation" + ((message != nil) ? ": \(message!)" : "")
-    case .llamaModelLoadFailed(let message): return "Failed to load llama model" + ((message != nil) ? ": \(message!)" : "")
-    case .llamaTokenizationFailed: return "Llama tokenization failed"
-    case .llamaGenerationStopped: return "Llama generation stopped"
+        case .llamaUnexpectedInsertion: return "Unexpected middle insertion or reordering detected in llama context update"
+        case .llamaMultimodalNotSupported: return "Local llama inference does not support image or multimodal attachments"
+        case .llamaContextOverflow: return "Insufficient context capacity for requested operation after pruning"
+        case .llamaBusy: return "Llama manager is busy processing another operation"
+        case .llamaInvariantViolation(let message): return "Llama context invariant violation" + ((message != nil) ? ": \(message!)" : "")
+        case .llamaModelLoadFailed(let message): return "Failed to load llama model" + ((message != nil) ? ": \(message!)" : "")
+        case .llamaTokenizationFailed: return "Llama tokenization failed"
+        case .llamaGenerationStopped: return "Llama generation stopped"
+        case .llamaFailedToWriteSessionStateToFile: return "Failed to write llama session state to file"
+        case .llamaFailedToReadSessionStateFromFile: return "Failed to read llama session state from file"
+        case .llamaEvaluatingEmptyContext: return "Cannot evaluate a thread without messages"
+        case .llamaUnexpectedInternalState: return "Unexpected internal model state. Please unload and reload the model."
 
         case .error(let message, _):
             return message
@@ -467,14 +479,18 @@ extension FreeToken.FreeTokenError {
         case .downloadSessionLimitExceeded(_): return 8006
         case .downloadHashVerificationFailed(_, _, _): return 8007
         case .failedToFetchModelFiles(_): return 8008
-    case .llamaUnexpectedInsertion: return 5000
-    case .llamaMultimodalNotSupported: return 5001
-    case .llamaContextOverflow: return 5002
-    case .llamaBusy: return 5003
-    case .llamaInvariantViolation(_): return 5004
-    case .llamaModelLoadFailed(_): return 5005
-    case .llamaTokenizationFailed: return 5006
-    case .llamaGenerationStopped: return 5007
+        case .llamaUnexpectedInsertion: return 5000
+        case .llamaMultimodalNotSupported: return 5001
+        case .llamaContextOverflow: return 5002
+        case .llamaBusy: return 5003
+        case .llamaInvariantViolation(_): return 5004
+        case .llamaModelLoadFailed(_): return 5005
+        case .llamaTokenizationFailed: return 5006
+        case .llamaGenerationStopped: return 5007
+        case .llamaFailedToWriteSessionStateToFile: return 5008
+        case .llamaFailedToReadSessionStateFromFile: return 5009
+        case .llamaEvaluatingEmptyContext: return 5010
+        case .llamaUnexpectedInternalState: return 5011
             
         case .error(_, let code):
             return code

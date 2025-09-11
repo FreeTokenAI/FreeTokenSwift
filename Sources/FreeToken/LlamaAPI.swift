@@ -141,8 +141,11 @@ extension FreeToken {
                 }
             }
             
-            // Apply template to get formatted text
-            let bufferSize = 32768
+            // Calculate a reasonable buffer size based on message content
+            // Each message contributes its content + role + template overhead (~100 chars per message)
+            let estimatedSize = messages.reduce(0) { $0 + $1.content.count + $1.role.count + 100 }
+            // Use at least 32KB, but scale up for large conversations
+            let bufferSize = max(32768, estimatedSize * 2)  // 2x for safety margin
             var buffer = [CChar](repeating: 0, count: bufferSize)
             
             let result = chatMessages.withUnsafeMutableBufferPointer { msgPtr in
@@ -182,6 +185,62 @@ extension FreeToken {
             return try tokenize(model: model, text: formatted, addBos: false, special: true)
         }
         
+        static func chatTemplateString( model: OpaquePointer, template: String?, messages: [(role: String, content: String)] ) throws -> String {
+            var chatMessages = messages.map { msg in
+                llama_chat_message(role: msg.role.withCString { strdup($0) }, content: msg.content.withCString { strdup($0) })
+            }
+            defer {
+                for msg in chatMessages {
+                    free(UnsafeMutableRawPointer(mutating: msg.role))
+                    free(UnsafeMutableRawPointer(mutating: msg.content))
+                }
+            }
+            
+            // Calculate a reasonable buffer size based on message content
+            // Each message contributes its content + role + template overhead (~100 chars per message)
+            let estimatedSize = messages.reduce(0) { $0 + $1.content.count + $1.role.count + 100 }
+            // Use at least 32KB, but scale up for large conversations
+            let bufferSize = max(32768, estimatedSize * 2)  // 2x for safety margin
+            var buffer = [CChar](repeating: 0, count: bufferSize)
+            
+            let result = chatMessages.withUnsafeMutableBufferPointer { msgPtr in
+                buffer.withUnsafeMutableBufferPointer { bufPtr in
+                    if let tmpl = template {
+                        return tmpl.withCString { tmplCStr in
+                            llama_chat_apply_template(
+                                tmplCStr,
+                                msgPtr.baseAddress,
+                                msgPtr.count,
+                                false,
+                                bufPtr.baseAddress,
+                                Int32(bufferSize)
+                            )
+                        }
+                    } else {
+                        return llama_chat_apply_template(
+                            nil,
+                            msgPtr.baseAddress,
+                            msgPtr.count,
+                            false,
+                            bufPtr.baseAddress,
+                            Int32(bufferSize)
+                        )
+                    }
+                }
+            }
+            
+            guard result > 0 else {
+                throw FreeToken.FreeTokenError.aiRunFailed(message: "Template application failed")
+            }
+            
+            // Find null terminator and convert to string
+            let nullIndex = buffer.firstIndex(of: 0) ?? buffer.count
+            let data = buffer.prefix(nullIndex).map { UInt8(bitPattern: $0) }
+            let formatted = String(decoding: data, as: UTF8.self)
+            
+            return formatted
+        }
+        
         // MARK: - Batch Operations
         
         static func batchInit(_ nTokens: Int32, _ embd: Int32, _ nSeqMax: Int32) -> llama_batch {
@@ -200,6 +259,53 @@ extension FreeToken {
         
         static func logitsIthPointer(_ context: OpaquePointer, _ i: Int32) -> UnsafePointer<Float>? {
             return UnsafePointer(llama_get_logits_ith(context, i))
+        }
+        
+        // MARK: - State Data
+        
+        static func getStateData(_ context: OpaquePointer, sequenceID: Int32 = 0) -> [UInt8] {
+            let stateSize = llama_state_seq_get_size(context, sequenceID)
+            var buffer = [UInt8](repeating: 0, count: stateSize)
+            buffer.withUnsafeMutableBufferPointer { buf in
+                _ = llama_state_seq_get_data(context, buf.baseAddress, stateSize, sequenceID)
+            }
+            return buffer
+        }
+        
+        static func loadStateData(_ context: OpaquePointer, _ data: [UInt8], sequenceID: Int32 = 0) -> Bool {
+            return data.withUnsafeBytes { buf in
+                llama_state_seq_set_data(context, data, data.count, sequenceID) == data.count
+            }
+        }
+        
+        static func writeStateToDisk(_ context: OpaquePointer, path: String, sequenceID: Int32 = 0, tokens: [llama_token]) -> Bool {
+            let result = llama_state_seq_save_file(context, path, sequenceID, tokens, tokens.count)
+            if result == 0 {
+                FreeToken.shared.logger("🔴 Failed to write state to disk at path: \(path)", .error)
+            }
+            
+            return result != 0
+        }
+        
+        static func loadStateFromDisk(
+            _ context: OpaquePointer,
+            path: String,
+            sequenceID: Int32 = 0
+        ) -> (tokens: [llama_token], token_count_out: Int) {
+            // Setup token buffer & count
+            let maxTokens = llama_n_ctx(context)
+            var tokens = [llama_token](repeating: 0, count: Int(maxTokens))
+            
+            return tokens.withUnsafeMutableBufferPointer { buf in
+                var countOut = 0
+                let result = llama_state_seq_load_file(context, path, sequenceID, buf.baseAddress, buf.count, &countOut)
+                if result == 0 {
+                    FreeToken.shared.logger("🔴 Failed to load state from disk at path: \(path)", .error)
+                    return ([], 0)  // Failed to load
+                } else {
+                    return (Array(buf.prefix(countOut)), countOut)
+                }
+            }
         }
     }
 }

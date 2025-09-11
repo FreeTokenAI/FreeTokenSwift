@@ -147,6 +147,12 @@ extension FreeToken {
             } catch {
                 if context.runLocation == .localRun {
                     FreeToken.shared.logger("🔴 Failed to load AI model for local run: \(error)", .error)
+
+                    if error as? FreeTokenError == FreeTokenError.messagesMustAlternate {
+                        let roles = context.messageThread!.messages.map { $0.role.rawValue }
+                        FreeToken.shared.logger("Roles in order: \(roles.joined(separator: ", "))", .error)
+                    }
+                    
                     await failure(FreeTokenError.failedToLoadModel, context)
                 } else {
                     // If we're in automatic mode, we can just skip loading the model and let it run in the cloud
@@ -532,6 +538,30 @@ extension FreeToken {
         }
     }
     
+    // MARK: - Save AI Session to Disk
+    
+    final class SaveAISessionToDisk: WorkflowStep, @unchecked Sendable {
+        let context: RunMessageThreadContext
+        
+        init(context: any FreeToken.WorkflowContext) {
+            self.context = context as! RunMessageThreadContext
+        }
+        
+        func execute(success: @escaping @Sendable (any FreeToken.WorkflowContext) async -> Void, failure: @escaping @Sendable (FreeToken.FreeTokenError, any FreeToken.WorkflowContext) async -> Void) async {
+            guard context.cloudRun == false else {
+                return
+            }
+            
+            if let aiModelManager = context.aiModelManager {
+                do {
+                    try await aiModelManager.saveSessionToDiskByID(id: context.messageThreadID)
+                } catch {
+                    await failure(FreeTokenError.llamaFailedToWriteSessionStateToFile, self.context)
+                }
+            }
+        }
+    }
+    
     // MARK: - Run Tool Calls
     
     final class RunToolCalls: WorkflowStep, @unchecked Sendable {
@@ -640,6 +670,7 @@ extension FreeToken {
                                 RunAIModelInCloud.self,
                                 RunAIModelLocally.self,
                                 AddMessageToThread.self,
+                                SaveAISessionToDisk.self,
                                 RunToolCalls.self
                             ]
                             self.context.toolCallRecursiveRuns += 1

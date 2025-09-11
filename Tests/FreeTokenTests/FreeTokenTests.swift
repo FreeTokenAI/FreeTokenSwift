@@ -201,6 +201,61 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 300.0)
     }
     
+    func testColdPrewarmCacheRun() throws {
+        let expectation = self.expectation(description: "Waiting for message thread run")
+
+        Task {
+            
+            let uuid = UUID().uuidString
+            
+            actor MessageStream {
+                var message = ""
+                
+                func append(_ text: String) {
+                    message += text
+                }
+                func getMessage() -> String {
+                    return message
+                }
+            }
+            
+            _ = await FreeToken.shared.prewarmAIFor(runIdentifier: uuid, success: {
+                let message = FreeToken.Message(role: .user, content: "What is the capital of France?")
+                
+                let messageStream = MessageStream()
+                
+                await FreeToken.shared.createMessageThread { messageThread in
+                    await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                        await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, runIdentifier: uuid, success: { resultMessage in
+                            XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
+                            let finalMessage = await messageStream.getMessage()
+                            XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
+                            expectation.fulfill()
+                        }, error: { error in
+                            XCTFail("Failed to run message thread: \(error.message)")
+                            expectation.fulfill()
+                        }, chatStatusStream: { token, status in
+                            if let token = token {
+                                await messageStream.append(token)
+                            }
+                        })
+                    } error: { error in
+                        XCTFail("Failed to add message to thread: \(error.message)")
+                        expectation.fulfill()
+                    }
+                } error: { error in
+                    XCTFail("Failed to create message thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            }, error: { error in
+                XCTFail("Failed to prewarm with error: \(error.message)")
+                expectation.fulfill()
+            })
+        }
+
+        wait(for: [expectation], timeout: 300.0)
+    }
+    
     func testPrewarmCacheRun() throws {
         let expectation = self.expectation(description: "Waiting for message thread run")
 
@@ -296,7 +351,7 @@ final class FreeTokenTests: XCTestCase {
                 
                 _ = await FreeToken.shared.prewarmAIForMessageThread(messageThreadID: messageThread.id)
                 
-                await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, aiRunConfig: .init(.init(contentWindowSize: 4096)), success: { resultMessage in
+                await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
                     let finalMessage = await messageStream.getMessage()
                     XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
                     expectation.fulfill()

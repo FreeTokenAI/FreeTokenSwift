@@ -8,6 +8,7 @@
 import Foundation
 import llama
 import FreeTokenCBridge
+import CryptoKit
 
 extension FreeToken {
     
@@ -20,6 +21,7 @@ extension FreeToken {
             
             var modelParams = LlamaAPI.modelDefaultParams()
             modelParams.use_mmap = true
+            modelParams.use_mlock = false
             
             guard let model = LlamaAPI.loadModel(path, modelParams) else {
                 throw FreeToken.FreeTokenError.llamaModelLoadFailed(message: "Failed to load model at \(path)")
@@ -47,7 +49,33 @@ extension FreeToken {
         private let batchSize: Int32
         private var pos: Int32 = 0
         private var isUnloaded: Bool = false
+        let configSHA256: String
         @inline(__always) private func ensureActive(_ fn: StaticString = #function) throws { if isUnloaded { throw FreeToken.FreeTokenError.aiRunFailed(message: "LlamaSession was unloaded; call site: \(fn)") } }
+        
+        struct ContextConfig: Encodable {
+            let n_ctx: Int
+            let n_batch: Int
+            let n_seq_max: Int
+            let type_k: String
+            let type_v: String
+            let flash_attn: Bool
+            let swa_full: Bool
+            
+            func dump() -> String {
+                let encoder = JSONEncoder()
+                encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+                if let data = try? encoder.encode(self), let json = String(data: data, encoding: .utf8) {
+                    return json
+                } else {
+                    return "{}"
+                }
+            }
+            
+            func sha256() -> String {
+                let data = Data(dump().utf8)
+                return data.sha256Hex()
+            }
+        }
         
         init(model: LlamaModel, config: LlamaInitOptions) throws {
             // Create Context
@@ -58,11 +86,22 @@ extension FreeToken {
             // Count number of CPUs and reserve 2 for system/UI tasks
             params.n_threads = max(1, min(8, Int32(ProcessInfo.processInfo.activeProcessorCount) - 2))
             params.n_threads_batch = params.n_threads
-            params.offload_kqv = true // Offload the KV cache to GPU
+            params.offload_kqv = true // Offload the KV cache to GPU - CRITICAL FOR PERFORMANCE
             params.swa_full = false // Disable sliding window attention full state if supported
             params.type_k = GGML_TYPE_Q8_0 // Quantize K for better memory with little difference in result
             params.type_v = GGML_TYPE_Q8_0 // Quantize V for better memory with little difference in result
             params.flash_attn = true
+            
+            let contextConfig = ContextConfig(
+                n_ctx: Int(params.n_ctx),
+                n_batch: Int(params.n_batch),
+                n_seq_max: Int(params.n_seq_max),
+                type_k: String(describing: params.type_k),
+                type_v: String(describing: params.type_v),
+                flash_attn: params.flash_attn,
+                swa_full: params.swa_full
+            )
+            self.configSHA256 = contextConfig.sha256()
             
             guard let context = LlamaAPI.newContext(model.model, params) else {
                 throw FreeToken.FreeTokenError.llamaModelLoadFailed(message: "Failed to create context")
@@ -125,15 +164,54 @@ extension FreeToken {
         
         /// Tokenize text -> token ids
         @inline(__always)
-        func tokenize(_ text: String) async throws -> [Int] {
+        func tokenize(_ text: String, addBos: Bool = false, special: Bool = false) async throws -> [Int] {
             try ensureActive()
             do {
-                let toks = try LlamaAPI.tokenize(model: model.model, text: text, addBos: false, special: false)
+                let toks = try LlamaAPI.tokenize(model: model.model, text: text, addBos: addBos, special: special)
                 return toks.map(Int.init)
             } catch {
                 FreeTokenLogger.shared.log("tokenize failed len=\(text.utf8.count) error=\(error)", level: .error)
                 throw error
             }
+        }
+        
+        /// Detokenize an array of tokens back to text
+        @inline(__always)
+        func detokenize(_ tokens: [Int]) async throws -> String {
+            try ensureActive()
+            guard !tokens.isEmpty else { return "" }
+            
+            // Convert to Int32 array for C bridge
+            let tokenArray = tokens.map { Int32($0) }
+            
+            // Allocate a reasonable buffer size (average ~4 chars per token)
+            let bufferSize = max(tokens.count * 8, 1024)
+            var buffer = [CChar](repeating: 0, count: bufferSize)
+            
+            // Call the C bridge function
+            let bytesWritten = tokenArray.withUnsafeBufferPointer { tokenBuffer in
+                freetoken_tokens_to_text(
+                    UnsafeMutableRawPointer(model.model),
+                    tokenBuffer.baseAddress,
+                    Int32(tokenBuffer.count),
+                    &buffer,
+                    Int32(bufferSize)
+                )
+            }
+            
+            guard bytesWritten > 0 else {
+                FreeTokenLogger.shared.log("detokenize failed for \(tokens.count) tokens", level: .error)
+                throw FreeToken.FreeTokenError.aiRunFailed(message: "Failed to detokenize \(tokens.count) tokens")
+            }
+            
+            // Convert the C string to Swift String
+            let data = Data(bytes: buffer, count: Int(bytesWritten))
+            guard let result = String(data: data, encoding: .utf8) else {
+                throw FreeToken.FreeTokenError.aiRunFailed(message: "Failed to decode detokenized text as UTF-8")
+            }
+            
+            FreeTokenLogger.shared.log("Detokenized \(tokens.count) tokens to \(bytesWritten) bytes", level: .debug)
+            return result
         }
         
         
@@ -199,7 +277,11 @@ extension FreeToken {
                 FreeTokenLogger.shared.log("eval (C bridge) tokens=\(tokens.count) time=\(String(format: "%.3f", elapsed))s tps=\(String(format: "%.1f", tps)) finalPos=\(pos)", level: .debug)
             }
         }
-    
+        
+        // Get templated String for chat messages
+        func getTemplatedMessageString(messages: [(role: String, content: String)]) throws -> String {
+            return try LlamaAPI.chatTemplateString(model: model.model, template: template, messages: messages)
+        }
     
         /// Optimized generation using C bridge for maximum performance
         func generateNextTokenOptimized() async throws -> (token: Int32, text: String, evalMs: Float, sampleMs: Float)? {
@@ -329,5 +411,59 @@ extension FreeToken {
             return try LlamaAPI.chatApplyTemplate(model: model.model, template: template, messages: messages, addAssistant: includeAssistantPrefix).map(Int.init)
         }
         
+        // MARK: State Data Management
+        
+        func getStateData() -> [UInt8] {
+            return LlamaAPI.getStateData(context)
+        }
+        
+        func loadStateData(_ data: [UInt8], pos: Int) throws {
+            try ensureActive()
+            FreeToken.shared.logger("Attempting to load state data into context", .debug)
+            
+            if LlamaAPI.loadStateData(context, data) {
+                self.pos = Int32(pos) // Put the pointer in the right position to begin evaluating
+                FreeTokenLogger.shared.log("💾 Loaded state data of size \(data.count) bytes", level: .info)
+            } else {
+                FreeToken.shared.logger("🔴 Failed to load state data of size \(data.count) bytes", .error)
+                throw FreeToken.FreeTokenError.aiRunFailed(message: "Failed to load state data of size \(data.count) bytes")
+            }
+        }
+        
+        func writeStateToFile(fileName: String, basePath: URL, tokens: [llama_token]) throws {
+            let fullPath = basePath.appending(component: configSHA256, directoryHint: .isDirectory)
+            // Ensure directory exists
+            try FileManager.default.createDirectory(at: fullPath, withIntermediateDirectories: true)
+            let fileURL = fullPath.appendingPathComponent(fileName)
+            
+            if LlamaAPI.writeStateToDisk(context, path: fileURL.path, tokens: tokens) {
+                FreeTokenLogger.shared.log("💾 Wrote state to file \(fileURL.path)", level: .info)
+            } else {
+                FreeTokenLogger.shared.log("🔴 Failed to write state to file \(fileURL.path)", level: .error)
+                throw FreeTokenError.llamaFailedToWriteSessionStateToFile
+            }
+        }
+        
+        func loadStateFromFile(fileName: String, basePath: URL) throws -> (tokens: [llama_token], token_count_out: Int) {
+            let fullPath = basePath.appending(component: configSHA256, directoryHint: .isDirectory)
+            let fileURL = fullPath.appendingPathComponent(fileName)
+            
+            if !FileManager.default.fileExists(atPath: fileURL.path) {
+                FreeToken.shared.logger("⚠️ State file does not exist at \(fileURL.path)", .warning)
+                throw FreeTokenError.llamaFailedToReadSessionStateFromFile
+            } else {
+                let result = LlamaAPI.loadStateFromDisk(context, path: fileURL.path)
+                pos = Int32(result.tokens.count)
+                return result
+            }
+        }
+        
+    }
+}
+
+extension Data {
+    func sha256Hex() -> String {
+        let hash = SHA256.hash(data: self)
+        return hash.compactMap { String(format: "%02x", $0) }.joined()
     }
 }

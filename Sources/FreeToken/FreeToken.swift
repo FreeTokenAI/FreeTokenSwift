@@ -775,17 +775,7 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Assemble the system message
-        let deviceDetails = self.deviceDetails!
-        
-        var systemMessageContent = deviceDetails.systemInstructions
-        
-        let toolDefinitions = await toolDefinitionsManager.processToolMask(toolAccess)
-        if toolDefinitions.isEmpty == false {
-            let toolDefinitionJSON = toolDefinitions.map { $0.definition }.joined(separator: ",\n")
-            systemMessageContent += "\n\n\(await toolDefinitionsManager.getToolInstructions())\n\nAvailable Tools:\n[\n\(toolDefinitionJSON)\n]"
-        }
-        
-        let systemMessage = Message(role: .system, content: systemMessageContent)
+        let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
         
         // Use Message Manager
         await messagesManager.createMessageThread(systemMessage: systemMessage) { result in
@@ -798,6 +788,20 @@ public class FreeToken: @unchecked Sendable {
                 await errorCompletion(error)
             }
         }
+    }
+    
+    private func buildSystemMessage(toolAccess: [ToolRunMask] = [.allowAll]) async -> Message {
+        let deviceDetails = self.deviceDetails!
+        
+        var systemMessageContent = deviceDetails.systemInstructions
+        
+        let toolDefinitions = await toolDefinitionsManager.processToolMask(toolAccess)
+        if toolDefinitions.isEmpty == false {
+            let toolDefinitionJSON = toolDefinitions.map { $0.definition }.joined(separator: ",\n")
+            systemMessageContent += "\n\n\(await toolDefinitionsManager.getToolInstructions())\n\nAvailable Tools:\n[\n\(toolDefinitionJSON)\n]"
+        }
+        
+        return Message(role: .system, content: systemMessageContent)
     }
     
     /// Delete a message thread
@@ -2041,6 +2045,7 @@ public class FreeToken: @unchecked Sendable {
             RunAIModelLocally.self, // Order of these two steps is important!
             RunAIModelInCloud.self, // <---
             AddMessageToThread.self,
+            SaveAISessionToDisk.self,
             RunToolCalls.self
         ]
         
@@ -2171,7 +2176,7 @@ public class FreeToken: @unchecked Sendable {
     ///   - runConfig: Optional configuration for the AI run
     ///   - success: A closure to capture the result of the prewarming operation
     ///   - error: A closure to capture any errors that occur during the call
-    public func prewarmAIFor(runIdentifier: String, modelCode: String? = nil, runConfig: AIRunConfig? = nil, success successCallback: (@Sendable () async -> Void)? = nil, error errorCallback: (@Sendable (FreeTokenError) async -> Void)? = nil) async {
+    public func prewarmAIFor(runIdentifier: String, modelCode: String? = nil, runConfig: AIRunConfig? = nil, toolAccess: [ToolRunMask] = [.allowAll], success successCallback: (@Sendable () async -> Void)? = nil, error errorCallback: (@Sendable (FreeTokenError) async -> Void)? = nil) async {
         guard isDeviceRegistered() else {
             FreeToken.shared.logger("🔴 Device not registered, cannot prewarm AI for run identifier", .error)
             return
@@ -2198,8 +2203,10 @@ public class FreeToken: @unchecked Sendable {
         }
         
         do {
+            let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
+            
             _ = try await aiModelManager?.loadSession(for: runIdentifier, runConfig: runConfig)
-            try await aiModelManager?.prewarmForId(id: runIdentifier)
+            _ = try await aiModelManager?.prewarmForId(id: runIdentifier, systemMessage: systemMessage)
             
             await successCallback?()
         } catch {
@@ -2253,6 +2260,14 @@ public class FreeToken: @unchecked Sendable {
         }
         
         await self.getMessageThread(id: messageThreadID) { thread in
+            do {
+                try await aiModelManager?.loadSessionFromDiskByID(id: messageThreadID, messages: thread.messages)
+                await successCallback?()
+                return
+            } catch {
+                FreeToken.shared.logger("⚠️ Unable to load message thread into AI memory from disk - loading manually", .warning)
+            }
+            
             do {
                 _ = try await aiModelManager?.loadSession(for: messageThreadID, with: thread.messages, runConfig: runConfig)
                 await successCallback?()

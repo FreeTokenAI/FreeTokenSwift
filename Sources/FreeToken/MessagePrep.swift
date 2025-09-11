@@ -11,14 +11,11 @@ extension FreeToken {
     class MessagePrep {
         private var messages: [Message]
         private let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
-        private let fixedDate: Date?
         
         init(messages: [Message],
-             promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig,
-             fixedDate: Date? = nil) {
+             promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
             self.messages = messages
             self.promptTemplateConfig = promptTemplateConfig
-            self.fixedDate = fixedDate
         }
         
         func prepareMessages() throws -> [Message] {
@@ -26,11 +23,6 @@ extension FreeToken {
             convertMessagesToProperRoles()
             try ensureMessagesAlternate()
             return messages
-        }
-        
-        private func currentDateString() -> String {
-            let d = fixedDate ?? Date()
-            return d.formatted(.dateTime)
         }
         
         private func prepareSystemMessage() {
@@ -42,34 +34,14 @@ extension FreeToken {
                     // Append the system message content to the user prompt
                     if let userIndex = messages.firstIndex(where: { $0.role == .user }) {
                         let userMessage = messages[userIndex]
-                        // Update the content of the user message with the system message
-                        if userMessage.content.hasPrefix("Today's Date:") {
-                            // Already injected previously (likely same session) – leave content as-is for stability
-                        } else {
-                            let newContent = "Today's Date: \(currentDateString())\n\n\(systemMessage.content)\n\n\(userMessage.content)"
-                            let newUserMessage = Message(role: .user, content: newContent, attachments: userMessage.attachments)
-                            // Replace the user message with the new one
-                            messages[userIndex] = newUserMessage
-                        }
+                        let newContent = "\(systemMessage.content)\n\n\(userMessage.content)"
+                        let newUserMessage = Message(role: .user, content: newContent, attachments: userMessage.attachments)
+                        // Replace the user message with the new one
+                        messages[userIndex] = newUserMessage
                     } else {
                         // If no user message exists, create a new one with the system content
-                        let newContent = "Today's Date: \(currentDateString())\n\n\(systemMessage.content)"
-                        let newUserMessage = Message(role: .user, content: newContent, attachments: systemMessage.attachments)
+                        let newUserMessage = Message(role: .user, content: systemMessage.content, attachments: systemMessage.attachments)
                         messages.append(newUserMessage)
-                    }
-                }
-            } else {
-                // Inject system date into the system message
-                if let systemIndex = messages.firstIndex(where: { $0.role == .system }) {
-                    let systemMessage = messages[systemIndex]
-                    // Update the content of the system message with the current date
-                    if systemMessage.content.hasPrefix("Today's Date:") {
-                        // already injected earlier
-                    } else {
-                        let newContent = "Today's Date: \(currentDateString())\n\n\(systemMessage.content)"
-                        let newSystemMessage = Message(role: .system, content: newContent, attachments: systemMessage.attachments)
-                        // Replace the system message with the new one
-                        messages[systemIndex] = newSystemMessage
                     }
                 }
             }

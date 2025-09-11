@@ -7,16 +7,18 @@
 //
 
 import Foundation
+import CryptoKit
 
 extension FreeToken {
     /// LlamaManager - Token-based KV cache manager
     /// ---------------------------------
     /// Manages a single llama.cpp session with token-based KV cache sliding.
     /// No message boundary tracking - just raw token positions for simplicity.
-    final class LlamaManager: @unchecked Sendable {
+    final actor LlamaManager: @unchecked Sendable {
         private let session: LlamaSession
         private let options: LlamaInitOptions
-        private var busy: Bool = false
+        private let modelFileName: String
+        private let stateBaseURL: URL
         private let sequenceId: Int32 = 0 // single sequence
         
         // Token position tracking (simple and clean)
@@ -29,25 +31,135 @@ extension FreeToken {
         
         // Sliding configuration
         private let slidingRatio: Float = 0.5  // Remove 50% of available tokens when sliding
+        
+        private var prewarmedTokens: [Int32] = []
+        private var isPrewarmed: Bool = false
+        private var runID: String = ""
 
         @inline(__always)
         private func ensureActive(_ fn: StaticString = #function) throws {
             if isUnloaded { throw FreeTokenError.aiRunFailed(message: "LlamaManager was unloaded; call site: \(fn)") }
         }
         
-        init(modelPath: String, options: LlamaInitOptions) throws {
+        init(modelPath: String, options: LlamaInitOptions, repoName: String) throws {
             // Load model separately
             let model = try FreeToken.LlamaModel(path: modelPath)
             // Use static factory to avoid sendability issues
             self.session = try LlamaSession(model: model, config: options)
             self.options = options
+            self.modelFileName = URL(fileURLWithPath: modelPath).lastPathComponent
             
-            FreeTokenLogger.shared.log("KV_SLIDING: LlamaManager initialized with contextSize=\(options.contextSize)", level: .info)
+            #if os(iOS)
+            self.stateBaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                .appendingPathComponent("FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
+            #else
+            self.stateBaseURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
+            #endif
+            
+            FreeTokenLogger.shared.log("LlamaManager initialized with contextSize=\(options.contextSize)", level: .info)
         }
         
         // Public read-only access to messages (without token tracking)
         var currentMessages: [Message] {
             return messages
+        }
+        
+        // MARK: - Prewarm System Message
+        
+        func generatePrewarmBuffer(_ systemMessage: Message) async throws {
+            try ensureActive()
+            
+            let systemMessageSHA: String = SHA256.hash(data: Data(systemMessage.content.utf8)).compactMap { String(format: "%02x", $0) }.joined()
+            let stateFileName = "prewarm_\(systemMessageSHA).bin"
+            
+            let filePath = stateBaseURL.appendingPathComponent(session.configSHA256).appendingPathComponent(stateFileName)
+            
+            // Does it exist at that path?
+            if FileManager.default.fileExists(atPath: filePath.path) {
+                FreeToken.shared.logger("Prewarm buffer already exists at path: \(filePath.path)", .info)
+                return
+            }
+            
+            // Template and evaluate system message
+            // System message should already be combined with user message in models that require it
+            let compact = [(systemMessage.role.rawValue, systemMessage.content)]
+            
+            let template = try await session.getTemplatedMessageString(messages: compact)
+            
+            FreeToken.shared.logger("Templated message string created: \(template)", .debug)
+            
+            let content = systemMessage.content.trimmingCharacters(in: .whitespacesAndNewlines)
+            
+            // Find the end of the system message in the template
+            if let range = template.range(of: content) {
+                let prefix = String(template[..<range.upperBound]) // Get everything up to the end of the system message
+                
+                FreeToken.shared.logger("Prefix template generated: \(prefix)", .debug)
+                
+                let tokens = try await session.tokenize(prefix, addBos: false, special: true) // Tokenize with special token strings, and don't add BOS as this was already added in the template.
+                prewarmedTokens = tokens.map { Int32($0) }
+                
+                FreeToken.shared.logger("Evaluating \(tokens.count) tokens for prewarm", .debug)
+                await self.resetSession()
+                _ = try await session.evalOptimized(tokens: tokens, feedToSampler: false, needsLogits: false) // Evaluate it into the KV cache
+                
+                // Write session to disk
+                try await session.writeStateToFile(fileName: stateFileName, basePath: stateBaseURL, tokens: prewarmedTokens)
+                
+                self.isPrewarmed = true
+                FreeToken.shared.logger("💾 Session buffer saved to disk", .debug)
+            } else {
+                throw FreeTokenError.aiRunFailed(message: "Failed to locate system message in template")
+            }
+        }
+        
+        func prewarmSession(systemMessage: Message, runID: String) async throws {
+            try ensureActive()
+            
+            if self.runID != runID {
+                _ = await self.resetSession()
+                self.runID = runID
+            }
+            
+            if isPrewarmed {
+                FreeToken.shared.logger("Session is already prewarmed", .info)
+                return
+            }
+            
+            let systemMessageSHA: String = SHA256.hash(data: Data(systemMessage.content.utf8)).compactMap { String(format: "%02x", $0) }.joined()
+            let stateFileName = "prewarm_\(systemMessageSHA).bin"
+            
+            do {
+                _ = await resetSession()
+                let result = try await session.loadStateFromFile(fileName: stateFileName, basePath: stateBaseURL)
+                self.prewarmedTokens = result.tokens.map { Int32($0) }
+                self.isPrewarmed = true
+                self.n_keep = Int32(prewarmedTokens.count)
+                self.n_past = Int32(prewarmedTokens.count)
+                FreeToken.shared.logger("🏃‍♂️ Loaded prewarm buffer with \(prewarmedTokens.count) tokens", .info)
+            } catch {
+                FreeToken.shared.logger("⚠️ No prewarm buffer found for system message - try generating the prewarm first", .warning)
+            }
+        }
+        
+        func saveSession(fileName: String) async throws {
+            try await session.writeStateToFile(fileName: fileName, basePath: stateBaseURL, tokens: templatedTokens)
+        }
+        
+        func loadSession(fileName: String, systemMessage: Message, runID: String) async throws {
+            let fullPath = stateBaseURL.appendingPathComponent(session.configSHA256).appendingPathComponent(fileName)
+            
+            if !FileManager.default.fileExists(atPath: fullPath.path) {
+                throw FreeTokenError.llamaFailedToReadSessionStateFromFile
+            }
+            
+            self.runID = runID
+            _ = await resetSession()
+            let result = try await session.loadStateFromFile(fileName: fileName, basePath: stateBaseURL)
+            self.templatedTokens = result.tokens.map { Int32($0) }
+            self.n_past = Int32(templatedTokens.count)
+            let tokenCount = try await templateMessages([systemMessage]).count
+            self.n_keep = Int32(tokenCount)
         }
         
         // MARK: - Simple Templating Functions
@@ -75,8 +187,13 @@ extension FreeToken {
         // MARK: - Simplified Context Update
         
         /// Update context with new messages using token-based approach
-        func updateContext(messages desired: [Message]) async throws {
+        func updateContext(messages desired: [Message], runID: String) async throws {
             try ensureActive()
+            
+            if self.runID != runID {
+                _ = await self.resetSession()
+                self.runID = runID
+            }
             
             FreeTokenLogger.shared.log("KV_SLIDING: updateContext start desired=\(desired.count) n_past=\(n_past) n_keep=\(n_keep)", level: .debug)
             
@@ -98,11 +215,7 @@ extension FreeToken {
             
             if needsRebuild {
                 FreeTokenLogger.shared.log("KV_SLIDING: Full rebuild required - resetting context", level: .warning)
-                await session.resetForRebuild()
-                n_past = 0
-                n_keep = 0
-                messages.removeAll()
-                templatedTokens.removeAll()
+                await self.resetSession()
             }
             
             // Check if we're just appending new messages (common case)
@@ -121,9 +234,19 @@ extension FreeToken {
             // If this is an append operation, only evaluate the new tokens
             if !needsRebuild && !messagesToAdd.isEmpty {
                 // Find the delta tokens to evaluate
-                let deltaTokens = Array(allTokens.dropFirst(templatedTokens.count))
+                var deltaTokens = Array(allTokens.dropFirst(templatedTokens.count))
                 
                 if !deltaTokens.isEmpty {
+                    if messages.count == 0, isPrewarmed {
+                        // Remove the prewarmed tokens from the delta to avoid double evaluation
+                        if deltaTokens.starts(with: prewarmedTokens) {
+                            deltaTokens = Array(deltaTokens.dropFirst(prewarmedTokens.count))
+                            FreeTokenLogger.shared.log("⏭️ Skipped \(prewarmedTokens.count) prewarmed tokens", level: .info)
+                        } else {
+                            FreeTokenLogger.shared.log("⚠️ Prewarmed tokens do not match start of delta; evaluating all \(deltaTokens.count) tokens", level: .warning)
+                        }
+                    }
+                        
                     FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(deltaTokens.count) new tokens", level: .debug)
                     
                     // Don't calculate logits here - they'll be calculated in generate() after assistant slot
@@ -132,10 +255,10 @@ extension FreeToken {
                 }
             } else {
                 // Full evaluation needed (rebuild case)
-                FreeTokenLogger.shared.log("KV_SLIDING: Full evaluation of \(allTokens.count) tokens", level: .debug)
+                FreeTokenLogger.shared.log("KV_SLIDING: Evaluation of \(allTokens.count) tokens", level: .debug)
                 
                 // Don't calculate logits here - they'll be calculated in generate() after assistant slot
-                // Don't feed to sampler - these are context tokens, not generated tokens
+                // Don't feed to sampler - these are context tokens, not generated tokens 
                 try await session.evalOptimized(tokens: allTokens.map { Int($0) }, feedToSampler: false, needsLogits: false)
             }
             
@@ -227,8 +350,17 @@ extension FreeToken {
         private(set) var lastGenerationMetrics: GenerationMetrics? = nil
         
         /// Streaming generation with automatic KV cache sliding
-        func generate() async throws -> AsyncThrowingStream<String, Error> {
+        func generate(runID: String) async throws -> AsyncThrowingStream<String, Error> {
             try ensureActive()
+            
+            guard messages.count > 0 else {
+                throw FreeTokenError.llamaEvaluatingEmptyContext
+            }
+            
+            if self.runID != runID {
+                throw FreeTokenError.llamaUnexpectedInternalState
+            }
+            
             
             // Check initial capacity
             let initialHeadroom = options.contextSize - Int(n_past)
@@ -259,7 +391,6 @@ extension FreeToken {
             return AsyncThrowingStream { continuation in
                 Task {
                     var emitted = ""
-                    var stopHit = false
                     var metrics = GenerationMetrics()
                     var generated: [Int32] = []
                     
@@ -367,18 +498,6 @@ extension FreeToken {
                                     if metrics.stopReason == "repetition" { break }
                                 }
                             }
-                            
-                            // Check stop sequences
-                            if !options.stopSequences.isEmpty {
-                                for stop in options.stopSequences {
-                                    if emitted.hasSuffix(stop) {
-                                        stopHit = true
-                                        metrics.stopReason = "stopSequence"
-                                        break
-                                    }
-                                }
-                            }
-                            if stopHit { break }
                         }
                         
                         // Finalize generation
@@ -403,111 +522,11 @@ extension FreeToken {
                         }
                         
                         self.lastGenerationMetrics = metrics
-                        self.busy = false
                         continuation.finish()
                         
                     } catch {
                         metrics.end = Date()
                         self.lastGenerationMetrics = metrics
-                        self.busy = false
-                        continuation.finish(throwing: error)
-                    }
-                }
-            }
-        }
-        
-        /// Raw completion with sliding support
-        func generate(text: String) async throws -> AsyncThrowingStream<String, Error> {
-            try ensureActive()
-            
-            // Reset for stateless generation
-            await session.resetSampler()
-            
-            // Tokenize and evaluate prompt
-            let promptTokens = try await session.tokenize(text)
-            
-            // Calculate n_keep for raw generation (use the prompt as keep tokens)
-            n_keep = min(Int32(promptTokens.count), Int32(options.contextSize / 4))  // Keep up to 25% of context
-            n_past = Int32(promptTokens.count)
-            
-            FreeTokenLogger.shared.log("KV_SLIDING: Raw generation - promptTokens=\(promptTokens.count) n_keep=\(n_keep)", level: .info)
-            
-            try await session.evalOptimized(tokens: promptTokens, feedToSampler: true)
-            
-            // Use similar generation logic with sliding
-            let maxTokens = min(options.maxNewTokens, options.contextSize - promptTokens.count)
-            
-            return AsyncThrowingStream { continuation in
-                Task {
-                    var emitted = ""
-                    var metrics = GenerationMetrics()
-                    var generated: [Int32] = []
-                    
-                    defer {
-                        metrics.end = Date()
-                        if let first = metrics.firstToken, let end = metrics.end, metrics.producedTokens > 0 {
-                            metrics.tokensPerSecond = Double(metrics.producedTokens) / max(end.timeIntervalSince(first), 0.0001)
-                        }
-                        self.lastGenerationMetrics = metrics
-                        self.busy = false
-                        continuation.finish()
-                    }
-                    
-                    do {
-                        let stopTokens = await session.getStopTokens()
-                        
-                        for _ in 0..<maxTokens {
-                            // Check for sliding need
-                            if n_past >= options.contextSize {
-                                FreeTokenLogger.shared.log("KV_SLIDING: Raw generation context full - sliding", level: .warning)
-                                try await self.performKVSliding()
-                                metrics.slidingOccurred = true
-                                metrics.slidingCount += 1
-                            }
-                            
-                            if Task.isCancelled {
-                                metrics.canceled = true
-                                metrics.stopReason = "canceled"
-                                break
-                            }
-                            
-                            guard let result = try await session.generateNextTokenOptimized() else {
-                                throw FreeTokenError.aiRunFailed(message: "Generation failed")
-                            }
-                            
-                            generated.append(result.token)
-                            n_past += 1
-                            metrics.producedTokens += 1
-                            
-                            if metrics.firstToken == nil {
-                                metrics.firstToken = Date()
-                            }
-                            
-                            metrics.sampleTimeTotal += TimeInterval(result.sampleMs / 1000.0)
-                            metrics.evalTimeTotal += TimeInterval(result.evalMs / 1000.0)
-                            
-                            if stopTokens.contains(result.token) {
-                                metrics.stopReason = "stopToken"
-                                break
-                            }
-                            
-                            let piece = result.text
-                            if !piece.isEmpty {
-                                emitted += piece
-                                continuation.yield(piece)
-                            }
-                            
-                            // Check stop sequences
-                            for stop in options.stopSequences {
-                                if emitted.hasSuffix(stop) {
-                                    metrics.stopReason = "stopSequence"
-                                    break
-                                }
-                            }
-                            if metrics.stopReason == "stopSequence" { break }
-                        }
-                        
-                    } catch {
                         continuation.finish(throwing: error)
                     }
                 }
@@ -528,6 +547,7 @@ extension FreeToken {
             templatedTokens.removeAll()
             n_past = 0
             n_keep = 0
+            isPrewarmed = false
             isUnloaded = true
         }
         
@@ -537,6 +557,7 @@ extension FreeToken {
             n_keep = 0
             messages.removeAll()
             templatedTokens.removeAll()
+            self.isPrewarmed = false
         }
     }
 }
