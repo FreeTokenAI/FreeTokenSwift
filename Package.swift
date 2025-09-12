@@ -43,8 +43,8 @@ let package = Package(
         ),
         .binaryTarget(
             name: "LlamaFramework",
-            url: "https://github.com/ggml-org/llama.cpp/releases/download/b6451/llama-b6451-xcframework.zip",
-            checksum: "e125f20ad15f6c664e5cd8ea0b7c1d786761d8e3663bce5565f45d52b90dd39a"
+            url: "https://github.com/ggml-org/llama.cpp/releases/download/b6265/llama-b6265-xcframework.zip",
+            checksum: "4378b890f78931c7ecdedae3f9f13f7ab540fcff2370d274f42290c200f5c10e"
         ),
         .testTarget(
             name: "FreeTokenTests",

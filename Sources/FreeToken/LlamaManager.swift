@@ -542,7 +542,7 @@ extension FreeToken {
         
         func unload() async {
             if isUnloaded { return }
-            await session.unload()
+            _ = await session.unload()
             messages.removeAll()
             templatedTokens.removeAll()
             n_past = 0

@@ -15,6 +15,8 @@ extension FreeToken {
     /// Static model management functions
     class LlamaModel: @unchecked Sendable {
         let model: OpaquePointer
+        private let freeLock = NSLock()
+        private var isFreed = false
         
         init(path: String) throws {
             LlamaAPI.backendInit()
@@ -33,11 +35,18 @@ extension FreeToken {
         }
         
         
-        /// Free a loaded model
+        /// Free a loaded model (thread-safe, idempotent)
         func free() {
+            freeLock.lock()
+            let shouldFree = !isFreed
+            if shouldFree { isFreed = true }
+            freeLock.unlock()
+            guard shouldFree else { return }
             LlamaAPI.freeModel(model)
             FreeTokenLogger.shared.log("Model freed", level: .debug)
         }
+
+        deinit { free() }
     }
     
     actor LlamaSession {
@@ -89,7 +98,8 @@ extension FreeToken {
             params.swa_full = false // Disable sliding window attention full state if supported
             params.type_k = GGML_TYPE_Q8_0 // Quantize K for better memory with little difference in result
             params.type_v = GGML_TYPE_Q8_0 // Quantize V for better memory with little difference in result
-            params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO
+//            params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO
+            params.flash_attn = true
             
             let contextConfig = ContextConfig(
                 n_ctx: Int(params.n_ctx),
@@ -158,6 +168,10 @@ extension FreeToken {
             self.batch = llama_batch_init(Int32(config.batchSize ?? 512), 0, 1)
             self.batchSize = Int32(config.batchSize ?? 512)
             self.template = template
+        }
+        
+        func getPos() -> Int32 {
+            return self.pos
         }
         
         /// Tokenize text -> token ids
@@ -374,13 +388,13 @@ extension FreeToken {
         /// Free underlying context resources (model is managed externally).
         func unload() {
             if isUnloaded { return }
-            // Free session (which includes sampler)
-            freetoken_session_free(session)
             // Free context
+            model.free()
+            freetoken_session_free(session)
             LlamaAPI.freeContext(context)
             pos = 0
             llama_batch_free(batch)
-            model.free()
+            
             isUnloaded = true
         }
 

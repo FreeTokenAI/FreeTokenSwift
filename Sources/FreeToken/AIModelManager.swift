@@ -227,7 +227,7 @@ extension FreeToken {
             }
         
             func unload() async {
-                await self.llama.unload()
+                _ = await self.llama.unload()
             }
             
             func reset() async {
