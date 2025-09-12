@@ -22,7 +22,6 @@ extension FreeToken {
         private let sequenceId: Int32 = 0 // single sequence
         
         // Token position tracking (simple and clean)
-        private var n_past: Int32 = 0      // Total tokens currently in context
         private var n_keep: Int32 = 0      // Tokens to preserve during sliding (calculated from first message)
         private var messages: [Message] = [] // Keep messages for reference only
         private var templatedTokens: [Int32] = [] // Current templated tokens in KV cache
@@ -135,7 +134,6 @@ extension FreeToken {
                 self.prewarmedTokens = result.tokens.map { Int32($0) }
                 self.isPrewarmed = true
                 self.n_keep = Int32(prewarmedTokens.count)
-                self.n_past = Int32(prewarmedTokens.count)
                 FreeToken.shared.logger("🏃‍♂️ Loaded prewarm buffer with \(prewarmedTokens.count) tokens", .info)
             } catch {
                 FreeToken.shared.logger("⚠️ No prewarm buffer found for system message - try generating the prewarm first", .warning)
@@ -157,7 +155,6 @@ extension FreeToken {
             _ = await resetSession()
             let result = try await session.loadStateFromFile(fileName: fileName, basePath: stateBaseURL)
             self.templatedTokens = result.tokens.map { Int32($0) }
-            self.n_past = Int32(templatedTokens.count)
             let tokenCount = try await templateMessages([systemMessage]).count
             self.n_keep = Int32(tokenCount)
         }
@@ -195,7 +192,7 @@ extension FreeToken {
                 self.runID = runID
             }
             
-            FreeTokenLogger.shared.log("KV_SLIDING: updateContext start desired=\(desired.count) n_past=\(n_past) n_keep=\(n_keep)", level: .debug)
+            FreeTokenLogger.shared.log("KV_SLIDING: updateContext start desired=\(desired.count) pos=\(await session.getPos()) n_keep=\(n_keep)", level: .debug)
             
             // Guard multimodal
             if desired.contains(where: { msg in (msg.attachments?.contains { $0.type == .image }) == true }) {
@@ -264,7 +261,6 @@ extension FreeToken {
             
             // Update state
             templatedTokens = allTokens
-            n_past = Int32(allTokens.count)
             messages = desired
             
             // Calculate n_keep from first message if not set
@@ -274,10 +270,10 @@ extension FreeToken {
                 FreeTokenLogger.shared.log("KV_SLIDING: Calculated n_keep=\(n_keep) from first message", level: .info)
             }
             
-            FreeTokenLogger.shared.log("KV_SLIDING: Context updated - n_past=\(n_past) n_keep=\(n_keep) totalMessages=\(messages.count)", level: .info)
+            FreeTokenLogger.shared.log("KV_SLIDING: Context updated - pos=\(await session.getPos()) n_keep=\(n_keep) totalMessages=\(messages.count)", level: .info)
             
             // Check if we're approaching context limit
-            let headroom = options.contextSize - Int(n_past)
+            let headroom = options.contextSize - Int(await session.getPos())
             if headroom < options.maxNewTokens {
                 FreeTokenLogger.shared.log("KV_SLIDING: WARNING - Low headroom=\(headroom) maxNew=\(options.maxNewTokens)", level: .warning)
             }
@@ -295,7 +291,7 @@ extension FreeToken {
                 throw FreeTokenError.aiRunFailed(message: "KV sliding requires n_keep to be set")
             }
             
-            let n_left = n_past - n_keep  // Tokens available for removal
+            let n_left = await session.getPos() - n_keep  // Tokens available for removal
             guard n_left > 0 else {
                 FreeTokenLogger.shared.log("KV_SLIDING: No tokens available to slide (n_left=0)", level: .warning)
                 return
@@ -303,7 +299,7 @@ extension FreeToken {
             
             let n_discard = Int32(Float(n_left) * slidingRatio)  // Remove half of available space
             
-            FreeTokenLogger.shared.log("KV_SLIDING: Starting slide - n_past=\(n_past) n_keep=\(n_keep) n_left=\(n_left) n_discard=\(n_discard)", level: .info)
+            FreeTokenLogger.shared.log("KV_SLIDING: Starting slide - pos=\(await session.getPos()) n_keep=\(n_keep) n_left=\(n_left) n_discard=\(n_discard)", level: .info)
             
             // Remove tokens from position n_keep to n_keep + n_discard
             let removeStart = n_keep
@@ -317,15 +313,12 @@ extension FreeToken {
             let shiftCount: Int32 = -1  // -1 means shift to end
             
             FreeTokenLogger.shared.log("KV_SLIDING: Shifting tokens from \(shiftStart) by -\(n_discard)", level: .debug)
-            try await session.shiftKVCacheTokens(from: shiftStart, count: shiftCount, by: -n_discard)
-            
-            // Update position tracking
-            n_past -= n_discard
+            try await session.shiftKVCacheTokens(from: shiftStart, count: shiftCount, by: Int32(-n_discard))
             
             // Note: We don't update templatedTokens as they represent the logical message tokens,
             // not the physical KV cache state after sliding
             
-            FreeTokenLogger.shared.log("KV_SLIDING: Slide complete - new n_past=\(n_past) (removed \(n_discard) tokens)", level: .info)
+            FreeTokenLogger.shared.log("KV_SLIDING: Slide complete - new pos=\(await session.getPos()) (removed \(n_discard) tokens)", level: .info)
         }
         
         // MARK: - Generation with Sliding Support
@@ -363,8 +356,8 @@ extension FreeToken {
             
             
             // Check initial capacity
-            let initialHeadroom = options.contextSize - Int(n_past)
-            FreeTokenLogger.shared.log("KV_SLIDING: generate start n_past=\(n_past) headroom=\(initialHeadroom) maxNew=\(options.maxNewTokens)", level: .info)
+            let initialHeadroom = options.contextSize - Int(await session.getPos())
+            FreeTokenLogger.shared.log("KV_SLIDING: generate start pos=\(await session.getPos()) headroom=\(initialHeadroom) maxNew=\(options.maxNewTokens)", level: .info)
             
             if initialHeadroom <= 0 {
                 throw FreeTokenError.llamaContextOverflow
@@ -384,8 +377,6 @@ extension FreeToken {
                 // Feed to sampler since these are part of generation
                 let slotTokensInt = assistantSlotTokens.map { Int($0) }
                 try await session.evalOptimized(tokens: slotTokensInt, feedToSampler: true, needsLogits: true)
-                
-                n_past += Int32(assistantSlotTokens.count)
             }
             
             return AsyncThrowingStream { continuation in
@@ -404,7 +395,7 @@ extension FreeToken {
                         // Main generation loop
                         for tokenIndex in 0..<options.maxNewTokens {
                             // Check for context fullness BEFORE generating next token
-                            if n_past >= options.contextSize {
+                            if await session.getPos() >= options.contextSize {
                                 FreeTokenLogger.shared.log("KV_SLIDING: Context full at token \(tokenIndex) - triggering slide", level: .warning)
                                 try await self.performKVSliding()
                                 metrics.slidingOccurred = true
@@ -426,7 +417,6 @@ extension FreeToken {
                             let piece = result.text
                             
                             generated.append(nextToken)
-                            n_past += 1  // Increment position after generation
                             metrics.producedTokens += 1
                             
                             // Track metrics
@@ -512,7 +502,7 @@ extension FreeToken {
                             
                             metrics.committed = true
                             
-                            FreeTokenLogger.shared.log("KV_SLIDING: Generation complete - tokens=\(metrics.producedTokens) n_past=\(n_past) slides=\(metrics.slidingCount)", level: .info)
+                            FreeTokenLogger.shared.log("KV_SLIDING: Generation complete - tokens=\(metrics.producedTokens) pos=\(await session.getPos()) slides=\(metrics.slidingCount)", level: .info)
                         }
                         
                         metrics.end = Date()
@@ -545,7 +535,6 @@ extension FreeToken {
             _ = await session.unload()
             messages.removeAll()
             templatedTokens.removeAll()
-            n_past = 0
             n_keep = 0
             isPrewarmed = false
             isUnloaded = true
@@ -553,7 +542,6 @@ extension FreeToken {
         
         func resetSession() async {
             await session.resetForRebuild()
-            n_past = 0
             n_keep = 0
             messages.removeAll()
             templatedTokens.removeAll()
