@@ -58,7 +58,6 @@ extension FreeToken {
             let n_seq_max: Int
             let type_k: String
             let type_v: String
-            let flash_attn: Bool
             let swa_full: Bool
             
             func dump() -> String {
@@ -90,7 +89,7 @@ extension FreeToken {
             params.swa_full = false // Disable sliding window attention full state if supported
             params.type_k = GGML_TYPE_Q8_0 // Quantize K for better memory with little difference in result
             params.type_v = GGML_TYPE_Q8_0 // Quantize V for better memory with little difference in result
-            params.flash_attn = true
+            params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_AUTO
             
             let contextConfig = ContextConfig(
                 n_ctx: Int(params.n_ctx),
@@ -98,7 +97,6 @@ extension FreeToken {
                 n_seq_max: Int(params.n_seq_max),
                 type_k: String(describing: params.type_k),
                 type_v: String(describing: params.type_v),
-                flash_attn: params.flash_attn,
                 swa_full: params.swa_full
             )
             self.configSHA256 = contextConfig.sha256()

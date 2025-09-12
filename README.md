@@ -128,7 +128,7 @@ Note: Make sure to save the `messageThread.id` for future operations like adding
 let message = Message(role: .user, content: "What is a supernova?")
 
 await client.addMessageToThread(
-    messageThreadID: "thread-id",
+    id: "thread-id",
     message: message,
     success: { message in
         print("Message added: \(message.content)")
@@ -289,12 +289,14 @@ do {
     try await client.createDocument(
         content: "Document content",
         metadata: "TITLE: Example Document\nAUTHOR: John Doe",
-        searchScope: "knowledge-base"
-    ) { document in
-        print("Document created: \(document.id)")
-    } error: { error in
-        print("Failed to create document: \(error)")
-    }
+        searchScope: "knowledge-base",
+        success: { document in
+            print("Document created: \(document.id)")
+        },
+        error: { error in
+            print("Failed to create document: \(error)")
+        }
+    )
 } catch {
     print("Create document failed: \(error)")
 }
@@ -312,12 +314,14 @@ do {
         content: "Private document content",
         metadata: "TITLE: Private Document\nCLASSIFICATION: Confidential",
         searchScope: "private-knowledge",
-        privateDocumentStoreID: "store-id"
-    ) { document in
-        print("Private document created: \(document.id)")
-    } error: { error in
-        print("Failed to create private document: \(error)")
-    }
+        privateDocumentStoreID: "store-id",
+        success: { document in
+            print("Private document created: \(document.id)")
+        },
+        error: { error in
+            print("Failed to create private document: \(error)")
+        }
+    )
 } catch {
     print("Create private document failed: \(error)")
 }
@@ -476,7 +480,27 @@ Note: You must setup the web search with an API key in the [FreeToken console](h
 
 ---
 
-### 10. Model and Cache Management
+### 10. Tool Definitions
+
+Register custom tool definitions for function calling:
+
+```swift
+// Register multiple tool definitions at once
+await client.registerToolDefinitions([toolDef1, toolDef2])
+
+// Add a single tool definition from JSON
+await client.addToolDefinition(
+    name: "weather_tool",
+    definitionJSON: "{\"description\": \"Get weather info\"}"
+)
+
+// Remove all tool definitions
+await client.removeAllToolDefinitions()
+```
+
+---
+
+### 11. Model and Cache Management
 
 Reset caches or manage model memory.
 
@@ -485,21 +509,98 @@ try await client.resetModelCaches() // Clears local AI model & embedding caches 
 
 try await client.resetEmbeddingModelCache() // Clears only the embedding model cache
 
-await client.loadModel(success: { loaded in
-    print("Model load state: \(loaded)")
-}, error: { error in
-    print("Failed to load model: \(error)")
-})
+await client.deleteAIModelCache(modelCode: "model-name") // Delete specific model cache
+await client.deleteAIModelCache() // Delete all model caches
+
+await client.loadModel(
+    modelCode: "model-name",
+    success: { loaded in
+        print("Model load state: \(loaded)")
+    },
+    error: { error in
+        print("Failed to load model: \(error)")
+    }
+)
+
+await client.unloadModel(modelCode: "model-name") // Unload a specific model from memory
 ```
 
 ---
 
-### 11. Stopping Local Generation
+### 12. Stopping Local Generation
 
 Stop any running local AI generation. Useful when your app goes into the background or you want to cancel a long-running operation.
 
 ```swift
 await client.stopLocalGeneration()
+```
+
+---
+
+### 13. Additional APIs
+
+#### List Available AI Models
+
+```swift
+await client.listAIModels(
+    success: { models in
+        for model in models {
+            print("Model: \(model.name) - \(model.code)")
+        }
+    },
+    error: { error in
+        print("Failed to list models: \(error)")
+    }
+)
+```
+
+#### Get AI Model Details
+
+```swift
+await client.getAIModel(
+    modelCode: "model-code",
+    success: { model in
+        print("Model details: \(model.name)")
+    },
+    error: { error in
+        print("Failed to get model: \(error)")
+    }
+)
+```
+
+#### Count Tokens
+
+```swift
+do {
+    let tokenCount = try await client.countTokens(
+        text: "Your text to count tokens",
+        modelCode: "model-code" // optional
+    )
+    print("Token count: \(tokenCount)")
+} catch {
+    print("Failed to count tokens: \(error)")
+}
+```
+
+#### Local Chat (Advanced)
+
+For more control over local AI conversations:
+
+```swift
+await client.localChat(
+    messages: [
+        Message(role: .system, content: "You are a helpful assistant"),
+        Message(role: .user, content: "Hello!")
+    ],
+    uniqueID: "chat-session-id",
+    modelCode: "model-code",
+    success: { response in
+        print("AI response: \(response.content)")
+    },
+    error: { error in
+        print("Chat failed: \(error)")
+    }
+)
 ```
 
 ---
