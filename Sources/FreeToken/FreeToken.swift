@@ -2265,7 +2265,7 @@ public class FreeToken: @unchecked Sendable {
                 await successCallback?()
                 return
             } catch {
-                FreeToken.shared.logger("⚠️ Unable to load message thread into AI memory from disk - loading manually", .warning)
+                FreeToken.shared.logger("⚠️ Unable to load message thread into AI memory from disk - loading manually: \(error.localizedDescription)", .warning)
             }
             
             do {
