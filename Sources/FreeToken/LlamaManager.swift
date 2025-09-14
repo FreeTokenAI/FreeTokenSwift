@@ -148,6 +148,7 @@ extension FreeToken {
             let fullPath = stateBaseURL.appendingPathComponent(session.configSHA256).appendingPathComponent(fileName)
             
             if !FileManager.default.fileExists(atPath: fullPath.path) {
+                FreeToken.shared.logger("⚠️ Session could not be found at path: \(fullPath.path)", .warning)
                 throw FreeTokenError.llamaFailedToReadSessionStateFromFile
             }
             
