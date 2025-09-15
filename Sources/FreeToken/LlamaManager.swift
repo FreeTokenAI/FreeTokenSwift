@@ -49,7 +49,7 @@ extension FreeToken {
             self.modelFileName = URL(fileURLWithPath: modelPath).lastPathComponent
             
             #if os(iOS)
-            self.stateBaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+            self.stateBaseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
             #else
             self.stateBaseURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
@@ -547,6 +547,28 @@ extension FreeToken {
             messages.removeAll()
             templatedTokens.removeAll()
             self.isPrewarmed = false
+        }
+
+        /// Clears all cached chat states from disk
+        func resetChatCache() async throws {
+            // Clear the entire chat cache directory for this model
+            let cacheDirectory = stateBaseURL
+
+            // Check if directory exists
+            if FileManager.default.fileExists(atPath: cacheDirectory.path) {
+                do {
+                    try FileManager.default.removeItem(at: cacheDirectory)
+                    FreeTokenLogger.shared.log("✅ Cleared chat cache at: \(cacheDirectory.path)", level: .info)
+                } catch {
+                    FreeTokenLogger.shared.log("🔴 Failed to clear chat cache: \(error)", level: .error)
+                    throw FreeTokenError.fileOperationFailed(message: "Failed to clear chat cache: \(error.localizedDescription)")
+                }
+            } else {
+                FreeTokenLogger.shared.log("ℹ️ Chat cache directory does not exist, nothing to clear", level: .debug)
+            }
+
+            // Reset current session state as well
+            await resetSession()
         }
     }
 }

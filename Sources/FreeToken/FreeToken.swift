@@ -318,9 +318,39 @@ public class FreeToken: @unchecked Sendable {
     ///
     public func resetModelCaches() async throws {
         try? await resetEmbeddingModelCache()
+        try? await resetChatCache()
         DownloadManager.shared.cancelAllDownloads()
         DownloadManager.shared.removeAllPersistedDownloadSessions()
-        await deleteAIModelCache()        
+        await deleteAIModelCache()
+    }
+
+    /// Clears all cached chat session states
+    ///
+    /// This removes all saved llama.cpp sequence caches that are used to speed up
+    /// chat session initialization. These caches will be recreated as needed.
+    ///
+    /// - Throws: `FreeTokenError.fileOperationFailed` if unable to clear the cache
+    public func resetChatCache() async throws {
+        // Clear the entire cache directory for all models
+        #if os(iOS)
+        let cacheBaseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
+            .appendingPathComponent("FreeToken").appendingPathComponent("chats")
+        #else
+        let cacheBaseURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".FreeToken").appendingPathComponent("chats")
+        #endif
+
+        if FileManager.default.fileExists(atPath: cacheBaseURL.path) {
+            do {
+                try FileManager.default.removeItem(at: cacheBaseURL)
+                logger("✅ Cleared chat cache directory at: \(cacheBaseURL.path)", .info)
+            } catch {
+                logger("🔴 Failed to clear chat cache directory: \(error)", .error)
+                throw FreeTokenError.fileOperationFailed(message: "Failed to clear chat cache: \(error.localizedDescription)")
+            }
+        } else {
+            logger("ℹ️ Chat cache directory does not exist, nothing to clear", .debug)
+        }
     }
 
     /// Removes the Embedding Model Cache from the local device

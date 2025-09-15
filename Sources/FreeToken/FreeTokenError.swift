@@ -122,6 +122,9 @@ extension FreeToken {
         case llamaMultimodalNotSupported
         case llamaContextOverflow
         case llamaBusy
+
+        // MARK: - File Operation Errors
+        case fileOperationFailed(message: String)
         case llamaInvariantViolation(message: String? = nil)
         case llamaModelLoadFailed(message: String? = nil)
         case llamaTokenizationFailed
@@ -250,7 +253,8 @@ extension FreeToken.FreeTokenError {
         case .llamaFailedToReadSessionStateFromFile: return "llamaFailedToReadSessionStateFromFile"
         case .llamaEvaluatingEmptyContext: return "llamaEvaluatingEmptyContext"
         case .llamaUnexpectedInternalState: return "llamaUnexpectedInternalState"
-        
+        case .fileOperationFailed(_): return "fileOperationFailed"
+
         case .error(_, _):
             return "error"
         }
@@ -384,6 +388,7 @@ extension FreeToken.FreeTokenError {
         case .llamaFailedToReadSessionStateFromFile: return "Failed to read llama session state from file"
         case .llamaEvaluatingEmptyContext: return "Cannot evaluate a thread without messages"
         case .llamaUnexpectedInternalState: return "Unexpected internal model state. Please unload and reload the model."
+        case .fileOperationFailed(let message): return message
 
         case .error(let message, _):
             return message
@@ -491,7 +496,8 @@ extension FreeToken.FreeTokenError {
         case .llamaFailedToReadSessionStateFromFile: return 5009
         case .llamaEvaluatingEmptyContext: return 5010
         case .llamaUnexpectedInternalState: return 5011
-            
+        case .fileOperationFailed(_): return 5012
+
         case .error(_, let code):
             return code
         }
