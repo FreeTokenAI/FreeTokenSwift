@@ -981,7 +981,9 @@ final class FreeTokenTests: XCTestCase {
         
         Task {
             let count = try await FreeToken.shared.countTokens(text: "Hello, world!")
+            print("TOKEN COUNT: \(count)")
             XCTAssertGreaterThan(count, 0, "Expected token count to be greater than 0")
+            XCTAssertLessThan(count, 10, "Expect token count to be less than 10")
             expectation.fulfill()
         }
         

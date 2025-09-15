@@ -1014,7 +1014,7 @@ public class FreeToken: @unchecked Sendable {
         let message = Message(role: .user, content: text)
         
         if let aiModelManager = aiModelManager {
-            return try await aiModelManager.tokensCount(messages: [message])
+            return try await aiModelManager.tokensCount(messages: [message]) - 2
         } else {
             FreeToken.shared.logger("🔴 No AI Model Manager available for token counting", .error)
             throw FreeTokenError.aiModelNotLoaded

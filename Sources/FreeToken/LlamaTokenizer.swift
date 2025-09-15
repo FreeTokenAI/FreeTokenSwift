@@ -24,10 +24,20 @@ extension FreeToken {
         }
         
         func tokenize(text: String) -> [Int32] {
-            var tokens: [llama_token] = Array(repeating: 0, count: 512)
-            _ = llama_tokenize(vocab, text, Int32(text.count), &tokens, 512, false, false)
+            // Step 1: guesstimate required size
+            let words = text.split(separator: " ").count
+            let estimatedSize = Int(Double(words) * 1.5) + 500
             
-            return tokens
+            // Step 2: allocate
+            var tokens = Array<llama_token>(repeating: 0, count: estimatedSize)
+            
+            // Step 3: tokenize
+            let produced = llama_tokenize(vocab, text, Int32(text.count),
+                                          &tokens, Int32(tokens.count),
+                                          false, false)
+            
+            // Step 4: trim trailing zeroes
+            return tokens.prefix(Int(produced)).map { Int32($0) }
         }
         
         deinit {
