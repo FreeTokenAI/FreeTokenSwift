@@ -2465,7 +2465,7 @@ public class FreeToken: @unchecked Sendable {
     ///   - queryParameters: A dictionary of query parameters to include in the URL.
     ///   - responseType: The expected type of the response.
     ///   - completion: Completion handler with the decoded response or an error.
-    internal func fetchResource<T: Decodable>(
+    internal func fetchResource<T: Decodable & Sendable>(
         path: String,
         queryParameters: [String: String]? = nil,
         responseType: T.Type,
@@ -2511,7 +2511,7 @@ public class FreeToken: @unchecked Sendable {
     ///   - data: The object to send, encoded as JSON.
     ///   - responseType: The type of the expected response.
     ///   - completion: Completion handler with the decoded response or an error.
-    internal func postData<T: Decodable, U: Encodable>(
+    internal func postData<T: Decodable & Sendable, U: Encodable>(
         path: String,
         data: U,
         responseType: T.Type,
@@ -2547,7 +2547,7 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    internal func postMultipartData<T: Decodable>(
+    internal func postMultipartData<T: Decodable & Sendable>(
         path: String,
         jsonData: [String: Any],
         attachments: [MessageAttachment],

@@ -17,7 +17,7 @@ extension FreeToken {
         
         private let clientConfig: Codings.ShowClientConfig
         private let clientVersion: String
-        private var generationTask: Task<Void, Error>? = nil
+        private var generationCancellationHandler: (() -> Void)? = nil
         
         private let stateManager: AISessionsManager
         
@@ -723,7 +723,8 @@ extension FreeToken {
         
         func stopGeneration() async {
             FreeToken.shared.logger("🛑 Stopping AI generation...", .info)
-            generationTask?.cancel()
+            generationCancellationHandler?()
+            generationCancellationHandler = nil
         }
         
         func tokensCount(messages: [Message]) async throws -> Int {
@@ -748,9 +749,7 @@ extension FreeToken {
                     await aiResults.setMaxTokenCount(self.modelConfig.maxTokenCount)
                 }
                 
-                var inputTokenCount = 0
-                
-                let task = Task {
+                let task = Task { @Sendable () -> Int in
                     do {
                         let maxTokenCount = await aiResults.maxTokenCount
                         FreeToken.shared.logger("🧠 Beginning AI Generation for completion", .info)
@@ -759,7 +758,7 @@ extension FreeToken {
                             if await aiResults.startTime == nil {
                                 await aiResults.setStartTime(DispatchTime.now())
                             }
-                            
+
                             print(value, terminator: "")
                             await aiResults.appendResponseContent(value)
                             if let streamHandler = tokenStream {
@@ -777,11 +776,12 @@ extension FreeToken {
                                 break
                             }
                         }
-                        inputTokenCount = try await self.stateManager.tokenCountFor(messages: [Message(role: .user, content: text)]) - 2
+                        let inputTokenCount = try await self.stateManager.tokenCountFor(messages: [Message(role: .user, content: text)]) - 2
                         await aiResults.setEndTime(DispatchTime.now())
+                        return inputTokenCount
                     } catch {
                         FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
-                        
+
                         if error is FreeTokenError {
                             throw error
                         } else {
@@ -789,11 +789,11 @@ extension FreeToken {
                         }
                     }
                 }
-                
-                // Store the task in the generationTask property
-                self.generationTask = task
-                _ = try await task.value
-                self.generationTask = nil
+
+                // Store the cancellation handler
+                self.generationCancellationHandler = { task.cancel() }
+                let inputTokenCount = try await task.value
+                self.generationCancellationHandler = nil
                 
                 // Calculate duration
                 var usage: TokenUsage? = nil
@@ -839,9 +839,7 @@ extension FreeToken {
                     await aiResults.setMaxTokenCount(self.modelConfig.maxTokenCount)
                 }
                 
-                var inputTokenCount = 0
-                
-                let task = Task {
+                let task = Task { @Sendable () -> Int in
                     do {
                         let maxTokenCount = await aiResults.maxTokenCount
                         FreeToken.shared.logger("🧠 Beginning AI Generation for \(runIdentifier)", .info)
@@ -850,7 +848,7 @@ extension FreeToken {
                             if await aiResults.startTime == nil {
                                 await aiResults.setStartTime(DispatchTime.now())
                             }
-                            
+
                             print(value, terminator: "")
                             await aiResults.appendResponseContent(value)
                             if let streamHandler = tokenStream {
@@ -869,7 +867,8 @@ extension FreeToken {
                             }
                         }
                         await aiResults.setEndTime(DispatchTime.now())
-                        inputTokenCount = try await self.stateManager.tokenCountFor(messages: messages)
+                        let inputTokenCount = try await self.stateManager.tokenCountFor(messages: messages)
+                        return inputTokenCount
                     } catch {
                         FreeToken.shared.logger("🔴 Failed generating response from AI Model: \(error.localizedDescription)", .error)
                         if error is FreeTokenError {
@@ -877,14 +876,14 @@ extension FreeToken {
                         } else {
                             throw FreeTokenError.aiRunFailed(message: error.localizedDescription)
                         }
-                        
+
                     }
                 }
-                
-                // Store the task in the generationTask property
-                self.generationTask = task
-                _ = try await task.value
-                self.generationTask = nil
+
+                // Store the cancellation handler
+                self.generationCancellationHandler = { task.cancel() }
+                let inputTokenCount = try await task.value
+                self.generationCancellationHandler = nil
                 
                 // Calculate duration
                 var usage: TokenUsage? = nil

@@ -33,7 +33,7 @@ extension FreeToken {
         }
         
         // Send HTTP Requests
-        internal func sendRequest<T: Decodable>(
+        internal func sendRequest<T: Decodable & Sendable>(
             to url: URL,
             method: String = "GET",
             headers: [String: String] = [:],
@@ -60,7 +60,7 @@ extension FreeToken {
                     // Handle client-side error
                     FreeToken.shared.logger("🔴🌎 HTTP request failed: \(error.localizedDescription)", .error)
                     let semaphore = DispatchSemaphore(value: 0)
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(FreeTokenError.requestFailed))
                         semaphore.signal()
                     }
@@ -69,7 +69,7 @@ extension FreeToken {
 
                 guard let httpResponse = response as? HTTPURLResponse else {
                     FreeToken.shared.logger("🔴📞 No response from server", .error)
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(FreeTokenError.noResponse))
                         semaphore.signal()
                     }
@@ -81,7 +81,7 @@ extension FreeToken {
                     if let cachedData = self.etagCache.getCachedData(for: url) {
                         do {
                             let decodedResponse = try self.decoder.decode(T.self, from: cachedData)
-                            Task {
+                            Task { @Sendable [decodedResponse] in
                                 await completion(.success(decodedResponse))
                                 semaphore.signal()
                             }
@@ -89,13 +89,13 @@ extension FreeToken {
                             FreeToken.shared.logger("🔴📃 Error decoding cached data: \(error.localizedDescription)", .error)
                             self.etagCache.flushCacheData(for: url)
                             FreeToken.shared.logger("🚽 Flushed cache on non-decoding URL: \(url)", .error)
-                            Task {
+                            Task { @Sendable in
                                 await completion(.failure(FreeTokenError.decodingError(message: error.localizedDescription)))
                                 semaphore.signal()
                             }
                         }
                     } else {
-                        Task {
+                        Task { @Sendable in
                             await completion(.failure(FreeTokenError.noCachedDataAvailable))
                             semaphore.signal()
                         }
@@ -112,19 +112,19 @@ extension FreeToken {
                                 Codings.RawErrorResponse.self, from: data)
                             let apiError = FreeTokenError.httpFailureResponse(message: errorMessage.message, code: httpResponse.statusCode)
                             
-                            Task {
+                            Task { @Sendable in
                                 await completion(.failure(apiError))
                                 semaphore.signal()
                             }
                         } catch {
-                            Task {
+                            Task { @Sendable in
                                 await completion(.failure(FreeTokenError.unableToParseServerError(code: httpResponse.statusCode)))
                                 semaphore.signal()
                             }
                         }
                     } else {
                         let noDataError = FreeTokenError.noDataError(code: httpResponse.statusCode)
-                        Task {
+                        Task { @Sendable in
                             await completion(.failure(noDataError))
                             semaphore.signal()
                         }
@@ -134,7 +134,7 @@ extension FreeToken {
 
                 guard let data = data else {
                     let noDataError = FreeTokenError.noDataError(code: httpResponse.statusCode)
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(noDataError))
                         semaphore.signal()
                     }
@@ -150,7 +150,7 @@ extension FreeToken {
 
                 do {
                     let decodedResponse = try self.decoder.decode(T.self, from: data)
-                    Task {
+                    Task { @Sendable [decodedResponse] in
                         await completion(.success(decodedResponse))
                         semaphore.signal()
                     }
@@ -158,7 +158,7 @@ extension FreeToken {
                     let decodingError = FreeTokenError.decodingError(
                         message: "Missing key: \(key.stringValue), Context: \(context)"
                     )
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(decodingError))
                         semaphore.signal()
                     }
@@ -166,7 +166,7 @@ extension FreeToken {
                     let decodingError = FreeTokenError.decodingError(
                         message: "Type mismatch for \(type): \(context)"
                     )
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(decodingError))
                         semaphore.signal()
                     }
@@ -174,7 +174,7 @@ extension FreeToken {
                     let decodingError = FreeTokenError.decodingError(
                         message: "Missing value for \(type): \(context)"
                     )
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(decodingError))
                         semaphore.signal()
                     }
@@ -182,7 +182,7 @@ extension FreeToken {
                     let decodingError = FreeTokenError.decodingError(
                         message: "Corrupt data: \(context)"
                     )
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(decodingError))
                         semaphore.signal()
                     }
@@ -190,7 +190,7 @@ extension FreeToken {
                     let decodingError = FreeTokenError.decodingError(
                         message: "Unknown decoding error: \(error.localizedDescription)"
                     )
-                    Task {
+                    Task { @Sendable in
                         await completion(.failure(decodingError))
                         semaphore.signal()
                     }
@@ -203,7 +203,7 @@ extension FreeToken {
         
         
         // Convenience methods for GET and POST
-        internal func get<T: Decodable>(
+        internal func get<T: Decodable & Sendable>(
             from url: URL,
             headers: [String: String] = [:],
             responseType: T.Type,
@@ -215,7 +215,7 @@ extension FreeToken {
                 useETagCaching: useETagCaching, completion: completion)
         }
         
-        internal func post<T: Decodable>(
+        internal func post<T: Decodable & Sendable>(
             to url: URL,
             headers: [String: String] = [:],
             body: Data,
@@ -225,7 +225,7 @@ extension FreeToken {
             sendRequest(to: url, method: "POST", headers: headers, body: body, responseType: responseType, completion: completion)
         }
         
-        internal func postMultipart<T: Decodable>(
+        internal func postMultipart<T: Decodable & Sendable>(
             to url: URL,
             headers: [String: String] = [:],
             jsonData: [String: Any],
