@@ -987,7 +987,7 @@ extension FreeToken {
         public let content: String
         public let attachments: [MessageAttachment]?
         public let createdAt: Date?
-        public let tokenUsage: TokenUsage?
+        public var tokenUsage: TokenUsage?
         internal let encryptionManager = FreeToken.shared.encryptionManager
         
         public init(role: MessageRole, content: String, attachments: [MessageAttachment]? = nil) {

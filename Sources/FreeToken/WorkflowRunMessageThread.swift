@@ -408,6 +408,7 @@ extension FreeToken {
             
             await FreeToken.shared.generateCloudChatCompletion(messages: messageThread.messages, model: context.modelCode, aiRunConfig: context.aiRunConfig, chatStatusStream: chatStatusStream) { message in
                 self.context.resultMessage = message
+                self.context.tokenUsage = message.tokenUsage
                 FreeToken.shared.logger("🏁 Cloud AI run completed with message: \(message.content)", .info)
                 await success(self.context)
             } error: { error in
@@ -475,6 +476,7 @@ extension FreeToken {
 
                 profiler.end(eventType: .generateLocalChatCompletion, isSuccess: true, tokenStats: usage)
                 context.resultMessage = Message(role: .assistant, content: resultText, tokenUsage: usage)
+                context.tokenUsage = usage
 
                 FreeToken.shared.logger("🧠 Local AI run completed successfully", .info)
                 await success(context)
@@ -524,6 +526,7 @@ extension FreeToken {
             await messagesManager.addMessage(message: resultMessage, messageThreadID: messageThread.id) { result in
                 switch result {
                 case .success(let resultMessage):
+                    resultMessage.tokenUsage = self.context.tokenUsage // Copy over last token usage
                     self.context.resultMessage = resultMessage
                     // Emit new_message_created event
                     try? await self.context.chatStatusStream?(nil, .new_message_created)

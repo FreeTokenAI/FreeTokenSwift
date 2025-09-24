@@ -179,6 +179,7 @@ final class FreeTokenTests: XCTestCase {
                         XCTAssertTrue(resultMessage.content.contains("Paris"), "Expected response to contain 'Paris'")
                         let finalMessage = await messageStream.getMessage()
                         XCTAssertEqual(resultMessage.content, finalMessage, "Expected final message to match result message")
+                        XCTAssertNotNil(resultMessage.tokenUsage, "Expected tokenUsage to not be nil")
                         expectation.fulfill()
                     }, error: { error in
                         XCTFail("Failed to run message thread: \(error.message)")
