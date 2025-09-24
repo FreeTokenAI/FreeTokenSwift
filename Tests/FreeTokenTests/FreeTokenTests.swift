@@ -449,14 +449,77 @@ final class FreeTokenTests: XCTestCase {
 
         Task {
             let messages = [FreeToken.Message(role: .user, content: "What is the capital of France?")]
-            
+
             let response = try await FreeToken.shared.localChat(messages: messages)
-            
+
             assert(response.content.contains("Paris"), "Expected response to contain 'Paris'")
             expectation.fulfill()
         }
 
         wait(for: [expectation], timeout: 30.0)
+    }
+
+    func testLocalChatPerplexityAndConfidence() throws {
+        let expectation = self.expectation(description: "Waiting for local chat with perplexity metrics")
+
+        Task {
+            do {
+                // Create a simple prompt that should generate a predictable response
+                let messages = [FreeToken.Message(role: .user, content: "What is the capital of Italy?")]
+
+                // Execute local chat
+                let response = try await FreeToken.shared.localChat(messages: messages)
+
+                // Verify response content
+                XCTAssertFalse(response.content.isEmpty, "Response should not be empty")
+                print("Response: \(response.content)")
+
+                // Check that TokenUsage exists
+                XCTAssertNotNil(response.tokenUsage, "TokenUsage should be present in response")
+
+                if let tokenUsage = response.tokenUsage {
+                    // Check basic token metrics
+                    XCTAssertGreaterThan(tokenUsage.totalTokens, 0, "Total tokens should be greater than 0")
+                    XCTAssertGreaterThan(tokenUsage.outputTokens, 0, "Output tokens should be greater than 0")
+                    XCTAssertGreaterThan(tokenUsage.tokensPerSecond, 0, "Tokens per second should be greater than 0")
+
+                    // Check perplexity metrics
+                    XCTAssertNotNil(tokenUsage.perplexity, "Perplexity should be calculated")
+                    XCTAssertNotNil(tokenUsage.confidence, "Confidence should be calculated")
+
+                    if let perplexity = tokenUsage.perplexity {
+                        // Perplexity should be a positive value
+                        // Lower perplexity means better confidence in the generation
+                        XCTAssertGreaterThan(perplexity, 0, "Perplexity should be positive")
+                        XCTAssertLessThan(perplexity, 1000, "Perplexity should be reasonable (not extremely high)")
+                        print("Perplexity: \(perplexity)")
+                    }
+
+                    if let confidence = tokenUsage.confidence {
+                        // Confidence should be between 0 and 1
+                        XCTAssertGreaterThanOrEqual(confidence, 0, "Confidence should be >= 0")
+                        XCTAssertLessThanOrEqual(confidence, 1, "Confidence should be <= 1")
+                        print("Confidence: \(confidence)")
+                    }
+
+                    // Log all metrics for debugging
+                    print("Token Usage Metrics:")
+                    print("  Total Tokens: \(tokenUsage.totalTokens)")
+                    print("  Input Tokens: \(tokenUsage.inputTokens)")
+                    print("  Output Tokens: \(tokenUsage.outputTokens)")
+                    print("  Tokens/Second: \(tokenUsage.tokensPerSecond)")
+                    print("  Perplexity: \(tokenUsage.perplexity ?? -1)")
+                    print("  Confidence: \(tokenUsage.confidence ?? -1)")
+                }
+
+                expectation.fulfill()
+            } catch {
+                XCTFail("Failed to get local chat response: \(error)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 120.0)
     }
     
     func testCloudChatCompletion() throws {

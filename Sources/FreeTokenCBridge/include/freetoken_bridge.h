@@ -20,6 +20,7 @@ typedef struct {
     int32_t token;           // Generated token
     float eval_time_ms;      // Evaluation time in milliseconds
     float sample_time_ms;    // Sampling time in milliseconds
+    float log_prob;          // Log probability of the sampled token
     bool success;            // Operation success flag
 } freetoken_result;
 

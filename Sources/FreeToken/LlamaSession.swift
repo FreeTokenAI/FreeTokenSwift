@@ -296,9 +296,9 @@ extension FreeToken {
         }
     
         /// Optimized generation using C bridge for maximum performance
-        func generateNextTokenOptimized() async throws -> (token: Int32, text: String, evalMs: Float, sampleMs: Float)? {
+        func generateNextTokenOptimized() async throws -> (token: Int32, text: String, evalMs: Float, sampleMs: Float, logProb: Float)? {
             try ensureActive()
-    
+
             // Call C bridge with session (sampler is already configured)
             let result = freetoken_generate_next(
                 session,
@@ -306,11 +306,11 @@ extension FreeToken {
                 pos,
                 0
             )
-    
+
             guard result.success else {
                 throw FreeToken.FreeTokenError.aiRunFailed(message: "C bridge generation failed")
             }
-    
+
             // Detokenize using fast C implementation
             var textBuffer = [CChar](repeating: 0, count: 256)
             let textLen = freetoken_token_to_piece_fast(
@@ -319,7 +319,7 @@ extension FreeToken {
                 &textBuffer,
                 Int32(textBuffer.count)
             )
-    
+
             let text: String
             if textLen > 0 {
                 let data = Data(bytes: textBuffer, count: Int(textLen))
@@ -327,12 +327,12 @@ extension FreeToken {
             } else {
                 text = ""
             }
-    
+
             pos += 1
-    
+
             // Don't log per-token, let the manager handle periodic logging
-    
-            return (result.token, text, result.eval_time_ms, result.sample_time_ms)
+
+            return (result.token, text, result.eval_time_ms, result.sample_time_ms, result.log_prob)
         }
         
         // MARK: - Get Special Tokens

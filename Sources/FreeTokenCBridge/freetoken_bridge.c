@@ -243,32 +243,65 @@ freetoken_result freetoken_generate_next(
     int32_t seq_id
 ) {
     freetoken_result result = {0};
-    
+
     if (!session || !session->context || !session->sampler || !model) {
         result.success = false;
         return result;
     }
-    
+
     void* context = session->context;
     struct llama_sampler* sampler = session->sampler;
-    
+
     double start_time;
-    
+
+    // Get logits before sampling to calculate log probability
+    const float* logits = llama_get_logits(context);
+    const struct llama_vocab* vocab = llama_model_get_vocab(model);
+    int n_vocab = llama_vocab_n_tokens(vocab);
+
     // Sample token using the native sampler chain
     start_time = get_time_ms();
-    
+
     // -1 means sample from all sequences (we only have one per session)
     llama_token token = llama_sampler_sample(sampler, context, -1);
-    
+
     result.token = token;
     result.sample_time_ms = (float)(get_time_ms() - start_time);
-    
+
+    // Calculate log probability of the sampled token
+    if (logits && token >= 0 && token < n_vocab) {
+        // Get raw logit for the sampled token
+        float logit = logits[token];
+
+        // Calculate log softmax (log probability)
+        // First find max for numerical stability
+        float max_logit = logits[0];
+        for (int i = 1; i < n_vocab; i++) {
+            if (logits[i] > max_logit) {
+                max_logit = logits[i];
+            }
+        }
+
+        // Calculate log sum exp
+        float sum_exp = 0.0f;
+        for (int i = 0; i < n_vocab; i++) {
+            sum_exp += expf(logits[i] - max_logit);
+        }
+        float log_sum = max_logit + logf(sum_exp);
+
+        // Log probability is logit - log_sum
+        result.log_prob = logit - log_sum;
+    } else {
+        // If we can't calculate, use a default value indicating uncertainty
+        result.log_prob = -10.0f;  // High perplexity/low confidence
+    }
+
     // CRITICAL: Accept the token to update sampler state for proper penalty tracking
     llama_sampler_accept(sampler, token);
-    
+
     // Evaluate the sampled token
     start_time = get_time_ms();
-    
+
     // Create batch for single token
     struct llama_batch batch = llama_batch_init(1, 0, 1);
     batch.token[0] = token;
@@ -277,13 +310,13 @@ freetoken_result freetoken_generate_next(
     batch.seq_id[0][0] = seq_id;
     batch.logits[0] = 1;  // We need logits for next prediction
     batch.n_tokens = 1;
-    
+
     int rc = llama_decode(context, batch);
     llama_batch_free(batch);
-    
+
     result.eval_time_ms = (float)(get_time_ms() - start_time);
     result.success = (rc == 0);
-    
+
     return result;
 }
 

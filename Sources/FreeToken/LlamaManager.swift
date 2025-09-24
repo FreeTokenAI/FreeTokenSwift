@@ -339,9 +339,18 @@ extension FreeToken {
             var avgTokenLatency: TimeInterval? = nil
             var sampleTimeTotal: TimeInterval = 0
             var evalTimeTotal: TimeInterval = 0
+            // Perplexity and confidence tracking
+            var logProbSum: Double = 0.0
+            var averageLogProb: Double? = nil
+            var perplexity: Double? = nil
+            var confidence: Double? = nil
         }
         
         private(set) var lastGenerationMetrics: GenerationMetrics? = nil
+
+        func getLastGenerationMetrics() async -> GenerationMetrics? {
+            return lastGenerationMetrics
+        }
         
         /// Streaming generation with automatic KV cache sliding
         func generate(runID: String) async throws -> AsyncThrowingStream<String, Error> {
@@ -413,16 +422,19 @@ extension FreeToken {
                             guard let result = try await session.generateNextTokenOptimized() else {
                                 throw FreeTokenError.aiRunFailed(message: "Generation failed")
                             }
-                            
+
                             let nextToken = result.token
                             let piece = result.text
-                            
+
                             generated.append(nextToken)
                             metrics.producedTokens += 1
-                            
+
                             // Track metrics
                             metrics.sampleTimeTotal += TimeInterval(result.sampleMs / 1000.0)
                             metrics.evalTimeTotal += TimeInterval(result.evalMs / 1000.0)
+
+                            // Accumulate log probability for perplexity calculation
+                            metrics.logProbSum += Double(result.logProb)
                             
                             if metrics.firstToken == nil {
                                 metrics.firstToken = Date()
@@ -511,7 +523,16 @@ extension FreeToken {
                             metrics.tokensPerSecond = Double(metrics.producedTokens) / max(end.timeIntervalSince(first), 0.0001)
                             metrics.avgTokenLatency = end.timeIntervalSince(first) / Double(metrics.producedTokens)
                         }
-                        
+
+                        // Calculate perplexity and confidence
+                        if metrics.producedTokens > 0 {
+                            metrics.averageLogProb = metrics.logProbSum / Double(metrics.producedTokens)
+                            metrics.perplexity = exp(-metrics.averageLogProb!)
+                            // Confidence as normalized inverse perplexity (0-1 scale)
+                            // Lower perplexity = higher confidence
+                            metrics.confidence = 1.0 / (1.0 + metrics.perplexity!)
+                        }
+
                         self.lastGenerationMetrics = metrics
                         continuation.finish()
                         

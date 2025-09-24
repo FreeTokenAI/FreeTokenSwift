@@ -652,13 +652,17 @@ extension FreeToken {
             let inputTokens: Int
             let outputTokens: Int
             let modelCode: String
-            
+            let perplexity: Double?
+            let confidence: Double?
+
             enum CodingKeys: String, CodingKey {
                 case totalTokens = "total_tokens"
                 case tokensPerSecond = "tokens_per_second"
                 case inputTokens = "input_tokens"
                 case outputTokens = "output_tokens"
                 case modelCode = "model_code"
+                case perplexity = "perplexity"
+                case confidence = "confidence"
             }
         }
         
@@ -1236,18 +1240,22 @@ extension FreeToken {
     }
     
     public struct TokenUsage: @unchecked Sendable {
-        let totalTokens: Int
-        let inputTokens: Int
-        let outputTokens: Int
-        let modelCode: String
-        let tokensPerSecond: Float
+        public let totalTokens: Int
+        public let inputTokens: Int
+        public let outputTokens: Int
+        public let modelCode: String
+        public let tokensPerSecond: Float
+        public let perplexity: Double?
+        public let confidence: Double?
 
-        internal init(totalTokens: Int, tokensPerSecond: Float, inputTokens: Int, outputTokens: Int, modelCode: String) {
+        internal init(totalTokens: Int, tokensPerSecond: Float, inputTokens: Int, outputTokens: Int, modelCode: String, perplexity: Double? = nil, confidence: Double? = nil) {
             self.totalTokens = totalTokens
             self.tokensPerSecond = tokensPerSecond
             self.inputTokens = inputTokens
             self.outputTokens = outputTokens
             self.modelCode = modelCode
+            self.perplexity = perplexity
+            self.confidence = confidence
         }
         
         internal init(from tokenUsageReponse: Codings.TokenUsageResponse) {
@@ -1256,10 +1264,20 @@ extension FreeToken {
             self.inputTokens = 0
             self.outputTokens = 0
             self.modelCode = ""
+            self.perplexity = nil
+            self.confidence = nil
         }
                 
         func asCodable() -> Codings.TokenUsageRequest {
-            return Codings.TokenUsageRequest(totalTokens: self.totalTokens, tokensPerSecond: self.tokensPerSecond, inputTokens: self.inputTokens, outputTokens: self.outputTokens, modelCode: self.modelCode)
+            return Codings.TokenUsageRequest(
+                totalTokens: self.totalTokens,
+                tokensPerSecond: self.tokensPerSecond,
+                inputTokens: self.inputTokens,
+                outputTokens: self.outputTokens,
+                modelCode: self.modelCode,
+                perplexity: self.perplexity,
+                confidence: self.confidence
+            )
         }
     }
     

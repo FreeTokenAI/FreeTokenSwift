@@ -242,6 +242,13 @@ extension FreeToken {
             func load(fileName: String, systemMessage: Message) async throws {
                 try await self.llama.loadSession(fileName: fileName, systemMessage: systemMessage, runID: sessionID)
             }
+
+            func getGenerationMetrics() async -> (perplexity: Double?, confidence: Double?) {
+                if let metrics = await self.llama.getLastGenerationMetrics() {
+                    return (metrics.perplexity, metrics.confidence)
+                }
+                return (nil, nil)
+            }
         }
         
         actor AISessionsManager {
@@ -805,12 +812,24 @@ extension FreeToken {
                     let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
                     let tokensPerSecond = Float(Double(outputTokenCount) / (duration / 1000.0))
                     let totalTokens = inputTokenCount + outputTokenCount
+
+                    // Get perplexity and confidence from the last run session
+                    var perplexity: Double? = nil
+                    var confidence: Double? = nil
+                    if let session = await self.stateManager.lastRunSession() {
+                        let metrics = await session.getGenerationMetrics()
+                        perplexity = metrics.perplexity
+                        confidence = metrics.confidence
+                    }
+
                     usage = TokenUsage(
                         totalTokens: totalTokens,
                         tokensPerSecond: tokensPerSecond,
                         inputTokens: inputTokenCount,
                         outputTokens: outputTokenCount,
-                        modelCode: self.modelCode
+                        modelCode: self.modelCode,
+                        perplexity: perplexity,
+                        confidence: confidence
                     )
                     FreeToken.shared.logger("🧠 AI response generated - Input: \(inputTokenCount) tokens, Output: \(outputTokenCount) tokens, Total: \(totalTokens) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
                 }
@@ -895,12 +914,24 @@ extension FreeToken {
                     let duration = Double(endTime.uptimeNanoseconds - start.uptimeNanoseconds) / 1_000_000
                     let tokensPerSecond = Float(Double(outputTokenCount) / (duration / 1000.0))
                     let totalTokens = inputTokenCount + outputTokenCount
+
+                    // Get perplexity and confidence from the last run session
+                    var perplexity: Double? = nil
+                    var confidence: Double? = nil
+                    if let session = await self.stateManager.lastRunSession() {
+                        let metrics = await session.getGenerationMetrics()
+                        perplexity = metrics.perplexity
+                        confidence = metrics.confidence
+                    }
+
                     usage = TokenUsage(
                         totalTokens: totalTokens,
                         tokensPerSecond: tokensPerSecond,
                         inputTokens: inputTokenCount,
                         outputTokens: outputTokenCount,
-                        modelCode: self.modelCode
+                        modelCode: self.modelCode,
+                        perplexity: perplexity,
+                        confidence: confidence
                     )
                     FreeToken.shared.logger("🧠 AI response generated - Input: \(inputTokenCount) tokens, Output: \(outputTokenCount) tokens, Total: \(totalTokens) tokens in \(duration) ms @ \(tokensPerSecond) tokens/s", .info)
                 }
