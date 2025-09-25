@@ -17,7 +17,7 @@ extension FreeToken {
         
         private let clientConfig: Codings.ShowClientConfig
         private let clientVersion: String
-        private var generationCancellationHandler: (() -> Void)? = nil
+        private var generationCancellationHandler: (() async -> Void)? = nil
         
         private let stateManager: AISessionsManager
         
@@ -738,7 +738,7 @@ extension FreeToken {
         
         func stopGeneration() async {
             FreeToken.shared.logger("🛑 Stopping AI generation...", .info)
-            generationCancellationHandler?()
+            await generationCancellationHandler?()
             generationCancellationHandler = nil
         }
         
@@ -781,6 +781,7 @@ extension FreeToken {
                                     try await streamHandler(value)
                                 } catch {
                                     // User cancelled generation through tokenStream
+                                    await self.stateManager.resetSession(for: "completion-session")
                                     FreeToken.shared.logger("⚠️ Token stream threw error, cancelling generation: \(error)", .warning)
                                     throw FreeTokenError.generationCancelled
                                 }
@@ -806,7 +807,10 @@ extension FreeToken {
                 }
 
                 // Store the cancellation handler
-                self.generationCancellationHandler = { task.cancel() }
+                self.generationCancellationHandler = {
+                    task.cancel()
+                    await self.stateManager.removeSession(for: "completion-session")
+                }
                 let inputTokenCount = try await task.value
                 self.generationCancellationHandler = nil
                 
@@ -884,7 +888,7 @@ extension FreeToken {
                                 } catch {
                                     // User cancelled generation through tokenStream
                                     // Reset the session so that it's not in a bad state.
-                                    await self.stateManager.resetSession(for: runIdentifier)
+                                    await self.stateManager.removeSession(for: runIdentifier)
                                     FreeToken.shared.logger("⚠️ Token stream threw error, cancelling generation: \(error)", .warning)
                                     throw FreeTokenError.generationCancelled
                                 }
@@ -910,7 +914,10 @@ extension FreeToken {
                 }
 
                 // Store the cancellation handler
-                self.generationCancellationHandler = { task.cancel() }
+                self.generationCancellationHandler = {
+                    task.cancel()
+                    await self.stateManager.removeSession(for: runIdentifier)
+                }
                 let inputTokenCount = try await task.value
                 self.generationCancellationHandler = nil
                 

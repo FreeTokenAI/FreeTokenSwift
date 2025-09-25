@@ -202,6 +202,64 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 300.0)
     }
     
+    func testCancelMessageThreadAndReRun() throws {
+        let expectation = self.expectation(description: "Waiting for message thread run")
+
+        Task {
+            let message = FreeToken.Message(role: .user, content: "Write a short story about a man named Pierre who loves Paris")
+            
+            actor MessageStream {
+                var message = ""
+                
+                func append(_ text: String) {
+                    message += text
+                }
+                func getMessage() -> String {
+                    return message
+                }
+            }
+            
+            let messageStream = MessageStream()
+            
+            await FreeToken.shared.createMessageThread { messageThread in
+                await FreeToken.shared.addMessageToThread(id: messageThread.id, message: message) { message in
+                    await FreeToken.shared.runMessageThread(id: messageThread.id, runLocation: .localRun, success: { resultMessage in
+                        // Should not get here.
+                        expectation.fulfill()
+                    }, error: { error in
+                        XCTAssertTrue(true) // Succeessfully cancelled the stream
+                        
+                        // Re-run thread.
+                        await FreeToken.shared.runMessageThread(id: messageThread.id) { resultMessage in
+                            XCTAssert(true) // Success!
+                            expectation.fulfill()
+                        } error: { error in
+                            XCTFail("Should have re-run thread.")
+                            expectation.fulfill()
+                        }
+                    }, chatStatusStream: { token, status in
+                        if let token = token {
+                            await messageStream.append(token)
+                        }
+                        
+                        if await messageStream.getMessage().count > 5 {
+//                            throw NSError(domain: "userCancel", code: 100)
+                            await FreeToken.shared.stopLocalGeneration()
+                        }
+                    })
+                } error: { error in
+                    XCTFail("Failed to add message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 300.0)
+    }
+    
     func testMessageThreadRunWithAdditionalContext() throws {
         let expectation = self.expectation(description: "Waiting for message thread run")
 
