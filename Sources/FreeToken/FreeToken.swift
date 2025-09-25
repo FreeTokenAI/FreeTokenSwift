@@ -1962,22 +1962,25 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Tip: Use `documentSearchScope` to change the context that the AI uses for RAG.  If left unset, the AI will use the document scope set in the Agent in the FreeToken Admin console.
     ///
+    /// > Tip: Use `additionalContext` to inject ephemeral information into a message like a user's current location or details about them that you want the AI to take into account during the answer. This information will not be persisted into the message.
+    ///
     /// > Tip: Use `toolAccess` to control which tools can be run during the message thread.  This allows you to limit the tools that can be used during the message thread execution. Order matters, so if you want to allow only one tool you can use `[.denyAll, .allow("my_tool")]`. This would deny all tools except "my_tool".
     ///
     /// > Warning: The AI model must be downloaded prior to using this method. It's recommended that you ensure that ``downloadAIModel(completion:)`` is called prior to use.
     ///
     /// - Parameters:
-    ///     - id: String of the message thread ID
-    ///     - runLocation: Specifies where to run the AI - `.automatic` (default), `.cloudRun`, or `.localRun`
-    ///     - documentSearchScope: Optional document search scope. Used for context for the AI
-    ///     - privateDocumentStoreIds: Optional array of private document store IDs for RAG context
-    ///     - aiRunConfig: Optional AI run configuration to override default AI model settings
-    ///     - modelCode: Optional AI Model Code to use a different model than provided by the device session (will force to cloud)
-    ///     - toolAccess: Optional ToolRunMask to control which tools can be run during the message thread
-    ///     - success: A closure to capture the result of the run of the message thread
-    ///     - error: A closure to capture any errors that occur during the call
-    ///     - chatStatusStream: Optional closure to capture the status and streaming tokens. Throw an error to cancel generation.
-    ///     - toolCallback: Optional closure to handle tool calls
+    ///    - id: String of the message thread ID
+    ///    - runLocation: Specifies where to run the AI - `.automatic` (default), `.cloudRun`, or `.localRun`
+    ///    - documentSearchScope: Optional document search scope. Used for context for the AI
+    ///    - privateDocumentStoreIds: Optional array of private document store IDs for RAG context
+    ///    - aiRunConfig: Optional AI run configuration to override default AI model settings
+    ///    - modelCode: Optional AI Model Code to use a different model than provided by the device session (will force to cloud)
+    ///    - toolAccess: Optional ToolRunMask to control which tools can be run during the message thread
+    ///    - additionalContext: Optional add additional context to the last user message
+    ///    - success: A closure to capture the result of the run of the message thread
+    ///    - error: A closure to capture any errors that occur during the call
+    ///    - chatStatusStream: Optional closure to capture the status and streaming tokens. Throw an error to cancel generation.
+    ///    - toolCallback: Optional closure to handle tool calls
     ///
     /// - Returns: Void
     public func runMessageThread(
@@ -1989,6 +1992,7 @@ public class FreeToken: @unchecked Sendable {
         aiRunConfig: Optional<AIRunConfig> = nil,
         modelCode: Optional<String> = nil,
         toolAccess: [ToolRunMask] = [.allowAll],
+        additionalContext: String = "",
         success successCompletion: @escaping @Sendable (Message) async -> Void,
         error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void,
         chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
@@ -2078,6 +2082,7 @@ public class FreeToken: @unchecked Sendable {
             aiRunConfig: aiRunConfig,
             modelCode: modelCode,
             toolRunMasks: toolAccess,
+            additionalContext: additionalContext,
             allToolDefinitions: await toolDefinitionsManager.allToolDefinitions(),
             toolDefinitionsManager: toolDefinitionsManager,
             chatStatusStream: chatStatusStream,
@@ -2086,7 +2091,8 @@ public class FreeToken: @unchecked Sendable {
         
         // Workflow Steps
         let workflowSteps: [WorkflowStep.Type] = [
-            GetMessageThread.self,
+            GetMessages.self,
+            InjectAdditionalContext.self,
             ToolCallMasking.self,
             DetermineAIRunLocation.self,
             LoadAIModel.self,

@@ -984,7 +984,7 @@ extension FreeToken {
     public class Message: @unchecked Sendable {
         public let id: String?
         public let role: MessageRole
-        public let content: String
+        public internal(set) var content: String
         public let attachments: [MessageAttachment]?
         public let createdAt: Date?
         public var tokenUsage: TokenUsage?

@@ -27,10 +27,11 @@ extension FreeToken {
         let modelCode: String?
         let toolRunMasks: [ToolRunMask]
         let toolDefinitionsManager: ToolDefinitionsManager
-
+        let additionalContext: String
+        
+        var messages: [Message] = []
         var cloudRun: Bool? = nil
         var resultMessage: Message? = nil
-        var messageThread: MessageThread? = nil
         var tokenUsage: TokenUsage? = nil // Not sure I'll use this, but keeping it for now
         var toolCallRecursiveRuns: Int = 0
         var stopExecution: Bool = false // Special flag to stop execution of the workflow after current step.
@@ -51,6 +52,7 @@ extension FreeToken {
             aiRunConfig: AIRunConfig? = nil,
             modelCode: String? = nil,
             toolRunMasks: [ToolRunMask],
+            additionalContext: String = "",
             allToolDefinitions: [ToolDefinition] = [],
             toolDefinitionsManager: ToolDefinitionsManager,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>,
@@ -72,6 +74,7 @@ extension FreeToken {
             self.modelCode = modelCode
             self.selectedToolDefinitions = allToolDefinitions
             self.toolRunMasks = toolRunMasks
+            self.additionalContext = additionalContext
             self.toolDefinitionsManager = toolDefinitionsManager
         }
     }
@@ -143,13 +146,13 @@ extension FreeToken {
             }
             
             do {
-                _ = try await context.aiModelManager?.loadSession(for: context.runIdentifier, with: context.messageThread!.messages, runConfig: context.aiRunConfig)
+                _ = try await context.aiModelManager?.loadSession(for: context.runIdentifier, with: context.messages, runConfig: context.aiRunConfig)
             } catch {
                 if context.runLocation == .localRun {
                     FreeToken.shared.logger("🔴 Failed to load AI model for local run: \(error)", .error)
 
                     if error as? FreeTokenError == FreeTokenError.messagesMustAlternate {
-                        let roles = context.messageThread!.messages.map { $0.role.rawValue }
+                        let roles = context.messages.map { $0.role.rawValue }
                         FreeToken.shared.logger("Roles in order: \(roles.joined(separator: ", "))", .error)
                     }
                     
@@ -191,9 +194,9 @@ extension FreeToken {
             failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
         ) async -> Void {
             // Check if any message in the thread contains images (vision capability required)
-            let threadHasImages = context.messageThread?.messages.contains { message in
+            let threadHasImages = context.messages.contains { message in
                 message.attachments?.contains { $0.type == .image } ?? false
-            } ?? false
+            }
             
             switch runLocation {
             case .automatic:
@@ -340,7 +343,7 @@ extension FreeToken {
     
     // MARK: - Get Message Thread from MessageManager:
     
-    final class GetMessageThread: WorkflowStep, @unchecked Sendable {
+    final class GetMessages: WorkflowStep, @unchecked Sendable {
         let context: RunMessageThreadContext
         let messagesManager: MessagesManager
         
@@ -355,10 +358,45 @@ extension FreeToken {
             failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
         ) async -> Void {
             await messagesManager.getMessageThread(id: context.messageThreadID) { messageThread, _ in
-                self.context.messageThread = messageThread
+                self.context.messages = messageThread.messages
                 await success(self.context)
             } failure: { error in
                 await failure(error, self.context)
+            }
+        }
+    }
+    
+    // MARK: Inject Additional Context
+
+    final class InjectAdditionalContext: WorkflowStep, @unchecked Sendable {
+        let context: RunMessageThreadContext
+        let userAdditionalContext: String
+        
+        init(context: any FreeToken.WorkflowContext) {
+            self.context = context as! RunMessageThreadContext
+            self.userAdditionalContext = self.context.additionalContext
+        }
+        
+        func execute(success: @escaping @Sendable (any FreeToken.WorkflowContext) async -> Void, failure: @escaping @Sendable (FreeToken.FreeTokenError, any FreeToken.WorkflowContext) async -> Void) async {
+            
+            // Get Last Message
+            if let lastMessage = context.messages.last {
+                if lastMessage.role == .user {
+                    var additionalContext = ""
+                    
+                    let date = Date()
+                    let formatter = DateFormatter()
+                    formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
+                    let formattedDate = formatter.string(from: date)
+                    additionalContext += "Current Date & Time: \(formattedDate)\n"
+                    
+                    // Inject User Additional Context
+                    additionalContext += userAdditionalContext
+                    
+                    lastMessage.content = "\(additionalContext)\n\(userAdditionalContext)\n\(lastMessage.content)"
+                    
+                    FreeToken.shared.logger("ℹ️ Full user message with additional context being sent to the model: \(lastMessage.content)", .info)
+                }
             }
         }
     }
@@ -368,13 +406,13 @@ extension FreeToken {
     final class RunAIModelInCloud: WorkflowStep, @unchecked Sendable {
         let context: RunMessageThreadContext
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
-        let messageThread: MessageThread
+        let messages: [Message]
         
         init(context: any FreeToken.WorkflowContext) {
             let context = context as! RunMessageThreadContext
             self.context = context
             self.chatStatusStream = context.chatStatusStream
-            self.messageThread = context.messageThread!
+            self.messages = context.messages
         }
         
         func execute(
@@ -398,7 +436,7 @@ extension FreeToken {
                 return
             }
             
-            await FreeToken.shared.generateCloudChatCompletion(messages: messageThread.messages, model: context.modelCode, aiRunConfig: context.aiRunConfig, chatStatusStream: chatStatusStream) { message in
+            await FreeToken.shared.generateCloudChatCompletion(messages: messages, model: context.modelCode, aiRunConfig: context.aiRunConfig, chatStatusStream: chatStatusStream) { message in
                 self.context.resultMessage = message
                 self.context.tokenUsage = message.tokenUsage
                 FreeToken.shared.logger("🏁 Cloud AI run completed with message: \(message.content)", .info)
@@ -417,7 +455,7 @@ extension FreeToken {
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
         let aiModelManager: AIModelManager?
         let aiRunConfig: AIRunConfig?
-        let messageThread: MessageThread
+        let messages: [Message]
         
         init(context: any FreeToken.WorkflowContext) {
             let context = context as! RunMessageThreadContext
@@ -425,7 +463,7 @@ extension FreeToken {
             self.chatStatusStream = context.chatStatusStream
             self.aiModelManager = context.aiModelManager
             self.aiRunConfig = context.aiRunConfig
-            self.messageThread = context.messageThread!
+            self.messages = context.messages
         }
         
         func execute(
@@ -449,7 +487,7 @@ extension FreeToken {
             
             let resultText: String
             let usage: TokenUsage?
-            let messages = messageThread.messages
+            let messages = messages
             
             let profiler = Profiler()
             do {
@@ -501,21 +539,21 @@ extension FreeToken {
         let context: RunMessageThreadContext
         let messagesManager: MessagesManager
         let resultMessage: Message
-        let messageThread: MessageThread
+        let messageThreadID: String
         
         init(context: any FreeToken.WorkflowContext) {
             let context = context as! RunMessageThreadContext
             self.context = context
             self.messagesManager = context.messagesManager
             self.resultMessage = context.resultMessage!
-            self.messageThread = context.messageThread!
+            self.messageThreadID = context.messageThreadID
         }
         
         func execute(
             success: @escaping @Sendable (_ context: any WorkflowContext) async -> Void,
             failure: @escaping @Sendable (_ error: FreeTokenError, _ context: any WorkflowContext) async -> Void
         ) async -> Void {
-            await messagesManager.addMessage(message: resultMessage, messageThreadID: messageThread.id) { result in
+            await messagesManager.addMessage(message: resultMessage, messageThreadID: messageThreadID) { result in
                 switch result {
                 case .success(let resultMessage):
                     resultMessage.tokenUsage = self.context.tokenUsage // Copy over last token usage
@@ -567,7 +605,7 @@ extension FreeToken {
         let privateDocumentStoreIds: [String]?
         let externalToolCallback: Optional<@Sendable ([FreeToken.ToolCall]) async -> String>
         let messagesManager: MessagesManager
-        let messageThread: MessageThread
+        let messageThreadID: String
         
         init(context: any FreeToken.WorkflowContext) {
             let context = context as! RunMessageThreadContext
@@ -578,7 +616,7 @@ extension FreeToken {
             self.privateDocumentStoreIds = context.privateDocumentStoreIds
             self.externalToolCallback = context.toolCallback
             self.messagesManager = context.messagesManager
-            self.messageThread = context.messageThread!
+            self.messageThreadID = context.messageThreadID
         }
         
         func execute(
@@ -642,7 +680,7 @@ extension FreeToken {
                     }
                     
                     let toolMessage = Message(role: .tool, content: result)
-                    await self.messagesManager.addMessage(message: toolMessage, messageThreadID: self.messageThread.id) { result in
+                    await self.messagesManager.addMessage(message: toolMessage, messageThreadID: self.messageThreadID) { result in
                         switch result {
                         case .success(_):
                             // Emit new_message_created event for tool message
@@ -661,7 +699,7 @@ extension FreeToken {
 
                             // Add additional steps to this workflow to handle tool calls
                             let additionalSteps: [any WorkflowStep.Type] = [
-                                GetMessageThread.self,
+                                GetMessages.self,
                                 RunAIModelInCloud.self,
                                 RunAIModelLocally.self,
                                 AddMessageToThread.self,
