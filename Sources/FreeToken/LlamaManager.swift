@@ -415,6 +415,8 @@ extension FreeToken {
                             if Task.isCancelled {
                                 metrics.canceled = true
                                 metrics.stopReason = "canceled"
+                                // We don't want to leave the model in a bad state - reset the session so that it will be rebuilt on next run. 
+                                await self.resetSession()
                                 break
                             }
                             

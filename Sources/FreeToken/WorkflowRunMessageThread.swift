@@ -700,8 +700,8 @@ extension FreeToken {
                             // Add additional steps to this workflow to handle tool calls
                             let additionalSteps: [any WorkflowStep.Type] = [
                                 GetMessages.self,
-                                RunAIModelInCloud.self,
                                 RunAIModelLocally.self,
+                                RunAIModelInCloud.self,
                                 AddMessageToThread.self,
                                 SaveAISessionToDisk.self,
                                 RunToolCalls.self
