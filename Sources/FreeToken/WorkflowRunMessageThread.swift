@@ -227,18 +227,10 @@ extension FreeToken {
                 }
                 
                 // Automatically determine if this should be a cloud run or not
-                do {
-                    context.cloudRun = try await shouldCloudRun()
-                    await success(context)
-                } catch {
-                    do {
-                        try await chatStatusStream?(nil, .failed)
-                    } catch {
-                        // Ignore errors in failed status
-                    }
-                    await failure(error as! FreeTokenError, context)
-                    return
-                }
+                context.cloudRun = await shouldCloudRun()
+                await success(context)
+                return
+                
             case .cloudRun:
                 FreeToken.shared.logger("☁️ Force cloud run requested", .info)
                 // Even for cloud run, check if model supports imageToText when images are present
@@ -321,7 +313,7 @@ extension FreeToken {
             }
         }
         
-        private func shouldCloudRun() async throws -> Bool {
+        private func shouldCloudRun() async -> Bool {
             // Check device capabilities first
             if deviceManager?.isAICapable == true {
                 // Device is AI capable, check model state

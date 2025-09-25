@@ -591,8 +591,8 @@ public class FreeToken: @unchecked Sendable {
             // Get model details by code
             await getAIModel(modelCode: modelCode!) { aiModel in
                 if aiModel.cloudOnly {
-                    FreeToken.shared.logger("🔴 AI model \(aiModel.code) is cloud-only skipping download.", .error)
-                    await errorCallback(FreeTokenError.isCloudOnlyModel)
+                    FreeToken.shared.logger("⚠️ AI model \(aiModel.code) is cloud-only skipping download.", .warning)
+                    await successCallback(DownloadedState.cloudOnly)
                     return
                 }
                 
@@ -2036,8 +2036,26 @@ public class FreeToken: @unchecked Sendable {
                     aiModelManager = manager
                 } else {
                     // Return an error since the model code is not loaded
-                    await errorCompletion(FreeTokenError.aiModelNotDownloaded)
-                    return
+                    
+                    // Get model with checked
+                    do {
+                        let aiModel: AIModel = try await withCheckedThrowingContinuation { continuation in
+                            Task {
+                                await self.getAIModel(modelCode: modelCode) { aiModel in
+                                    continuation.resume(returning: aiModel)
+                                } error: { error in
+                                    continuation.resume(throwing: error)
+                                }
+                            }
+                        }
+                        if !aiModel.cloudOnly {
+                            await errorCompletion(FreeTokenError.aiModelNotDownloaded)
+                            return
+                        }
+                    } catch {
+                        await errorCompletion(FreeTokenError.unknownAIModelCode)
+                        return
+                    }
                 }
             } else {
                 // No model code provided - use default AIModelManager
