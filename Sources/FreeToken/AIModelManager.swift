@@ -487,6 +487,14 @@ extension FreeToken {
                 self.sessions.removeValue(forKey: id)
             }
             
+            func resetSession(for id: String) {
+                if let session = self.sessions[id] {
+                    Task {
+                        await session.reset()
+                    }
+                }
+            }
+            
             func removeAllSessions() async {
                 for (_, session) in sessions {
                     await session.unload()
@@ -875,6 +883,8 @@ extension FreeToken {
                                     try await streamHandler(value)
                                 } catch {
                                     // User cancelled generation through tokenStream
+                                    // Reset the session so that it's not in a bad state.
+                                    await self.stateManager.resetSession(for: runIdentifier)
                                     FreeToken.shared.logger("⚠️ Token stream threw error, cancelling generation: \(error)", .warning)
                                     throw FreeTokenError.generationCancelled
                                 }
