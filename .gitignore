@@ -7,5 +7,4 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .swiftpm/*
 .netrc
-CLAUDE.md
 .mcp.json

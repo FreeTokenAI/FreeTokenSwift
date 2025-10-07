@@ -568,6 +568,45 @@ await client.getAIModel(
 )
 ```
 
+#### Check if Model is Available for Device
+
+Check if a specific AI model can run on the current device:
+
+```swift
+do {
+    let isAvailable = try await client.isModelAvailableForDevice(modelCode: "llama-3.2-1b")
+    if isAvailable {
+        print("This device can run the model locally")
+    } else {
+        print("This model is not available for this device")
+    }
+} catch {
+    print("Failed to check model availability: \(error)")
+}
+
+// Check default model availability
+let defaultAvailable = try await client.isModelAvailableForDevice(modelCode: nil)
+```
+
+#### Get Available Models for Device
+
+Get a list of all AI models that can run on the current device (includes both local models supported by this device and all cloud-only models):
+
+```swift
+do {
+    let availableModels = try await client.availableAIModelsForDevice()
+    for model in availableModels {
+        if model.cloudOnly {
+            print("Cloud model: \(model.name)")
+        } else {
+            print("Local model: \(model.name)")
+        }
+    }
+} catch {
+    print("Failed to get available models: \(error)")
+}
+```
+
 #### Count Tokens
 
 ```swift

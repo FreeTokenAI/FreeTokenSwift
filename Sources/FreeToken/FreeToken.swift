@@ -630,6 +630,81 @@ public class FreeToken: @unchecked Sendable {
         await downloadEmbeddingModel()
     }
     
+    
+    /// Check if a model is capable of running on this device
+    ///
+    /// - Parameters:
+    ///    - modelCode: Optional model code you can pass if not the default agent model
+    /// - Returns: Bool
+    public func isModelAvailableForDevice(modelCode: String?) async throws -> Bool {
+        guard isDeviceRegistered() else {
+            throw FreeTokenError.deviceNotRegistered
+        }
+        
+        var modelCode = modelCode
+        
+        if modelCode == nil {
+            // Use the default model code if nothing is passed in
+            modelCode = deviceDetails?.aiModel.code
+        }
+        
+        if let setModelCode = modelCode {
+            let result: Bool = try await withCheckedThrowingContinuation { continuation in
+                Task {
+                    await getAIModel(modelCode: setModelCode) { aiModel in
+                        if let manager = self.aiModelsManager.getDeviceManager(for: setModelCode) {
+                            continuation.resume(returning: true)
+                        } else {
+                            continuation.resume(returning: false)
+                        }
+                    } error: { error in
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+            
+            return result
+        } else {
+            throw FreeTokenError.aiModelNotLoaded
+        }
+    }
+    
+    /// Get models that are capable of running on this device
+    ///
+    /// - Returns: An Array of AIModel objects that are capable of running on this device
+    public func availableAIModelsForDevice() async throws -> [AIModel] {
+        let result: [AIModel] = try await withCheckedThrowingContinuation { continuation in
+            Task {
+                await listAIModels { aiModels in
+                    var availableModels: [AIModel] = []
+                    for aiModel in aiModels {
+                        if aiModel.cloudOnly {
+                            availableModels.append(aiModel)
+                        } else {
+                            if let manager = self.aiModelsManager.getDeviceManager(for: aiModel.code) {
+                                if manager.isAICapable {
+                                    self.logger("✅ This device is capable of running the model \(aiModel.code)", .info)
+                                    availableModels.append(aiModel)
+                                } else {
+                                    self.logger("🚫 This device is NOT capable of running the model \(aiModel.code)", .info)
+                                }
+                            } else {
+                                FreeToken.shared.logger("⚠️ Model unexpectedly not available by code", .warning)
+                            }
+                        }
+                    }
+                    
+                    continuation.resume(returning: availableModels)
+                } error: { error in
+                    continuation.resume(throwing: error)
+                }
+
+            }
+        }
+        
+        return result
+    }
+    
     private func downloadEmbeddingModel() async {
         let embeddingModelState = await EmbeddingManager.shared.modelStateActor.modelState
         
@@ -696,6 +771,15 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 let aiModels = response.aiModels.map { AIModel(from: $0) }
+                for aiModelResponse in response.aiModels {
+                    do {
+                        if aiModelResponse.cloudOnly == false {
+                            try self.aiModelsManager.addManager(modelConfig: aiModelResponse, clientVersion: self.clientVersion, isDefault: false)
+                        }
+                    } catch {
+                        self.logger(error.localizedDescription, .warning)
+                    }
+                }
                 await successCompletion(aiModels)
             case .failure(let error):
                 await errorCompletion(error)
@@ -731,6 +815,15 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 let aiModel = AIModel(from: response)
+                
+                do {
+                    if response.cloudOnly == false {
+                        try self.aiModelsManager.addManager(modelConfig: response, clientVersion: self.clientVersion, isDefault: false)
+                    }
+                } catch {
+                    self.logger(error.localizedDescription, .warning)
+                }
+                
                 await successCompletion(aiModel)
             case .failure(let error):
                 FreeToken.shared.logger("Failed to fetch AI Model: \(error.message)", .error)
