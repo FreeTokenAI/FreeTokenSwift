@@ -28,8 +28,9 @@ extension FreeToken {
         let toolRunMasks: [ToolRunMask]
         let toolDefinitionsManager: ToolDefinitionsManager
         let additionalContext: String
-        
+
         var messages: [Message] = []
+        var messagesForAI: [Message] = [] // Separate array for AI processing with injected context
         var cloudRun: Bool? = nil
         var resultMessage: Message? = nil
         var tokenUsage: TokenUsage? = nil // Not sure I'll use this, but keeping it for now
@@ -146,13 +147,14 @@ extension FreeToken {
             }
             
             do {
-                _ = try await context.aiModelManager?.loadSession(for: context.runIdentifier, with: context.messages, runConfig: context.aiRunConfig)
+                // Use messagesForAI which contains the injected context (populated by InjectAdditionalContext)
+                _ = try await context.aiModelManager?.loadSession(for: context.runIdentifier, with: context.messagesForAI, runConfig: context.aiRunConfig)
             } catch {
                 if context.runLocation == .localRun {
                     FreeToken.shared.logger("🔴 Failed to load AI model for local run: \(error)", .error)
 
                     if error as? FreeTokenError == FreeTokenError.messagesMustAlternate {
-                        let roles = context.messages.map { $0.role.rawValue }
+                        let roles = context.messagesForAI.map { $0.role.rawValue }
                         FreeToken.shared.logger("Roles in order: \(roles.joined(separator: ", "))", .error)
                     }
                     
@@ -371,33 +373,51 @@ extension FreeToken {
     final class InjectAdditionalContext: WorkflowStep, @unchecked Sendable {
         let context: RunMessageThreadContext
         let userAdditionalContext: String
-        
+
         init(context: any FreeToken.WorkflowContext) {
             self.context = context as! RunMessageThreadContext
             self.userAdditionalContext = self.context.additionalContext
         }
-        
+
         func execute(success: @escaping @Sendable (any FreeToken.WorkflowContext) async -> Void, failure: @escaping @Sendable (FreeToken.FreeTokenError, any FreeToken.WorkflowContext) async -> Void) async {
-            
-            // Get Last Message
-            if let lastMessage = context.messages.last {
+
+            // Create copies of all messages for AI processing
+            context.messagesForAI = context.messages.map { originalMessage in
+                // Create a new Message instance with the same properties
+                Message(
+                    id: originalMessage.id,
+                    role: originalMessage.role,
+                    content: originalMessage.content,
+                    attachments: originalMessage.attachments,
+                    createdAt: originalMessage.createdAt,
+                    tokenUsage: originalMessage.tokenUsage
+                )
+            }
+
+            // Inject additional context into the last user message copy
+            if let lastMessage = context.messagesForAI.last {
                 if lastMessage.role == .user {
                     var additionalContext = ""
-                    
+
                     let date = Date()
                     let formatter = DateFormatter()
                     formatter.dateFormat = "yyyy-MM-dd HH:mm:ss"
                     let formattedDate = formatter.string(from: date)
                     additionalContext += "Current Date & Time: \(formattedDate)\n"
-                    
+
                     // Inject User Additional Context
-                    additionalContext += userAdditionalContext
-                    
-                    lastMessage.content = "\(additionalContext)\n\(userAdditionalContext)\n\(lastMessage.content)"
-                    
+                    if !userAdditionalContext.isEmpty {
+                        additionalContext += userAdditionalContext + "\n"
+                    }
+
+                    // Modify the COPY, not the original
+                    lastMessage.content = "\(additionalContext)\(lastMessage.content)"
+
                     FreeToken.shared.logger("ℹ️ Full user message with additional context being sent to the model: \(lastMessage.content)", .info)
                 }
             }
+
+            await success(context)
         }
     }
 
@@ -407,12 +427,13 @@ extension FreeToken {
         let context: RunMessageThreadContext
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
         let messages: [Message]
-        
+
         init(context: any FreeToken.WorkflowContext) {
             let context = context as! RunMessageThreadContext
             self.context = context
             self.chatStatusStream = context.chatStatusStream
-            self.messages = context.messages
+            // Use messagesForAI which contains the injected context
+            self.messages = context.messagesForAI
         }
         
         func execute(
@@ -456,14 +477,15 @@ extension FreeToken {
         let aiModelManager: AIModelManager?
         let aiRunConfig: AIRunConfig?
         let messages: [Message]
-        
+
         init(context: any FreeToken.WorkflowContext) {
             let context = context as! RunMessageThreadContext
             self.context = context
             self.chatStatusStream = context.chatStatusStream
             self.aiModelManager = context.aiModelManager
             self.aiRunConfig = context.aiRunConfig
-            self.messages = context.messages
+            // Use messagesForAI which contains the injected context
+            self.messages = context.messagesForAI
         }
         
         func execute(
@@ -700,6 +722,7 @@ extension FreeToken {
                             // Add additional steps to this workflow to handle tool calls
                             let additionalSteps: [any WorkflowStep.Type] = [
                                 GetMessages.self,
+                                InjectAdditionalContext.self,  // Important: inject context for recursive calls
                                 RunAIModelLocally.self,
                                 RunAIModelInCloud.self,
                                 AddMessageToThread.self,

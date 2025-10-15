@@ -1190,14 +1190,14 @@ final class FreeTokenTests: XCTestCase {
     
     func testWebSearch() throws {
         let expectation = self.expectation(description: "Waiting for web search completion")
-        
-        
+
+
         Task {
             try await FreeToken.shared.resetDevice()
-            
+
             _ = try FreeToken.shared.configure(appToken: "test-token", baseURL: URL(string: "http://localhost:3000/api/v1/"),
                                        logLevel: .debug)
-            
+
             await FreeToken.shared.registerDeviceSession(scope: "web-search") {
                 await FreeToken.shared.createMessageThread { mt in
                     await FreeToken.shared.addMessageToThread(id: mt.id, message: .init(role: .user, content: "What's the latest headlines on the internet? Be sure to use web_search tool.")) { message in
@@ -1221,8 +1221,148 @@ final class FreeTokenTests: XCTestCase {
                 expectation.fulfill()
             }
         }
-        
+
         wait(for: [expectation], timeout: 300.0)
     }
-    
+
+    func testDateTimeContextNotPersisted() throws {
+        let expectation = self.expectation(description: "Waiting for date/time context test")
+
+        Task {
+            // Original message content to compare later
+            let originalContent = "What time is it?"
+            let message = FreeToken.Message(role: .user, content: originalContent)
+
+            await FreeToken.shared.createMessageThread { messageThread in
+                let threadId = messageThread.id
+
+                await FreeToken.shared.addMessageToThread(id: threadId, message: message) { addedMessage in
+                    // Run the thread - this should inject date/time context internally
+                    await FreeToken.shared.runMessageThread(
+                        id: threadId,
+                        runLocation: .localRun,
+                        success: { responseMessage in
+                            // After AI response, retrieve the thread again
+                            await FreeToken.shared.getMessageThread(id: threadId) { retrievedThread in
+                                // Check that the original user message hasn't been modified
+                                let userMessages = retrievedThread.messages.filter { $0.role == .user }
+
+                                XCTAssertFalse(userMessages.isEmpty, "Should have at least one user message")
+
+                                if let lastUserMessage = userMessages.last {
+                                    // The original message content should NOT contain "Current Date & Time:"
+                                    XCTAssertFalse(
+                                        lastUserMessage.content.contains("Current Date & Time:"),
+                                        "User message should not contain injected date/time context"
+                                    )
+
+                                    // The original content should be unchanged
+                                    XCTAssertEqual(
+                                        lastUserMessage.content,
+                                        originalContent,
+                                        "User message content should remain unchanged"
+                                    )
+
+                                    print("✅ Test passed: Original message content preserved: '\(lastUserMessage.content)'")
+                                    print("✅ AI response received: '\(responseMessage.content)'")
+                                }
+
+                                expectation.fulfill()
+                            } error: { error in
+                                XCTFail("Failed to retrieve message thread: \(error.message)")
+                                expectation.fulfill()
+                            }
+                        },
+                        error: { error in
+                            XCTFail("Failed to run message thread: \(error.message)")
+                            expectation.fulfill()
+                        }
+                    )
+                } error: { error in
+                    XCTFail("Failed to add message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 60.0)
+    }
+
+    func testAdditionalContextNotPersisted() throws {
+        let expectation = self.expectation(description: "Waiting for additional context test")
+
+        Task {
+            // Original message content
+            let originalContent = "Tell me a joke"
+            let additionalContext = "IMPORTANT: Make it a dad joke"
+            let message = FreeToken.Message(role: .user, content: originalContent)
+
+            await FreeToken.shared.createMessageThread { messageThread in
+                let threadId = messageThread.id
+
+                await FreeToken.shared.addMessageToThread(id: threadId, message: message) { addedMessage in
+                    // Run with additional context - this should be injected but not persisted
+                    await FreeToken.shared.runMessageThread(
+                        id: threadId,
+                        runLocation: .localRun,
+                        additionalContext: additionalContext,
+                        success: { responseMessage in
+                            // Retrieve the thread again
+                            await FreeToken.shared.getMessageThread(id: threadId) { retrievedThread in
+                                let userMessages = retrievedThread.messages.filter { $0.role == .user }
+
+                                XCTAssertFalse(userMessages.isEmpty, "Should have at least one user message")
+
+                                if let lastUserMessage = userMessages.last {
+                                    // The message should NOT contain the additional context
+                                    XCTAssertFalse(
+                                        lastUserMessage.content.contains(additionalContext),
+                                        "User message should not contain injected additional context"
+                                    )
+
+                                    // Should also not contain date/time
+                                    XCTAssertFalse(
+                                        lastUserMessage.content.contains("Current Date & Time:"),
+                                        "User message should not contain injected date/time"
+                                    )
+
+                                    // Original content should be unchanged
+                                    XCTAssertEqual(
+                                        lastUserMessage.content,
+                                        originalContent,
+                                        "User message content should remain unchanged"
+                                    )
+
+                                    print("✅ Test passed: Additional context not persisted")
+                                    print("✅ Original: '\(lastUserMessage.content)'")
+                                    print("✅ Response likely contains dad joke: '\(responseMessage.content)'")
+                                }
+
+                                expectation.fulfill()
+                            } error: { error in
+                                XCTFail("Failed to retrieve message thread: \(error.message)")
+                                expectation.fulfill()
+                            }
+                        },
+                        error: { error in
+                            XCTFail("Failed to run message thread: \(error.message)")
+                            expectation.fulfill()
+                        }
+                    )
+                } error: { error in
+                    XCTFail("Failed to add message to thread: \(error.message)")
+                    expectation.fulfill()
+                }
+            } error: { error in
+                XCTFail("Failed to create message thread: \(error.message)")
+                expectation.fulfill()
+            }
+        }
+
+        wait(for: [expectation], timeout: 60.0)
+    }
+
 }
