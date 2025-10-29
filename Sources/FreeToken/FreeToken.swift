@@ -818,7 +818,11 @@ public class FreeToken: @unchecked Sendable {
                 
                 do {
                     if response.cloudOnly == false {
-                        try self.aiModelsManager.addManager(modelConfig: response, clientVersion: self.clientVersion, isDefault: false)
+                        let modelManager = self.aiModelsManager.getManager(for: aiModel.code)
+                        
+                        if modelManager == nil {
+                            _ = try self.aiModelsManager.addManager(modelConfig: response, clientVersion: self.clientVersion, isDefault: false)
+                        }
                     }
                 } catch {
                     self.logger(error.localizedDescription, .warning)

@@ -1330,13 +1330,15 @@ extension FreeToken {
         let topK: Int?
         let topP: Float?
         let temperature: Float?
-        
-        public init(maxGenerationTokens: Int? = nil, contentWindowSize: Int? = nil, topK: Int? = nil, topP: Float? = nil, temperature: Float? = nil) {
+        let disableThinking: Bool?
+
+        public init(maxGenerationTokens: Int? = nil, contentWindowSize: Int? = nil, topK: Int? = nil, topP: Float? = nil, temperature: Float? = nil, disableThinking: Bool? = nil) {
             self.maxGenerationTokens = maxGenerationTokens
             self.contextWindowSize = contentWindowSize
             self.topK = topK
             self.topP = topP
             self.temperature = temperature
+            self.disableThinking = disableThinking
         }
     }
     

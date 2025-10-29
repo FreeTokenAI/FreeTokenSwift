@@ -83,13 +83,13 @@ extension FreeToken {
             var messages: [Message]
             var lastRunAt: Date? = nil
 
-            init(messages: [Message], modelPath: String, modelRepoName: String, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String) throws {
+            init(messages: [Message], modelPath: String, modelRepoName: String, config: AIModelConfiguration, deviceManager: DeviceManager, queue: AITaskQueue, sessionsManager: AISessionsManager, sessionID: String, disableThinking: Bool = false) throws {
                 self.messages = messages
                 self.config = config
                 self.deviceManager = deviceManager
                 self.sessionsManager = sessionsManager
                 self.sessionID = sessionID
-                
+
                 let options = LlamaInitOptions(
                     contextSize: config.nCTX,
                     maxSequences: 1,  // Default to 4 parallel sequences
@@ -111,8 +111,8 @@ extension FreeToken {
                     batchSize: config.batchSize,
                     threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
                 )
-                
-                self.llama = try LlamaManager(modelPath: modelPath, options: options, repoName: modelRepoName)
+
+                self.llama = try LlamaManager(modelPath: modelPath, options: options, repoName: modelRepoName, disableThinking: disableThinking)
             }
 
             private func middleOutMessages(messages: [Message], tokenCounter: @Sendable (_ messages: [Message]) async throws -> Int) async throws -> [Message] {
@@ -410,19 +410,20 @@ extension FreeToken {
                 guard await getDownloadState() == .downloaded else {
                     throw FreeTokenError.aiModelNotDownloaded
                 }
-                
+
                 if deviceManager.isHighlanderMode {
                     _ = await self.removeAllSessions(but: id)
                 }
-                
+
                 if modelPath == nil {
                     try await getModelDetails()
                 }
                 let modelPath = self.modelPath!
-                
+
                 // Convert RunConfig to AIModelConfiguration if provided
                 var config: AIModelConfiguration
-                
+                var disableThinking: Bool = false
+
                 if let runConfig = runConfig {
                     // Update the model config with runConfig values
                     config = self.config
@@ -431,17 +432,18 @@ extension FreeToken {
                     config.maxTokenCount = runConfig.maxGenerationTokens ?? self.config.maxTokenCount
                     config.nCTX = runConfig.contextWindowSize ?? self.config.nCTX
                     config.topK = runConfig.topK ?? self.config.topK
+                    disableThinking = runConfig.disableThinking ?? false
                 } else {
                     // Use default config
                     config = self.config
                 }
-                
+
                 // Stable date for this session id
                 let preparedMessages = try MessagePrep(
                     messages: messages,
                     promptTemplateConfig: self.promptTemplateConfig
                 ).prepareMessages()
-                    
+
                 // Existing session check
                 if let existingSession = self.sessions[id], existingSession.config.equals(config) {
                     FreeToken.shared.logger("[StateManager] Existing session found for \(id), calling catchUpFor", .debug)
@@ -449,17 +451,17 @@ extension FreeToken {
                     try await self.catchUpFor(id: id, allThreadMessages: messages)
                     return
                 }
-                
+
                 FreeToken.shared.logger("[StateManager] After MessagePrep: \(preparedMessages.count) messages", .debug)
                 for (i, msg) in preparedMessages.enumerated() {
                     FreeToken.shared.logger("[StateManager] Prepared msg[\(i)]: role=\(msg.role), contentPrefix=\(String(msg.content.prefix(100)))", .debug)
                 }
-                
+
                 // If there will not be enough GPU memory, unload all other sessions
                 if !deviceHasEnoughMemoryForNewSession() {
                     FreeToken.shared.logger("🟡 Not enough memory for new session, unloading all other sessions before loading new one", .warning)
                     _ = await self.removeAllSessions()
-                    
+
                     // Wait 100ms and try again - if still not enough memory, fail
                     try await Task.sleep(nanoseconds: 100 * 1_000_000)
                     if !deviceHasEnoughMemoryForNewSession() {
@@ -467,12 +469,12 @@ extension FreeToken {
                         throw FreeTokenError.aiRunFailed(message: "Insufficient memory for new AI session")
                     }
                 }
-                
-                let session = try AISessionManager(messages: preparedMessages, modelPath: modelPath, modelRepoName: modelTypes.llamaCpp.repo, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id)
+
+                let session = try AISessionManager(messages: preparedMessages, modelPath: modelPath, modelRepoName: modelTypes.llamaCpp.repo, config: config, deviceManager: self.deviceManager, queue: self.queue, sessionsManager: self, sessionID: id, disableThinking: disableThinking)
                 if isTemporary == false {
                     self.sessions[id] = session
                 }
-                
+
                 FreeToken.shared.logger("✅ \(isTemporary ? "Temporary " : "")Session loaded and pre-warmed for ID: \(id)", .info)
             }
             

@@ -73,10 +73,11 @@ extension FreeToken {
                 throw FreeTokenError.cannotInitializeSecondDefaultAIModel
             }
             
-            let modelAlreadyExists = aiModelManagers.contains(where: { $0.modelCode == modelConfig.code })
+            let model = aiModelManagers.first(where: { $0.modelCode == modelConfig.code })
             
-            guard !modelAlreadyExists else {
-                throw FreeTokenError.modelManagerAlreadyInitialized(code: modelConfig.code)
+            guard model == nil else {
+//                throw FreeTokenError.modelManagerAlreadyInitialized(code: modelConfig.code)
+                return model!.aiModelManager
             }
             
             let initOptions = AIModelInitializeOptions(
