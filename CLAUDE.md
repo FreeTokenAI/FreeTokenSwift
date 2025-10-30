@@ -270,35 +270,13 @@ let response = try await FreeToken.shared.localChat(
     modelCode: nil,
     messages: messages,
     runIdentifier: "chat-session-1",  // Optional session ID
-    aiRunConfig: AIRunConfig(temperature: 0.7, disableThinking: false),
+    aiRunConfig: AIRunConfig(temperature: 0.7),
     outputStream: { token in
         print(token, terminator: "")
     }
 )
 
 print("Assistant: \(response.content)")
-```
-
-**Disabling Thinking for Faster Responses:**
-
-```swift
-// For simple queries, disable thinking to get faster, more direct answers
-let quickConfig = AIRunConfig(
-    temperature: 0.7,
-    disableThinking: true  // Skip internal reasoning for speed
-)
-
-let quickResponse = try await FreeToken.shared.localChat(
-    modelCode: nil,
-    messages: [
-        FreeToken.Message(role: .user, content: "What's 2+2?")
-    ],
-    runIdentifier: "quick-session",
-    aiRunConfig: quickConfig,
-    outputStream: { token in
-        print(token, terminator: "")
-    }
-)
 ```
 
 ---
@@ -936,29 +914,7 @@ public struct AIRunConfig {
     let repeatPenalty: Float?     // Penalty for repetition
     let systemPrompt: String?     // Override system prompt
     let seed: Int?                // For reproducible outputs
-    let disableThinking: Bool?    // Disable model thinking by appending <think></think> to assistant messages
 }
-```
-
-**Note about `disableThinking`**: When set to `true`, the SDK automatically appends `<think></think>` to all assistant role messages during template generation. This instructs compatible models to skip their internal reasoning process and provide direct answers. This feature is useful for:
-- Faster response times when detailed reasoning isn't needed
-- Reducing token usage on models with verbose thinking patterns
-- Getting concise answers for simple queries
-
-Example:
-```swift
-let config = AIRunConfig(
-    temperature: 0.7,
-    disableThinking: true  // Skip model thinking for faster responses
-)
-
-await FreeToken.shared.runMessageThread(
-    id: threadId,
-    aiRunConfig: config,
-    success: { response in
-        print("Direct answer: \(response.content)")
-    }
-)
 ```
 
 ### TokenUsage
@@ -1011,7 +967,6 @@ Common errors from `FreeTokenError`:
 5. **Check device capabilities**: Use `isModelAvailableForDevice()` before downloading
 6. **Handle cancellation**: Support user cancellation via throwing in stream closures
 7. **Monitor status**: Use `chatStatusStream` for UX feedback
-8. **Control thinking**: Use `disableThinking: true` in `AIRunConfig` for simple queries where speed is more important than detailed reasoning, or when you need concise, direct answers
 
 ---
 

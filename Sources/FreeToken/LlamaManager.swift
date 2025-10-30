@@ -20,46 +20,42 @@ extension FreeToken {
         private let modelFileName: String
         private let stateBaseURL: URL
         private let sequenceId: Int32 = 0 // single sequence
-
+        
         // Token position tracking (simple and clean)
         private var n_keep: Int32 = 0      // Tokens to preserve during sliding (calculated from first message)
         private var messages: [Message] = [] // Keep messages for reference only
         private var templatedTokens: [Int32] = [] // Current templated tokens in KV cache
-
+        
         private var isUnloaded: Bool = false
-
+        
         // Sliding configuration
         private let slidingRatio: Float = 0.5  // Remove 50% of available tokens when sliding
-
+        
         private var prewarmedTokens: [Int32] = []
         private var isPrewarmed: Bool = false
         private var runID: String = ""
-
-        // Thinking control
-        private let disableThinking: Bool
 
         @inline(__always)
         private func ensureActive(_ fn: StaticString = #function) throws {
             if isUnloaded { throw FreeTokenError.aiRunFailed(message: "LlamaManager was unloaded; call site: \(fn)") }
         }
         
-        init(modelPath: String, options: LlamaInitOptions, repoName: String, disableThinking: Bool = false) throws {
+        init(modelPath: String, options: LlamaInitOptions, repoName: String) throws {
             // Load model separately
             let model = try FreeToken.LlamaModel(path: modelPath)
             // Use static factory to avoid sendability issues
             self.session = try LlamaSession(model: model, config: options)
             self.options = options
             self.modelFileName = URL(fileURLWithPath: modelPath).lastPathComponent
-            self.disableThinking = disableThinking
-
+            
             #if os(iOS)
             self.stateBaseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
             #else
             self.stateBaseURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
             #endif
-
-            FreeTokenLogger.shared.log("LlamaManager initialized with contextSize=\(options.contextSize), disableThinking=\(disableThinking)", level: .info)
+            
+            FreeTokenLogger.shared.log("LlamaManager initialized with contextSize=\(options.contextSize)", level: .info)
         }
         
         // Public read-only access to messages (without token tracking)
@@ -165,49 +161,23 @@ extension FreeToken {
         }
         
         // MARK: - Simple Templating Functions
-
+        
         /// Template messages and return tokens - no state management needed
         private func templateMessages(_ messages: [Message]) async throws -> [Int32] {
-            var compact = messages.map { message -> (String, String) in
-                return (message.role.rawValue, message.content)
-            }
-
-            // If disableThinking is true, append <think></think> to the last assistant message
-            if disableThinking {
-                if let lastAssistantIndex = compact.lastIndex(where: { $0.0 == "assistant" }) {
-                    compact[lastAssistantIndex].1 += "<think>\n \n</think>"
-                }
-            }
-
+            let compact = messages.map { ($0.role.rawValue, $0.content) }
             let tokens = try await session.applyChatTemplate(
                 messages: compact,
                 includeAssistantPrefix: false
             )
             return tokens.map { Int32($0) }
         }
-
+        
         /// Template messages with assistant slot for generation
         private func templateWithAssistantSlot(_ messages: [Message]) async throws -> [Int32] {
-            var compact = messages.map { message -> (String, String) in
-                return (message.role.rawValue, message.content)
-            }
-
-            // If disableThinking is true, append <think></think> to the last assistant message
-            // to signal that thinking has already been completed
-            if disableThinking {
-                // Find the last assistant message index
-                if let lastAssistantIndex = compact.lastIndex(where: { $0.0 == "assistant" }) {
-                    // Append <think></think> to the last assistant message
-                    compact[lastAssistantIndex].1 += "<think>\n \n</think>"
-                } else {
-                    // No assistant messages yet, add one with <think></think>
-                    compact.append(("assistant", "<think>\n \n</think>"))
-                }
-            }
-
+            let compact = messages.map { ($0.role.rawValue, $0.content) }
             let tokens = try await session.applyChatTemplate(
                 messages: compact,
-                includeAssistantPrefix: disableThinking ? false : true
+                includeAssistantPrefix: true
             )
             return tokens.map { Int32($0) }
         }
