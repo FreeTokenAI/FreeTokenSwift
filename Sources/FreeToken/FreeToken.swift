@@ -2353,7 +2353,7 @@ public class FreeToken: @unchecked Sendable {
             let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
             
             _ = try await aiModelManager?.loadSession(for: runIdentifier, runConfig: runConfig)
-            _ = try await aiModelManager?.prewarmForId(id: runIdentifier, systemMessage: systemMessage)
+            _ = try await aiModelManager?.prewarmForId(id: runIdentifier, systemMessage: systemMessage, runConfig: runConfig)
             
             await successCallback?()
         } catch {

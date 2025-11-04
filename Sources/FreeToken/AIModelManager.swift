@@ -356,14 +356,14 @@ extension FreeToken {
             }
             
             // Goal: Load a session and have it memory resident for quick future execution.
-            func prewarmForID(id: String, systemMessage: Message) async throws {
+            func prewarmForID(id: String, systemMessage: Message, runConfig: AIRunConfig? = nil) async throws {
                 FreeToken.shared.logger("😎 Prewarming AI model ID: \(id)...", .info)
                 
                 if deviceManager.isHighlanderMode {
                     await self.removeAllSessions(but: id)
                 }
                 
-                try await loadSession(for: id)
+                try await loadSession(for: id, runConfig: runConfig)
                 
                 var messages = [systemMessage]
                 
@@ -448,6 +448,11 @@ extension FreeToken {
                     // Session already exists, no need to load again
                     try await self.catchUpFor(id: id, allThreadMessages: messages)
                     return
+                } else {
+                    let existingSession = self.sessions[id]
+                    let configEquals = existingSession?.config.equals(config)
+                    
+                    FreeToken.shared.logger("[StateManager] Could not use existing session for \(id). Session exists: \(existingSession != nil), config remained the same: \(configEquals)", .info)
                 }
                 
                 FreeToken.shared.logger("[StateManager] After MessagePrep: \(preparedMessages.count) messages", .debug)
@@ -692,7 +697,7 @@ extension FreeToken {
                 if self.deviceManager.isHighlanderMode {
                     await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
                 }
-                try await self.stateManager.loadSession(for: id, with: messages, isTemporary: false)
+                try await self.stateManager.loadSession(for: id, with: messages, isTemporary: false, runConfig: runConfig)
             }
         }
         
@@ -718,12 +723,12 @@ extension FreeToken {
             await self.stateManager.removeAllSessions()
         }
         
-        func prewarmForId(id: String, systemMessage: Message) async throws {
+        func prewarmForId(id: String, systemMessage: Message, runConfig: AIRunConfig? = nil) async throws {
             try await AITaskQueue.shared.enqueue(name: "prewarmForId(\(id))", runLocation: .localRun) {
                 if self.deviceManager.isHighlanderMode {
                     await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
                 }
-                try await self.stateManager.prewarmForID(id: id, systemMessage: systemMessage)
+                try await self.stateManager.prewarmForID(id: id, systemMessage: systemMessage, runConfig: runConfig)
             }
         }
         
