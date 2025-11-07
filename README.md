@@ -105,180 +105,192 @@ Note: The `success` callback returns a `DownloadedState` enum (for example `.dow
 
 ---
 
-### 4. Message Threading
+### 4. AI Sessions
 
-Create, manage, and interact with threaded conversations for chat or context-based AI.
+FreeToken provides session-based APIs for managing AI interactions. Sessions handle model loading, memory management, and provide cleaner state management compared to older stateless APIs.
 
-#### Create a Thread
+#### Chat Sessions
+
+Chat sessions manage persistent conversation threads with automatic model preloading and state management.
+
+**Basic Usage:**
 
 ```swift
-await client.createMessageThread { messageThread in
-    // Save messageThread.id for future use
-    // Persist the ID as this is the only time the server returns it
-} error: { error in
-    print("Failed to create thread: \(error)")
-}
+// Get a chat session (automatically determines local vs cloud based on device capabilities)
+let chatSession = try await client.getChatSession()
+
+// Create a new thread
+let thread = try await chatSession.createMessageThread()
+// Save thread.id for future use
+
+// Add a user message
+let userMessage = Message(role: .user, content: "What is a supernova?")
+try await chatSession.addMessage(message: userMessage)
+
+// Generate AI response
+let response = try await chatSession.generateNewMessage()
+print("AI: \(response.content)")
+
+// Free memory when done
+await chatSession.unload()
 ```
 
-Note: Make sure to save the `messageThread.id` for future operations like adding messages or running the thread. This will be the *ONLY* time you are provided this ID, so store it securely in your app's state or database.
-
-#### Add a Message to a Message Thread
+**With Streaming and Status Updates:**
 
 ```swift
-let message = Message(role: .user, content: "What is a supernova?")
+let chatSession = try await client.getChatSession()
+let thread = try await chatSession.createMessageThread()
 
-await client.addMessageToThread(
-    id: "thread-id",
-    message: message,
-    success: { message in
-        print("Message added: \(message.content)")
-    },
-    error: { error in
-        print("Failed to add message: \(error)")
-    }
-)
-```
+let userMessage = Message(role: .user, content: "Explain black holes")
+try await chatSession.addMessage(message: userMessage)
 
-#### Run a Message Thread
-
-`runMessageThread` will automatically use the best available AI (local or cloud) based on your configuration and device capabilities.  You can optionally override this by specifying `runLocation: .cloudRun` or `.localRun` as a parameter to this method.
-
-```swift
-await client.runMessageThread(
-    id: "thread-id",
-    success: { response in
-        print("AI response: \(response.content)")
-    },
-    error: { error in
-        print("Failed to run thread: \(error)")
-    }
-)
-```
-
-#### Run a Message Thread with Status Updates
-
-You can monitor the progress of message thread execution using the `chatStatusStream` callback:
-
-```swift
-await client.runMessageThread(
-    id: "thread-id",
+let response = try await chatSession.generateNewMessage(
     chatStatusStream: { token, status in
         switch status {
         case .starting:
-            print("Starting AI operation...")
+            print("Starting...")
         case .sending_to_local_ai:
-            print("Sending to local AI...")
+            print("Using local AI")
         case .sending_to_cloud_ai:
-            print("Sending to cloud AI...")
+            print("Using cloud AI")
+        case .cloud_fallback:
+            print("Falling back to cloud")
         case .streaming_tokens:
             if let token = token {
                 print(token, terminator: "")
             }
         case .evaluating_tool_calls:
-            print("Evaluating tool calls...")
+            print("\nEvaluating tools...")
         case .new_message_created:
-            print("New message saved to thread")
+            print("\nMessage saved")
         case .stream_ended:
-            print("\nStream completed")
+            print("\nDone!")
         case .failed:
-            print("Operation failed")
+            print("\nFailed")
         }
-    },
-    success: { response in
-        print("\nFinal response: \(response.content)")
-    },
-    error: { error in
-        print("Failed: \(error)")
     }
 )
 ```
 
-Available status cases:
-- `.starting` - Initial status when the operation begins
-- `.sending_to_local_ai` - Request is being sent to local on-device AI
-- `.sending_to_cloud_ai` - Request is being sent to cloud AI  
-- `.streaming_tokens` - AI is actively streaming response tokens (includes token parameter)
-- `.evaluating_tool_calls` - AI is evaluating function/tool calls
-- `.new_message_created` - A new message (AI response or tool result) has been saved to the thread
-- `.stream_ended` - The response stream has completed successfully
-- `.failed` - The operation has failed
-
-#### Delete, Get, and Inspect Threads
-
-Basic thread management operations allow you to delete threads, retrieve threads with messages, and fetch individual messages.
+**Force Cloud or Local:**
 
 ```swift
+// Force cloud-only execution
+let cloudSession = try await client.getChatSession(runLocation: .cloudRun)
+
+// Force local execution (will fail if model not downloaded)
+let localSession = try await client.getChatSession(runLocation: .localRun)
+```
+
+**Resume Existing Thread:**
+
+```swift
+// Pass existing thread ID to resume a conversation
+let chatSession = try await client.getChatSession(messageThreadID: "existing-thread-id")
+
+// Get conversation history
+let messages = try await chatSession.getMessages()
+for message in messages {
+    print("\(message.role): \(message.content)")
+}
+
+// Add new message and continue
+let userMsg = Message(role: .user, content: "Tell me more")
+try await chatSession.addMessage(message: userMsg)
+let response = try await chatSession.generateNewMessage()
+```
+
+**In-Memory Chat Sessions:**
+
+For temporary conversations without cloud persistence:
+
+```swift
+// Memory-only session (no cloud storage)
+let memorySession = try await client.getMemoryChatSession()
+
+// Add messages (stored in memory only)
+try await memorySession.addMessage(message: Message(role: .user, content: "Hello"))
+let response = try await memorySession.generateNewMessage()
+
+// Messages are lost when session is deallocated
+```
+
+#### Completion Sessions
+
+Completion sessions provide stateless text generation without persistent threads. Ideal for one-off completions.
+
+**Basic Usage:**
+
+```swift
+// Get a completion session
+let completionSession = try await client.getCompletionSession()
+
+// Generate completion
+let completion = try await completionSession.generateCompletion(
+    from: "Write a haiku about coding"
+)
+print(completion.response)
+
+// Free memory when done
+await completionSession.unload()
+```
+
+**With Streaming:**
+
+```swift
+let completionSession = try await client.getCompletionSession()
+
+let completion = try await completionSession.generateCompletion(
+    from: "Explain quantum computing",
+    chatStatusStream: { token, status in
+        switch status {
+        case .streaming_tokens:
+            if let token = token {
+                print(token, terminator: "")
+            }
+        case .cloud_fallback:
+            print("\nUsing cloud AI...")
+        default:
+            break
+        }
+    }
+)
+```
+
+**Force Cloud or Local:**
+
+```swift
+// Force cloud execution
+let cloudCompletion = try await client.getCompletionSession(runLocation: .cloudRun)
+
+// Force local execution
+let localCompletion = try await client.getCompletionSession(runLocation: .localRun)
+```
+
+#### Thread Management (Legacy API)
+
+For backward compatibility, direct thread management APIs are still available:
+
+```swift
+// Delete thread
 client.deleteMessageThread(id: "thread-id", success: { id in
-    print("Deleted thread: \(id)")
-}, error: { error in
-    print("Failed to delete thread: \(error)")
-})
+    print("Deleted: \(id)")
+}, error: { _ in })
 
+// Get thread with messages
 await client.getMessageThread(id: "thread-id", success: { thread in
-    print("Loaded thread with \(thread.messages.count) messages")
-}, error: { error in
-    print("Failed to load thread: \(error)")
-})
+    print("Messages: \(thread.messages.count)")
+}, error: { _ in })
 
+// Get specific message
 await client.getMessage(id: "message-id", success: { message in
-    print("Message: \(message.content)")
-}, error: { error in
-    print("Failed to get message: \(error)")
-})
+    print("Content: \(message.content)")
+}, error: { _ in })
 ```
 
 ---
 
-### 5. AI Completions
-
-Generate text completions using local or cloud AI.  
-`generateCompletion` will automatically select the best execution path based on device capability and configuration.
-
-#### General Completion (Auto Local/Cloud)
-
-```swift
-await client.generateCompletion(
-    prompt: "What is a nova?",
-    success: { completion in
-        print("AI says: \(completion.completion)")
-    },
-    error: { error in
-        print("Completion failed: \(error)")
-    }
-)
-```
-
-#### Force Cloud or Local Completion
-
-```swift
-client.generateCloudCompletion(
-    prompt: "Tell me a joke.",
-    modelCode: "large-model",
-    maxTokens: 50,
-    success: { completion in
-        print("Cloud AI: \(completion.completion)")
-    },
-    error: { error in
-        print("Cloud completion failed: \(error)")
-    }
-)
-
-await client.generateLocalCompletion(
-    prompt: "Summarize: The sun is a star.",
-    maxTokens: 20,
-    success: { completion in
-        print("Local AI: \(completion.completion)")
-    },
-    error: { error in
-        print("Local completion failed: \(error)")
-    }
-)
-```
-
-
----
-
-### 6. Document Management
+### 5. Document Management
 
 Store, retrieve, and search documents for use as AI context (RAG, knowledge base, etc.).
 
@@ -357,7 +369,7 @@ await client.searchDocuments(
 
 ---
 
-### 7. Private Document Stores
+### 6. Private Document Stores
 
 Private Document Stores provide secure, isolated document storage with server-generated IDs for enhanced security. Unlike public documents, private stores are only accessible by their unique ID and provide complete isolation between different contexts.
 
@@ -402,7 +414,7 @@ Private document stores seamlessly integrate with the AI system for Retrieval-Au
 
 ---
 
-### 8. Encryption
+### 7. Encryption
 
 Enable client-side encryption/decryption for sensitive data. When enabled, all messages and documents will be encrypted before sending to the server and decrypted when received.
 ```swift
@@ -457,7 +469,7 @@ Note: When you enable custom encryption the SDK will call your closures for encr
 
 ---
 
-### 9. Web Search
+### 8. Web Search
 
 Perform web searches and retrieve results for use in AI or user-facing features.  This is the same method that is used by the AI to search the web for relevant information when generating responses.
 
@@ -480,7 +492,7 @@ Note: You must setup the web search with an API key in the [FreeToken console](h
 
 ---
 
-### 10. Tool Definitions
+### 9. Tool Definitions
 
 Register custom tool definitions for function calling:
 
@@ -500,34 +512,29 @@ await client.removeAllToolDefinitions()
 
 ---
 
-### 11. Model and Cache Management
+### 10. Model and Cache Management
 
-Reset caches or manage model memory.
+Reset caches and manage model storage. Model loading/unloading is now handled automatically by sessions (see section 4).
 
 ```swift
-try await client.resetModelCaches() // Clears local AI model & embedding caches and removes persisted sessions
+// Clear all model caches and persisted sessions
+try await client.resetModelCaches()
 
-try await client.resetEmbeddingModelCache() // Clears only the embedding model cache
+// Clear only the embedding model cache
+try await client.resetEmbeddingModelCache()
 
-await client.deleteAIModelCache(modelCode: "model-name") // Delete specific model cache
-await client.deleteAIModelCache() // Delete all model caches
+// Delete specific model cache
+await client.deleteAIModelCache(modelCode: "model-name")
 
-await client.loadModel(
-    modelCode: "model-name",
-    success: { loaded in
-        print("Model load state: \(loaded)")
-    },
-    error: { error in
-        print("Failed to load model: \(error)")
-    }
-)
-
-await client.unloadModel(modelCode: "model-name") // Unload a specific model from memory
+// Delete all model caches
+await client.deleteAIModelCache()
 ```
+
+**Note:** Model loading and unloading is now managed through session objects. Use `session.load()` and `session.unload()` on `ChatSession` or `CompletionSession` instances.
 
 ---
 
-### 12. Stopping Local Generation
+### 11. Stopping Local Generation
 
 Stop any running local AI generation. Useful when your app goes into the background or you want to cancel a long-running operation.
 
@@ -537,7 +544,7 @@ await client.stopLocalGeneration()
 
 ---
 
-### 13. Additional APIs
+### 12. Additional APIs
 
 #### List Available AI Models
 
@@ -609,17 +616,15 @@ do {
 
 #### Count Tokens
 
+Use a chat session to count tokens:
+
 ```swift
-do {
-    let tokenCount = try await client.countTokens(
-        text: "Your text to count tokens",
-        modelCode: "model-code" // optional
-    )
-    print("Token count: \(tokenCount)")
-} catch {
-    print("Failed to count tokens: \(error)")
-}
+let chatSession = try await client.getChatSession()
+let tokenCount = try await chatSession.countTokens(for: "Your text to count tokens")
+print("Token count: \(tokenCount)")
 ```
+
+**Note:** Token counting is now performed through session objects for better model-specific accuracy.
 
 #### Local Chat (Advanced)
 
