@@ -26,7 +26,7 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    let clientVersion = "1.0.0"
+    let clientVersion = "1.1.0"
 #if os(iOS)
     let clientType = "iOS"
 #elseif os(macOS)
