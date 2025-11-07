@@ -8,6 +8,21 @@ import Foundation
 
 extension FreeToken {
     
+    class MessagePreparer: @unchecked Sendable {
+        let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig
+        
+        init(promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig) {
+            self.promptTemplateConfig = promptTemplateConfig
+        }
+        
+        func prepareMessages(_ messages: [Message]) throws -> [Message] {
+            let prep = MessagePrep(messages: messages, promptTemplateConfig: promptTemplateConfig)
+            return try prep.prepareMessages()
+        }
+        
+    }
+    
+    
     class MessagePrep {
         private var messages: [Message]
         private let promptTemplateConfig: Codings.AiModelConfigResponse.PromptTemplateConfig

@@ -50,12 +50,12 @@ extension FreeToken {
         internal func process(
             externalToolCallHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil,
             cloudToolCallHandler: @escaping @Sendable ([ToolCall]) async -> String,
-            success successCallback: @escaping @Sendable (_ result: String) async -> Void
+            success successCallback: @escaping @Sendable (_ result: String) async throws -> Void
         ) async throws {
             try parseToolCalls()
 
             if toolCalls.isEmpty {
-                await successCallback("")
+                try await successCallback("")
                 return
             }
             
@@ -90,10 +90,10 @@ extension FreeToken {
 
             // If all lists are empty, notify immediately (avoid hanging)
             if cloudToolCalls.isEmpty && remainingToolCalls.isEmpty && internalCalls.isEmpty {
-                await successCallback("")
+                try await successCallback("")
                 return
             } else {
-                await successCallback(results)
+                try await successCallback(results)
             }
         }
         

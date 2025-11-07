@@ -34,7 +34,6 @@ extension FreeToken {
             case mlx
         }
         
-        
         // Check if any message contains image attachments
         private func hasImageAttachments(_ messages: [Message]) -> Bool {
             return messages.contains { message in
@@ -231,7 +230,7 @@ extension FreeToken {
             }
             
             func reset() async {
-                await self.llama.resetSession()
+                try? await self.llama.resetSession()
                 self.messages = []
             }
             
@@ -326,12 +325,12 @@ extension FreeToken {
                 await removeAllSessions()
             }
             
-            func loadSessionFromFileByID(id: String, messages: [Message]) async throws {
+            func loadSessionFromFileByID(id: String, messages: [Message], runConfig: AIRunConfig? = nil) async throws {
                 if deviceManager.isHighlanderMode {
                     await self.removeAllSessions(but: id)
                 }
                 
-                try await loadSession(for: id)
+                try await loadSession(for: id, runConfig: runConfig)
                 
                 let preparedMessages = try MessagePrep(
                     messages: messages,
@@ -452,7 +451,7 @@ extension FreeToken {
                     let existingSession = self.sessions[id]
                     let configEquals = existingSession?.config.equals(config)
                     
-                    FreeToken.shared.logger("[StateManager] Could not use existing session for \(id). Session exists: \(existingSession != nil), config remained the same: \(configEquals)", .info)
+                    FreeToken.shared.logger("[StateManager] Could not use existing session for \(id). Session exists: \(existingSession != nil), config remained the same: \(String(describing: configEquals))", .info)
                 }
                 
                 FreeToken.shared.logger("[StateManager] After MessagePrep: \(preparedMessages.count) messages", .debug)
@@ -701,12 +700,12 @@ extension FreeToken {
             }
         }
         
-        func loadSessionFromDiskByID(id: String, messages: [Message]) async throws {
+        func loadSessionFromDiskByID(id: String, messages: [Message], runConfig: AIRunConfig? = nil) async throws {
             try await AITaskQueue.shared.enqueue(name: "loadSessionFromDiskByID(\(id))", runLocation: .localRun) {
                 if self.deviceManager.isHighlanderMode {
                     await AIModelsManager.shared.unloadAllModels(except: self.modelCode)
                 }
-                try await self.stateManager.loadSessionFromFileByID(id: id, messages: messages)
+                try await self.stateManager.loadSessionFromFileByID(id: id, messages: messages, runConfig: runConfig)
             }
         }
         

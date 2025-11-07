@@ -22,8 +22,7 @@ extension FreeToken {
         private let sequenceId: Int32 = 0 // single sequence
         
         // Token position tracking (simple and clean)
-        private var n_keep: Int32 = 0      // Tokens to preserve during sliding (calculated from first message)
-        private var messages: [Message] = [] // Keep messages for reference only
+        private var n_keep: Int32 = 0 // Tokens to preserve during sliding (calculated from first message)
         private var templatedTokens: [Int32] = [] // Current templated tokens in KV cache
         
         private var isUnloaded: Bool = false
@@ -31,7 +30,6 @@ extension FreeToken {
         // Sliding configuration
         private let slidingRatio: Float = 0.5  // Remove 50% of available tokens when sliding
         
-        private var prewarmedTokens: [Int32] = []
         private var isPrewarmed: Bool = false
         private var runID: String = ""
 
@@ -58,11 +56,15 @@ extension FreeToken {
             FreeTokenLogger.shared.log("LlamaManager initialized with contextSize=\(options.contextSize)", level: .info)
         }
         
-        // Public read-only access to messages (without token tracking)
-        var currentMessages: [Message] {
-            return messages
+        var templatedTokenCount: Int {
+            return templatedTokens.count
         }
         
+        // Public read-only access to messages (without token tracking)
+//        var currentMessages: [Message] {
+//            return messages
+//        }
+//        
         // MARK: - Prewarm System Message
         
         func generatePrewarmBuffer(_ systemMessage: Message) async throws {
@@ -96,11 +98,12 @@ extension FreeToken {
                 FreeToken.shared.logger("Prefix template generated: \(prefix)", .debug)
                 
                 let tokens = try await session.tokenize(prefix, addBos: false, special: true) // Tokenize with special token strings, and don't add BOS as this was already added in the template.
-                prewarmedTokens = tokens.map { Int32($0) }
+                let prewarmedTokens = tokens.map { Int32($0) }
                 
                 FreeToken.shared.logger("Evaluating \(tokens.count) tokens for prewarm", .debug)
-                await self.resetSession()
+                try await self.resetSession()
                 _ = try await session.evalOptimized(tokens: tokens, feedToSampler: false, needsLogits: false) // Evaluate it into the KV cache
+                self.templatedTokens = prewarmedTokens
                 
                 // Write session to disk
                 try await session.writeStateToFile(fileName: stateFileName, basePath: stateBaseURL, tokens: prewarmedTokens)
@@ -116,7 +119,7 @@ extension FreeToken {
             try ensureActive()
             
             if self.runID != runID {
-                _ = await self.resetSession()
+                _ = try await self.resetSession()
                 self.runID = runID
             }
             
@@ -129,9 +132,10 @@ extension FreeToken {
             let stateFileName = "prewarm_\(systemMessageSHA).bin"
             
             do {
-                _ = await resetSession()
+                _ = try await resetSession()
                 let result = try await session.loadStateFromFile(fileName: stateFileName, basePath: stateBaseURL)
-                self.prewarmedTokens = result.tokens.map { Int32($0) }
+                let prewarmedTokens = result.tokens.map { Int32($0) }
+                self.templatedTokens = prewarmedTokens
                 self.isPrewarmed = true
                 self.n_keep = Int32(prewarmedTokens.count)
                 FreeToken.shared.logger("🏃‍♂️ Loaded prewarm buffer with \(prewarmedTokens.count) tokens", .info)
@@ -141,10 +145,12 @@ extension FreeToken {
         }
         
         func saveSession(fileName: String) async throws {
+            try ensureActive()
             try await session.writeStateToFile(fileName: fileName, basePath: stateBaseURL, tokens: templatedTokens)
         }
         
         func loadSession(fileName: String, systemMessage: Message, runID: String) async throws {
+            try ensureActive()
             let fullPath = stateBaseURL.appendingPathComponent(session.configSHA256).appendingPathComponent(fileName)
             
             if !FileManager.default.fileExists(atPath: fullPath.path) {
@@ -153,17 +159,18 @@ extension FreeToken {
             }
             
             self.runID = runID
-            _ = await resetSession()
+            _ = try await resetSession()
             let result = try await session.loadStateFromFile(fileName: fileName, basePath: stateBaseURL)
             self.templatedTokens = result.tokens.map { Int32($0) }
             let tokenCount = try await templateMessages([systemMessage]).count
-            self.n_keep = Int32(tokenCount)
+            self.n_keep = Int32(tokenCount) // n_keep prevents system message from being rolled out the context window.
         }
         
         // MARK: - Simple Templating Functions
         
         /// Template messages and return tokens - no state management needed
         private func templateMessages(_ messages: [Message]) async throws -> [Int32] {
+            try ensureActive()
             let compact = messages.map { ($0.role.rawValue, $0.content) }
             let tokens = try await session.applyChatTemplate(
                 messages: compact,
@@ -174,6 +181,7 @@ extension FreeToken {
         
         /// Template messages with assistant slot for generation
         private func templateWithAssistantSlot(_ messages: [Message]) async throws -> [Int32] {
+            try ensureActive()
             let compact = messages.map { ($0.role.rawValue, $0.content) }
             let tokens = try await session.applyChatTemplate(
                 messages: compact,
@@ -189,7 +197,7 @@ extension FreeToken {
             try ensureActive()
             
             if self.runID != runID {
-                _ = await self.resetSession()
+                _ = try await self.resetSession()
                 self.runID = runID
             }
             
@@ -201,82 +209,85 @@ extension FreeToken {
             }
             
             // Fast equality check
-            if messages.count == desired.count && 
-               zip(messages, desired).allSatisfy({ $0.0.role == $0.1.role && $0.0.content == $0.1.content }) {
-                FreeTokenLogger.shared.log("KV_SLIDING: updateContext no-op (identical messages)", level: .info)
-                return
+            let tokens = try await templateMessages(desired)
+            
+            var needsRebuild = false
+            
+            if tokens.count < templatedTokenCount {
+                FreeTokenLogger.shared.log("KV_SLIDING: updateContext requires full rebuild (token count decreased)", level: .warning)
+                needsRebuild = true
+            } else {
+                for templatedIndex in 0..<templatedTokenCount {
+                    if templatedTokens[templatedIndex] != tokens[templatedIndex] {
+                        FreeTokenLogger.shared.log("KV_SLIDING: updateContext requires full rebuild (token divergence at index \(templatedIndex))", level: .warning)
+                        needsRebuild = true
+                        break
+                    }
+                }
             }
             
-            // For simplicity: if messages changed significantly, rebuild
-            let needsRebuild = messages.count > desired.count || 
-                              (messages.count > 0 && desired.count > 0 && messages[0].content != desired[0].content)
+            if !needsRebuild, tokens.count == templatedTokenCount {
+                // No changes needed
+                FreeTokenLogger.shared.log("KV_SLIDING: updateContext - no changes needed", level: .info)
+                return
+            }
             
             if needsRebuild {
                 FreeTokenLogger.shared.log("KV_SLIDING: Full rebuild required - resetting context", level: .warning)
-                await self.resetSession()
+                try await self.resetSession()
             }
             
-            // Check if we're just appending new messages (common case)
-            let messagesToAdd = Array(desired.dropFirst(messages.count))
+            var deltaTokens = [Int32]()
             
-            if messagesToAdd.isEmpty && !needsRebuild {
-                // No changes needed
+            for index in 0..<tokens.count {
+                if index >= templatedTokenCount {
+                    deltaTokens.append(tokens[index])
+                }
+            }
+            
+            if deltaTokens.count == 0 {
+                FreeTokenLogger.shared.log("KV_SLIDING: No new tokens to evaluate after context update", level: .info)
                 return
             }
             
-            // Template all messages
-            let allTokens = try await templateMessages(desired)
+            if needsRebuild {
+                // Reset n_keep to the first message
+                if !desired.isEmpty {
+                    let firstMessageTokens = try await templateMessages([desired[0]])
+                    n_keep = Int32(firstMessageTokens.count)
+                    FreeTokenLogger.shared.log("KV_SLIDING: Calculated n_keep=\(n_keep) from first message", level: .info)
+                } else {
+                    n_keep = 0
+                }
+            }
             
-            FreeTokenLogger.shared.log("KV_SLIDING: Templated \(desired.count) messages into \(allTokens.count) tokens", level: .info)
-            
-            // If this is an append operation, only evaluate the new tokens
-            if !needsRebuild && !messagesToAdd.isEmpty {
-                // Find the delta tokens to evaluate
-                var deltaTokens = Array(allTokens.dropFirst(templatedTokens.count))
+            if (deltaTokens.count + templatedTokenCount) > options.contextSize {
                 
-                if !deltaTokens.isEmpty {
-                    if messages.count == 0, isPrewarmed {
-                        // Remove the prewarmed tokens from the delta to avoid double evaluation
-                        if deltaTokens.starts(with: prewarmedTokens) {
-                            deltaTokens = Array(deltaTokens.dropFirst(prewarmedTokens.count))
-                            FreeTokenLogger.shared.log("⏭️ Skipped \(prewarmedTokens.count) prewarmed tokens", level: .info)
-                        } else {
-                            FreeTokenLogger.shared.log("⚠️ Prewarmed tokens do not match start of delta; evaluating all \(deltaTokens.count) tokens", level: .warning)
-                        }
-                    }
-                        
-                    FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(deltaTokens.count) new tokens", level: .debug)
+                // Let's batch the tokens in 50% context size chunks
+                let chunkSize = options.contextSize / 2
+                // Slice the deltaTokens Array into chunks
+                var startIndex = 0
+                while startIndex < deltaTokens.count {
+                    let endIndex = min(startIndex + chunkSize, deltaTokens.count)
+                    let chunk = Array(deltaTokens[startIndex..<endIndex])
                     
-                    // Don't calculate logits here - they'll be calculated in generate() after assistant slot
-                    // Don't feed to sampler - these are context tokens, not generated tokens
-                    try await session.evalOptimized(tokens: deltaTokens.map { Int($0) }, feedToSampler: false, needsLogits: false)
+                    if chunk.count + templatedTokenCount >= options.contextSize {
+                        FreeTokenLogger.shared.log("KV_SLIDING: Chunk of \(chunk.count) tokens exceeds context size; performing KV slide before evaluation", level: .warning)
+                        try await performKVSliding()
+                    }
+                    
+                    FreeTokenLogger.shared.log("KV_SLIDING: Evaluating chunk of \(chunk.count) tokens", level: .debug)
+                    
+                    try await session.evalOptimized(tokens: chunk.map { Int($0) }, feedToSampler: false, needsLogits: false)
+                    templatedTokens.append(contentsOf: chunk)
+                    
+                    
+                    startIndex += chunkSize
                 }
             } else {
-                // Full evaluation needed (rebuild case)
-                FreeTokenLogger.shared.log("KV_SLIDING: Evaluation of \(allTokens.count) tokens", level: .debug)
-                
-                // Don't calculate logits here - they'll be calculated in generate() after assistant slot
-                // Don't feed to sampler - these are context tokens, not generated tokens 
-                try await session.evalOptimized(tokens: allTokens.map { Int($0) }, feedToSampler: false, needsLogits: false)
-            }
-            
-            // Update state
-            templatedTokens = allTokens
-            messages = desired
-            
-            // Calculate n_keep from first message if not set
-            if n_keep == 0 && !desired.isEmpty {
-                let firstMessageTokens = try await templateMessages([desired[0]])
-                n_keep = Int32(firstMessageTokens.count)
-                FreeTokenLogger.shared.log("KV_SLIDING: Calculated n_keep=\(n_keep) from first message", level: .info)
-            }
-            
-            FreeTokenLogger.shared.log("KV_SLIDING: Context updated - pos=\(await session.getPos()) n_keep=\(n_keep) totalMessages=\(messages.count)", level: .info)
-            
-            // Check if we're approaching context limit
-            let headroom = options.contextSize - Int(await session.getPos())
-            if headroom < options.maxNewTokens {
-                FreeTokenLogger.shared.log("KV_SLIDING: WARNING - Low headroom=\(headroom) maxNew=\(options.maxNewTokens)", level: .warning)
+                FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(deltaTokens.count) new tokens", level: .debug)
+                try await session.evalOptimized(tokens: deltaTokens.map { Int($0) }, feedToSampler: false, needsLogits: false)
+                templatedTokens.append(contentsOf: deltaTokens)
             }
         }
         
@@ -308,6 +319,7 @@ extension FreeToken {
             
             FreeTokenLogger.shared.log("KV_SLIDING: Removing tokens [\(removeStart), \(removeEnd))", level: .debug)
             try await session.removeKVCacheTokens(from: removeStart, to: removeEnd)
+            templatedTokens.removeSubrange(Int(removeStart)...Int(removeEnd))
             
             // Shift remaining tokens backward by n_discard positions
             let shiftStart = removeEnd
@@ -356,7 +368,7 @@ extension FreeToken {
         func generate(runID: String) async throws -> AsyncThrowingStream<String, Error> {
             try ensureActive()
             
-            guard messages.count > 0 else {
+            guard templatedTokenCount > 0 else {
                 throw FreeTokenError.llamaEvaluatingEmptyContext
             }
             
@@ -374,10 +386,10 @@ extension FreeToken {
             }
             
             // Get tokens with assistant slot
-            let withSlot = try await templateWithAssistantSlot(messages)
+            // TODO: This may not work. We might need to dummy template in another way.
+            let assistantSlotTokens = try await templateWithAssistantSlot([])
             
             // Find the assistant slot tokens (delta from current state)
-            let assistantSlotTokens = Array(withSlot.dropFirst(templatedTokens.count))
             
             if !assistantSlotTokens.isEmpty {
                 FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(assistantSlotTokens.count) assistant slot tokens", level: .debug)
@@ -416,7 +428,7 @@ extension FreeToken {
                                 metrics.canceled = true
                                 metrics.stopReason = "canceled"
                                 // We don't want to leave the model in a bad state - reset the session so that it will be rebuilt on next run. 
-                                await self.resetSession()
+                                try await self.resetSession()
                                 break
                             }
                             
@@ -507,9 +519,6 @@ extension FreeToken {
                         
                         // Finalize generation
                         if metrics.producedTokens > 0 && !metrics.canceled {
-                            let msg = Message(role: .assistant, content: emitted, attachments: nil)
-                            messages.append(msg)
-                            
                             // Update our templated tokens to include the generated message
                             // Note: This is approximate as we don't re-template, but it's good enough
                             // for tracking purposes since we'll re-template on next updateContext
@@ -557,17 +566,16 @@ extension FreeToken {
         func unload() async {
             if isUnloaded { return }
             _ = await session.unload()
-            messages.removeAll()
             templatedTokens.removeAll()
             n_keep = 0
             isPrewarmed = false
             isUnloaded = true
         }
         
-        func resetSession() async {
+        func resetSession() async throws {
+            try ensureActive()
             await session.resetForRebuild()
             n_keep = 0
-            messages.removeAll()
             templatedTokens.removeAll()
             self.isPrewarmed = false
         }
@@ -591,7 +599,7 @@ extension FreeToken {
             }
 
             // Reset current session state as well
-            await resetSession()
+            try await resetSession()
         }
     }
 }

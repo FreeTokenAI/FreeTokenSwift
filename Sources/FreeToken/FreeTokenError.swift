@@ -134,6 +134,9 @@ extension FreeToken {
         case llamaEvaluatingEmptyContext
         case llamaUnexpectedInternalState
         
+        // MARK: - AISession Errors
+        case messageThreadNotCreated
+        
         // MARK: - Custom Error:
         case error(message: String, code: Int? = nil)
     }
@@ -254,6 +257,7 @@ extension FreeToken.FreeTokenError {
         case .llamaEvaluatingEmptyContext: return "llamaEvaluatingEmptyContext"
         case .llamaUnexpectedInternalState: return "llamaUnexpectedInternalState"
         case .fileOperationFailed(_): return "fileOperationFailed"
+        case .messageThreadNotCreated: return "messageThreadNotCreated"
 
         case .error(_, _):
             return "error"
@@ -389,6 +393,7 @@ extension FreeToken.FreeTokenError {
         case .llamaEvaluatingEmptyContext: return "Cannot evaluate a thread without messages"
         case .llamaUnexpectedInternalState: return "Unexpected internal model state. Please unload and reload the model."
         case .fileOperationFailed(let message): return message
+        case .messageThreadNotCreated: return "Message thread has not been created. Try .createMessageThread() first."
 
         case .error(let message, _):
             return message
@@ -497,6 +502,7 @@ extension FreeToken.FreeTokenError {
         case .llamaEvaluatingEmptyContext: return 5010
         case .llamaUnexpectedInternalState: return 5011
         case .fileOperationFailed(_): return 5012
+        case .messageThreadNotCreated: return 10000
 
         case .error(_, let code):
             return code

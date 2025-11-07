@@ -146,6 +146,15 @@ extension FreeToken {
                 return
             }
             
+            // Try to load session from disk, if it fails continue
+            do {
+                try await aiModelManager?.loadSessionFromDiskByID(id: context.runIdentifier, messages: context.messages, runConfig: context.aiRunConfig)
+                await success(context)
+                return
+            } catch {
+                FreeToken.shared.logger("⏭️ Tried to load session from disk, but failed. Session may not exist on disk.", .info)
+            }
+            
             do {
                 // Use messagesForAI which contains the injected context (populated by InjectAdditionalContext)
                 _ = try await context.aiModelManager?.loadSession(for: context.runIdentifier, with: context.messagesForAI, runConfig: context.aiRunConfig)

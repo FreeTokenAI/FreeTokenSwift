@@ -785,13 +785,16 @@ extension FreeToken {
     
     public class Completion {
         public let response: String
+        public let tokenUsage: TokenUsage?
         
-        internal init(response: String) {
+        internal init(response: String, tokenUsage: TokenUsage? = nil) {
             self.response = response
+            self.tokenUsage = tokenUsage
         }
         
         internal init(from createCompletionResponse: Codings.CreateCompletionResponse) {
             self.response = createCompletionResponse.completion
+            self.tokenUsage = nil
         }
     }
     
