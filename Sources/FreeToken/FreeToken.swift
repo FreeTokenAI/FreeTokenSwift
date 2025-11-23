@@ -34,7 +34,6 @@ public class FreeToken: @unchecked Sendable {
 #endif
     let httpClient = HTTPClient()
     let messagesManager: MessagesManager
-    let aiModelsManager: AIModelsManager = AIModelsManager.shared
     let toolDefinitionsManager = ToolDefinitionsManager()
     
     // Captured device model details (identifier like iPhone16,1 or Mac15,7, plus a friendly name when available)
@@ -46,22 +45,16 @@ public class FreeToken: @unchecked Sendable {
     var appToken: String? = nil
     var deviceSessionToken: String? = nil
     var deviceDetails: Codings.ShowDeviceSessionResponse? = nil
-    var aiModelManager: AIModelManager? {
-        get {
-            return aiModelsManager.defaultManager
-        }
-    }
-    var deviceManager: DeviceManager? {
-        get {
-            return aiModelsManager.defaultDeviceManager
-        }
-    }
             
     var documentChunkSize: Int? = nil
     var documentChunkOverlapSize: Int? = nil
     var documentManager: DocumentManager? = nil
     
     let encryptionManager = EncryptionManager()
+    
+    var deviceSession: Codings.ShowDeviceSessionResponse? = nil
+    
+    var aiModels: [AIModel] = []
     
     /// Status updates for AI chat stream operations
     ///
@@ -257,40 +250,30 @@ public class FreeToken: @unchecked Sendable {
                 self.deviceSessionToken = response.token
                 self.deviceDetails = response
                 
+                // Initialize Embedding Manager
                 let embeddingDeviceManager = DeviceManager(memoryRequirement: response.embeddingModel.memoryRequirement)
                 EmbeddingManager.shared.config(modelConfig: response.embeddingModel, deviceAICapable: embeddingDeviceManager.isAICapable)
                 
+                // Initialize Document Manager
                 self.documentManager = DocumentManager(chunkSize: response.documentsConfig.documentChunkSize, overlapSize: response.documentsConfig.documentChunkOverlapSize)
-                
-                if response.aiModel.cloudOnly == false {
-                    // Initialize the AI Model Manager
-                    do {
-                        _ = try self.aiModelsManager.addManager(modelConfig: response.aiModel, clientVersion: self.clientVersion, isDefault: true)
-                    } catch {
-                        FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager: \(error.localizedDescription)", .error)
-                        await errorCallback(error as! FreeToken.FreeTokenError)
-                        profiler.end(eventType: Profiler.EventType.registerDeviceSession, isSuccess: false, errorMessage: error.localizedDescription)
-                        return
-                    }
-                    
-                    _ = self.aiModelsManager.getDeviceManager(for: response.aiModel.code)
-                } else {
-                    FreeToken.shared.logger("⏭️ AI Model is cloud-only, skipping local model initialization.", .info)
-                }
                 
                 // Capture Tool Call Instructions
                 await self.toolDefinitionsManager.setToolInstructions(response.toolInstructions)
                 
-                // Capture Built in and Cloud Tool Calls
+                // Capture Built In Tool and Cloud Tool Calls
                 let builtInTools = response.builtInToolDefinitions.map { ToolDefinition(from: $0) }
                 await self.toolDefinitionsManager.addToolDefinitions(builtInTools, type: .builtIn)
                 
                 let cloudTools = response.cloudToolDefinitions.map { ToolDefinition(from: $0) }
                 await self.toolDefinitionsManager.addToolDefinitions(cloudTools, type: .cloud)
                 
+                let defaultAIModel = try? AIModel(from: response.aiModel)
+                self.aiModels.append(defaultAIModel!)
+                
                 FreeToken.shared.logger("📋 Device registered successfully", .info)
                 
                 profiler.end(eventType: Profiler.EventType.registerDeviceSession, isSuccess: true)
+                self.deviceSession = response
                 await successCallback()
             case .failure(let errorResponse):
                 FreeToken.shared.logger("Failed to register device: \(errorResponse.message)", .error)
@@ -312,7 +295,9 @@ public class FreeToken: @unchecked Sendable {
     public func resetDevice() async throws {
         deviceDetails = nil
         deviceSessionToken = nil
-        aiModelsManager.reset()
+        documentManager = nil
+        deviceSession = nil
+        self.aiModels = []
         encryptionManager.reset()
         await toolDefinitionsManager.removeAllToolDefinitions()
     }
@@ -335,13 +320,8 @@ public class FreeToken: @unchecked Sendable {
     /// - Throws: `FreeTokenError.fileOperationFailed` if unable to clear the cache
     public func resetChatCache() async throws {
         // Clear the entire cache directory for all models
-        #if os(iOS)
         let cacheBaseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
             .appendingPathComponent("FreeToken").appendingPathComponent("chats")
-        #else
-        let cacheBaseURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".FreeToken").appendingPathComponent("chats")
-        #endif
 
         if FileManager.default.fileExists(atPath: cacheBaseURL.path) {
             do {
@@ -383,67 +363,16 @@ public class FreeToken: @unchecked Sendable {
     ///
     /// > Warning: When modelCode is nil, this method deletes the entire AI model cache directory, including all downloaded models.
     public func deleteAIModelCache(modelCode: String? = nil) async {
-#if os(macOS)
-        let defaultRootDirectory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".FreeToken")
-            .appendingPathComponent("Models")
-#else
+
         let defaultRootDirectory = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
             .appendingPathComponent("FreeToken")
             .appendingPathComponent("Models")
-#endif
         
-        if let modelCode = modelCode {
+        if let modelCode = modelCode, let aiModel = try? await self.getAIModel(modelCode: modelCode) {
             // Delete specific model
-            await aiModelsManager.unloadModel(modelCode: modelCode)
+            try? aiModel.deleteModelFiles()
             
-            // Get the model files for the specific model
-            guard let modelFiles = aiModelsManager.getModelFiles(for: modelCode) else {
-                FreeToken.shared.logger("🔴 Model with code '\(modelCode)' not found", .error)
-                return
-            }
-            
-            // Sanitize the repo name (replace "/" with "_")
-            let sanitizedRepo = modelFiles.repo.replacingOccurrences(of: "/", with: "_")
-            let modelDirectory = defaultRootDirectory.appendingPathComponent(sanitizedRepo)
-            
-            // Delete the specific model files (not the entire directory)
-            var deletedFiles = 0
-            
-            // Delete the main model file
-            if let modelFileName = modelFiles.modelFileName {
-                let modelFileURL = modelDirectory.appendingPathComponent(modelFileName)
-                do {
-                    try FileManager.default.removeItem(at: modelFileURL)
-                    deletedFiles += 1
-                    FreeToken.shared.logger("🗑️ Deleted model file: \(modelFileName)", .info)
-                } catch {
-                    FreeToken.shared.logger("⚠️ Failed to delete model file '\(modelFileName)': \(error.localizedDescription)", .warning)
-                }
-            }
-            
-            // Delete the mmproj file if it exists
-            if let mmprojFileName = modelFiles.mmprojFileName {
-                let mmprojFileURL = modelDirectory.appendingPathComponent(mmprojFileName)
-                do {
-                    try FileManager.default.removeItem(at: mmprojFileURL)
-                    deletedFiles += 1
-                    FreeToken.shared.logger("🗑️ Deleted mmproj file: \(mmprojFileName)", .info)
-                } catch {
-                    FreeToken.shared.logger("⚠️ Failed to delete mmproj file '\(mmprojFileName)': \(error.localizedDescription)", .warning)
-                }
-            }
-            
-            if deletedFiles > 0 {
-                FreeToken.shared.logger("✅ AI model '\(modelCode)' cache deleted successfully (\(deletedFiles) file(s) removed)", .info)
-            } else {
-                FreeToken.shared.logger("⚠️ No files were deleted for model '\(modelCode)'", .warning)
-            }
         } else {
-            // Delete all models (existing behavior)
-            await aiModelsManager.unloadAllModels()
-            aiModelsManager.reset()
-            
             // Delete the whole directory
             do {
                 try FileManager.default.removeItem(at: defaultRootDirectory)
@@ -465,60 +394,9 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotRegistered
         }
         
-        var resolvedModelCode = modelCode
+        let aiModel = try await self.getAIModel(modelCode: modelCode)
         
-        if resolvedModelCode == nil {
-            resolvedModelCode = aiModelManager?.modelCode
-        }
-        
-        guard let unwrappedModelCode = resolvedModelCode else {
-            FreeToken.shared.logger("🔴 Cannot get download state because there is no model loaded.", .error)
-            throw FreeTokenError.unknownAIModelCode
-        }
-        
-        // If a manager already exists, return its download state
-        if let existingManager = aiModelsManager.getManager(for: unwrappedModelCode) {
-            return await existingManager.getDownloadState()
-        }
-        
-        // Lazily load the AI model by code and create a new manager if missing
-        FreeToken.shared.logger("ℹ️ AI Model Manager not found for code \(unwrappedModelCode). Attempting to initialize it now.", .info)
-        
-        // Bridge the existing closure-based getAIModel into async/await
-        let aiModel: AIModel = try await withCheckedThrowingContinuation { continuation in
-            Task { [unowned self] in
-                await self.getAIModel(modelCode: unwrappedModelCode) { model in
-                    continuation.resume(returning: model)
-                } error: { error in
-                    continuation.resume(throwing: error)
-                }
-            }
-        }
-        
-        // Prevent creating a manager for cloud-only models
-        if aiModel.cloudOnly {
-            FreeToken.shared.logger("🔴 AI Model \(unwrappedModelCode) is cloud-only. No local download state available.", .error)
-            throw FreeTokenError.isCloudOnlyModel
-        }
-        
-        let isDefault = (unwrappedModelCode == deviceDetails?.aiModel.code)
-        do {
-            let newManager = try aiModelsManager.addManager(
-                modelConfig: aiModel.coding,
-                clientVersion: clientVersion,
-                isDefault: isDefault
-            )
-            FreeToken.shared.logger("✅ Initialized AI Model Manager for code \(unwrappedModelCode) on-demand.", .info)
-            return await newManager.getDownloadState()
-        } catch {
-            FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager for code \(unwrappedModelCode): \(error.localizedDescription)", .error)
-            // Propagate known FreeTokenError or wrap unknowns
-            if let ftError = error as? FreeTokenError {
-                throw ftError
-            } else {
-                throw FreeTokenError.unknownAIModelCode
-            }
-        }
+        return try await aiModel.downloadStatus()
     }
     
     /// Download the AI model for this specific device
@@ -552,85 +430,16 @@ public class FreeToken: @unchecked Sendable {
             return
         }
         
-        var modelCode = modelCode
-        
-        if modelCode == nil {
-            // Use the default model code if nothing is passed in
-            modelCode = deviceDetails?.aiModel.code
-        }
-        
-        let isDefaultModelCode = (modelCode == deviceDetails?.aiModel.code)
-        progressPercent?(0.0)
-
-        // Download a specific model by initializing a new AIModelManager
-        if let modelManager = aiModelsManager.getManager(for: modelCode!), let deviceManager = aiModelsManager.getDeviceManager(for: modelCode!) {
-            if await modelManager.getDownloadState() == .downloaded {
-                FreeToken.shared.logger("⏭️ Model \(modelCode!) already downloded, skipping download", .info)
-                progressPercent?(1.0)
-                await successCallback(.downloaded)
-                return
-            }
-            
-            guard deviceManager.isAICapable else {
-                FreeToken.shared.logger("⏭️ Device does not meet AI model requirements for model \(modelCode!), skipping AI model download", .info)
-                await successCallback(.aiNotSupported)
-                return
-            }
-            
+        Task {
             do {
-                try await modelManager.downloadIfNeeded(progress: progressPercent) {
-                    FreeToken.shared.logger("⬇️ Model \(modelManager.modelCode) downloaded successfully", .info)
-                    await successCallback(.downloaded)
-                } failure: { error in
-                    FreeToken.shared.logger("🔴 Model \(modelManager.modelCode) did not download successfully", .error)
-                    await errorCallback(FreeTokenError.aiModelDownload)
-                }
+                let aiModel = try await getAIModel(modelCode: modelCode)
+                let result = try await aiModel.download(progress: progressPercent)
+                await successCallback(result)
             } catch {
-                FreeToken.shared.logger("🔴 Failed to download AI model for code \(modelCode!): \(error.localizedDescription)", .error)
                 await errorCallback(error as! FreeTokenError)
             }
-        } else {
-            // Initialize a new AIModelManager for the specific model code
-            // Get model details by code
-            await getAIModel(modelCode: modelCode!) { aiModel in
-                if aiModel.cloudOnly {
-                    FreeToken.shared.logger("⚠️ AI model \(aiModel.code) is cloud-only skipping download.", .warning)
-                    await successCallback(DownloadedState.cloudOnly)
-                    return
-                }
-                
-                do {
-                    let modelManager = try self.aiModelsManager.addManager(modelConfig: aiModel.coding, clientVersion: self.clientVersion, isDefault: isDefaultModelCode)
-                    
-                    let deviceManager = self.aiModelsManager.getDeviceManager(for: aiModel.code)! // Should always have a device manager since it was just added
-                    
-                    // Check if the device is capable of running AI models
-                    guard deviceManager.isAICapable else {
-                        FreeToken.shared.logger("⏭️ Device does not meet AI model requirements for model \(aiModel.code), skipping AI model download", .info)
-                        await successCallback(.aiNotSupported)
-                        return
-                    }
-                    
-                    try await modelManager.downloadIfNeeded { percentage in
-                        // progressCallback reports a value in 0.0...1.0 — forward it unchanged
-                        progressPercent?(percentage)
-                    } success: {
-                        FreeToken.shared.logger("⬇️ Model \(aiModel.code) downloaded successfully", .info)
-                        await successCallback(.downloaded)
-                    } failure: { _ in
-                        FreeToken.shared.logger("🔴 Model \(aiModel.code) did not download successfully", .error)
-                        await errorCallback(FreeTokenError.aiModelDownload)
-                    }
-                } catch {
-                    // Failed to add AI model manager
-                    FreeToken.shared.logger("🔴 Failed to initialize AI Model Manager for model code \(aiModel.code): \(error.localizedDescription)", .error)
-                    await errorCallback(error as! FreeTokenError)
-                }
-            } error: { error in
-                await errorCallback(error)
-            }
+            await downloadEmbeddingModel()
         }
-        await downloadEmbeddingModel()
     }
     
     
@@ -644,68 +453,25 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotRegistered
         }
         
-        var modelCode = modelCode
+        let aiModel: AIModel = try await self.getAIModel(modelCode: modelCode)
         
-        if modelCode == nil {
-            // Use the default model code if nothing is passed in
-            modelCode = deviceDetails?.aiModel.code
-        }
-        
-        if let setModelCode = modelCode {
-            let result: Bool = try await withCheckedThrowingContinuation { continuation in
-                Task {
-                    await getAIModel(modelCode: setModelCode) { aiModel in
-                        if self.aiModelsManager.getDeviceManager(for: setModelCode) != nil {
-                            continuation.resume(returning: true)
-                        } else {
-                            continuation.resume(returning: false)
-                        }
-                    } error: { error in
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-            
-            return result
-        } else {
-            throw FreeTokenError.aiModelNotLoaded
-        }
+        return aiModel.canInitializeOnDevice()
     }
     
     /// Get models that are capable of running on this device
     ///
     /// - Returns: An Array of AIModel objects that are capable of running on this device
     public func availableAIModelsForDevice() async throws -> [AIModel] {
-        let result: [AIModel] = try await withCheckedThrowingContinuation { continuation in
-            Task {
-                await listAIModels { aiModels in
-                    var availableModels: [AIModel] = []
-                    for aiModel in aiModels {
-                        if aiModel.cloudOnly {
-                            availableModels.append(aiModel)
-                        } else {
-                            if let manager = self.aiModelsManager.getDeviceManager(for: aiModel.code) {
-                                if manager.isAICapable {
-                                    self.logger("✅ This device is capable of running the model \(aiModel.code)", .info)
-                                    availableModels.append(aiModel)
-                                } else {
-                                    self.logger("🚫 This device is NOT capable of running the model \(aiModel.code)", .info)
-                                }
-                            } else {
-                                FreeToken.shared.logger("⚠️ Model unexpectedly not available by code", .warning)
-                            }
-                        }
-                    }
-                    
-                    continuation.resume(returning: availableModels)
-                } error: { error in
-                    continuation.resume(throwing: error)
-                }
-
+        
+        let aiModels = try await listAIModels()
+        
+        return aiModels.compactMap { aiModel in
+            if aiModel.canInitializeOnDevice() {
+                return aiModel
+            } else {
+                return nil
             }
         }
-        
-        return result
     }
     
     private func downloadEmbeddingModel() async {
@@ -762,77 +528,98 @@ public class FreeToken: @unchecked Sendable {
     ///   - success: A closure that is executed when the AI models are successfully listed.
     ///   - error: A closure that is executed if there is an error during the listing of AI models.
     /// - Returns: Void
-    public func listAIModels(success successCompletion: @escaping @Sendable (_ aiModels: [AIModel]) async -> Void, error errorCompletion: @escaping @Sendable (_ error: FreeTokenError) async -> Void) async {
+    public func listAIModels() async throws -> [AIModel]  {
         guard isDeviceRegistered() else {
-            await errorCompletion(FreeTokenError.deviceNotRegistered)
-            return
+            throw FreeTokenError.deviceNotRegistered
         }
         
-        
-        let path = "ai_models"
-        await fetchResource(path: path, responseType: Codings.AIModelsResponse.self) { result in
-            switch result {
-            case .success(let response):
-                let aiModels = response.aiModels.map { AIModel(from: $0) }
-                for aiModelResponse in response.aiModels {
-                    do {
-                        if aiModelResponse.cloudOnly == false {
-                            _ = try self.aiModelsManager.addManager(modelConfig: aiModelResponse, clientVersion: self.clientVersion, isDefault: false)
+        let aiModels: [AIModel] = try await withCheckedThrowingContinuation { continuation in
+            Task {
+                let path = "ai_models"
+                await fetchResource(path: path, responseType: Codings.AIModelsResponse.self) { result in
+                    switch result {
+                    case .success(let response):
+                        do {
+                            var allModels: [AIModel] = []
+                            for aiModelCoding in response.aiModels {
+                                if let existingModel = self.aiModels.first(where: { $0.code == aiModelCoding.code }) {
+                                    allModels.append(existingModel)
+                                } else {
+                                    let newModel = try AIModel(from: aiModelCoding)
+                                    allModels.append(newModel)
+                                    self.aiModels.append(newModel)
+                                }
+                            }
+                            continuation.resume(returning: allModels)
+                        } catch {
+                            continuation.resume(throwing: error)
                         }
-                    } catch {
-                        self.logger(error.localizedDescription, .warning)
+                    case .failure(let error):
+                        continuation.resume(throwing: error)
                     }
                 }
-                await successCompletion(aiModels)
-            case .failure(let error):
-                await errorCompletion(error)
             }
         }
+        
+        return aiModels
     }
     
     /// Get AI Model by Code
     ///
     /// ```
-    ///   await client.getAIModel(modelCode: "model-code") { aiModel in
-    ///   // aiModel is an AIModel object
-    ///   }, error: { error in
-    ///   // Failed to get AI model
-    ///   })
+    ///   let aiModel = await client.getAIModel()
     /// ```
     ///
     /// - Parameters:
     ///  - modelCode: The code of the AI model to retrieve.
-    ///  - success: A closure that is executed when the AI model is successfully retrieved.
-    ///  - error: A closure that is executed if there is an error during the retrieval of the AI model.
     /// - Returns: Void
-    public func getAIModel(modelCode: String, success successCompletion: @escaping @Sendable (_ aiModel: AIModel) async -> Void, error errorCompletion: @escaping @Sendable (_ error: FreeTokenError) async -> Void) async {
+    public func getAIModel(modelCode: String? = nil) async throws -> AIModel {
         guard isDeviceRegistered() else {
             FreeToken.shared.logger("Device not registered. Cannot fetch AI model.", .error)
-            return
+            throw FreeTokenError.deviceNotRegistered
         }
         
+        var modelCode = modelCode
+        
+        if modelCode == nil {
+            modelCode = deviceSession!.aiModel.code
+        }
+        
+        if let cachedModel = aiModels.first(where: { $0.code == modelCode }) {
+            return cachedModel
+        }
+        
+        if modelCode == deviceSession!.aiModel.code {
+            let aiModel = try AIModel(from: deviceSession!.aiModel)
+            self.aiModels.append(aiModel)
+            return aiModel
+        }
         
         // URL escape the model code to handle special characters
-        let path = "ai_models/\(modelCode.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelCode)"
-        await fetchResource(path: path, responseType: Codings.AiModelResponse.self) { result in
-            switch result {
-            case .success(let response):
-                let aiModel = AIModel(from: response)
-                
-                do {
-                    if response.cloudOnly == false {
-                        _ = try self.aiModelsManager.addManager(modelConfig: response, clientVersion: self.clientVersion, isDefault: false)
+        let path = "ai_models/\(modelCode!.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? modelCode!)"
+        
+        let aiModel = try await withCheckedThrowingContinuation { continuation in
+            Task {
+                await fetchResource(path: path, responseType: Codings.AiModelResponse.self) { result in
+                    switch result {
+                    case .success(let response):
+                        do {
+                            let aiModel = try AIModel(from: response)
+                            continuation.resume(returning: aiModel)
+                        } catch {
+                            continuation.resume(throwing: error)
+                        }
+                        
+                    case .failure(let error):
+                        FreeToken.shared.logger("Failed to fetch AI Model: \(error.message)", .error)
+                        continuation.resume(throwing: error)
                     }
-                } catch {
-                    self.logger(error.localizedDescription, .warning)
                 }
-                
-                await successCompletion(aiModel)
-            case .failure(let error):
-                FreeToken.shared.logger("Failed to fetch AI Model: \(error.message)", .error)
-                await errorCompletion(error)
             }
         }
+        
+        self.aiModels.append(aiModel)
+        return aiModel
     }
     
     /// Register tool definitions with the client
@@ -871,6 +658,15 @@ public class FreeToken: @unchecked Sendable {
     /// - Returns: Void
     public func removeAllToolDefinitions() async {
         await toolDefinitionsManager.removeAllToolDefinitions()
+        
+        // Add back default tool definitions
+        if let deviceDetails = deviceDetails {
+            let builtInTools = deviceDetails.builtInToolDefinitions.map { ToolDefinition(from: $0) }
+            await toolDefinitionsManager.addToolDefinitions(builtInTools, type: .builtIn)
+            
+            let cloudTools = deviceDetails.cloudToolDefinitions.map { ToolDefinition(from: $0) }
+            await toolDefinitionsManager.addToolDefinitions(cloudTools, type: .cloud)
+        }
     }
     
     /// Create Message Thread in FreeToken Cloud
@@ -1032,6 +828,7 @@ public class FreeToken: @unchecked Sendable {
             switch result {
             case .success(let response):
                 profiler.end(eventType: Profiler.EventType.addMessageToThread, eventTypeID: response.id, isSuccess: true)
+                response.tokenUsage = message.tokenUsage
                 await successCompletion(response)
             case .failure(let error):
                 profiler.end(eventType: .addMessageToThread, isSuccess: false, errorMessage: error.message)
@@ -1106,9 +903,9 @@ public class FreeToken: @unchecked Sendable {
         toolAccess: [ToolRunMask] = [.allowAll]
     ) async throws -> ChatSessionProtocol {
         let downloadState = try await getAIModelDownloadState(modelCode: modelCode) == .downloaded
-        let isAICapable = deviceManager?.isAICapable == true
+        let aiModel = try await getAIModel(modelCode: modelCode)
         
-        if downloadState && isAICapable && runLocation != .cloudRun {
+        if downloadState && aiModel.availableMemoryToLoad() && runLocation != .cloudRun {
             return try await getLocalChatSession(messageThreadID: messageThreadID, modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess)
         } else {
             return try await getCloudChatSession(messageThreadID: messageThreadID, modelCode: modelCode, toolAccess: toolAccess)
@@ -1120,10 +917,12 @@ public class FreeToken: @unchecked Sendable {
         modelCode: String? = nil,
         runLocation: RunLocation = .automatic,
         toolAccess: [ToolRunMask] = [.allowAll]
-    ) async throws -> ChatSession {
+    ) async throws -> ChatSessionProtocol {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
         }
+        
+        let aiModel = try await self.getAIModel(modelCode: modelCode)
         
         guard runLocation != .cloudRun else {
             self.logger("🚫 Tried to generate a local chat session when the run location is cloud.", .error)
@@ -1137,92 +936,22 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Is Device Capable?
-        guard deviceManager?.isAICapable == true else {
+        guard aiModel.canInitializeOnDevice() == true else {
             self.logger("🚫 Tried to generate a local chat session when the device is not AI capable.", .error)
             throw FreeTokenError.deviceNotCapable
         }
         
-        // Generate System Message
-        let systemMessageContent = "\(deviceDetails!.systemInstructions)\n\n\(await toolDefinitionsManager.getToolInstructions())"
-        let systemMessage = Message(role: .system, content: systemMessageContent)
-        
-        // Initialize Messsage Preparer for later use
-        let messagePreparer: MessagePreparer
-        let config: AIModelConfiguration
-        let repoName: String
-        let modelFileURL: URL
-        let deviceManager: DeviceManager
-        let jsonToolResults: Bool
-        var modelCode = modelCode
-        
-#if os(iOS) || os(tvOS) || os(watchOS)
-        let modelBaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("FreeToken")
-            .appendingPathComponent("Models")
-#else
-        let modelBaseURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".FreeToken") // Use a shared directory just in case they have more than one FreeToken supported app
-            .appendingPathComponent("Models")
-#endif
-        
-        if let modelCode = modelCode {
-            let aiModel = try await withCheckedThrowingContinuation { continuation in
-                Task {
-                    await self.getAIModel(modelCode: modelCode) { aiModel in
-                        continuation.resume(returning: aiModel)
-                    } error: { error in
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
+        if aiModel.availableMemoryToLoad() {
+            let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
             
-            
-            messagePreparer = MessagePreparer(promptTemplateConfig: aiModel.coding.config.promptTemplateConfig)
-            config = AIModelConfiguration(from: aiModel.coding.config.defaultSettings)
-#if os(iOS)
-            let memoryRequirement = aiModel.coding.clientsConfig["iOS"]!.requiredMemoryBytes
-#else
-            let memoryRequirement = aiModel.coding.clientsConfig["macOS"]!.requiredMemoryBytes
-#endif
-            deviceManager = DeviceManager(memoryRequirement: memoryRequirement)
-            
-            jsonToolResults = aiModel.coding.config.promptTemplateConfig.jsonToolResults
-            
-            if let llamaCpp = aiModel.coding.modelTypes?.llamaCpp {
-                repoName = llamaCpp.repo
-                let modelFileName = llamaCpp.modelFileName!
-                
-                let modelURL = modelBaseURL.appendingPathComponent(repoName.replacingOccurrences(of: "/", with: "_"))
-                modelFileURL = modelURL.appendingPathComponent(modelFileName)
-                
-            } else {
-                throw FreeTokenError.unsupportedModelType(message: "llama.cpp model type required, but not available.")
-            }
+            return try await ChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, runLocation: runLocation, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager, queue: AITaskQueue.shared, messageThreadID: messageThreadID)
+        } else if runLocation == .automatic {
+            // Go to cloud
+            return try await self.getCloudChatSession(messageThreadID: messageThreadID, modelCode: aiModel.code, toolAccess: toolAccess)
         } else {
-            // Use default agent model
-            messagePreparer = MessagePreparer(promptTemplateConfig: deviceDetails!.aiModel.config.promptTemplateConfig)
-            config = AIModelConfiguration(from: deviceDetails!.aiModel.config.defaultSettings)
-#if os(iOS)
-            let memoryRequirement = deviceDetails!.aiModel.clientsConfig["iOS"]!.requiredMemoryBytes
-#else
-            let memoryRequirement = deviceDetails!.aiModel.clientsConfig["macOS"]!.requiredMemoryBytes
-#endif
-            deviceManager = DeviceManager(memoryRequirement: memoryRequirement)
-            jsonToolResults = deviceDetails!.aiModel.config.promptTemplateConfig.jsonToolResults
-            modelCode = deviceDetails!.aiModel.code
-            
-            if let llamaCpp = deviceDetails!.aiModel.modelTypes?.llamaCpp {
-                repoName = llamaCpp.repo
-                let modelFileName = llamaCpp.modelFileName!
-                
-                let modelURL = modelBaseURL.appendingPathComponent(repoName.replacingOccurrences(of: "/", with: "_"))
-                modelFileURL = modelURL.appendingPathComponent(modelFileName)
-            } else {
-                throw FreeTokenError.unsupportedModelType(message: "llama.cpp model type required, but not available.")
-            }
+            // Throw
+            throw FreeTokenError.notEnoughMemoryForModel(message: "Not enough memory to initialize model - try .automatic mode for cloud fallback")
         }
-        
-        return try await ChatSession(client: self, messagePreparer: messagePreparer, systemMessage: systemMessage, runLocation: runLocation, config: config, modelPath: modelFileURL.path, modelRepoName: repoName, deviceManager: deviceManager, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager, jsonToolResults: jsonToolResults, modelCode: modelCode!, queue: AITaskQueue.shared)
     }
     
     internal func getCloudChatSession(
@@ -1234,33 +963,9 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotRegistered
         }
         
-        let messagePreparer: MessagePreparer
-        let config: AIModelConfiguration
-        let jsonToolResults: Bool
-        var modelCode = modelCode
-        
-        if let modelCode = modelCode {
-            let aiModel = try await withCheckedThrowingContinuation { continuation in
-                Task {
-                    await self.getAIModel(modelCode: modelCode) { aiModel in
-                        continuation.resume(returning: aiModel)
-                    } error: { error in
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-            
-            messagePreparer = MessagePreparer(promptTemplateConfig: aiModel.coding.config.promptTemplateConfig)
-            config = AIModelConfiguration(from: aiModel.coding.config.defaultSettings)
-            jsonToolResults = aiModel.coding.config.promptTemplateConfig.jsonToolResults
-        } else {
-            messagePreparer = MessagePreparer(promptTemplateConfig: deviceDetails!.aiModel.config.promptTemplateConfig)
-            config = AIModelConfiguration(from: deviceDetails!.aiModel.config.defaultSettings)
-            jsonToolResults = deviceDetails!.aiModel.config.promptTemplateConfig.jsonToolResults
-            modelCode = deviceDetails!.aiModel.code
-        }
-        
-        return CloudChatSession(client: self, messsagePreparer: messagePreparer, config: config, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager, jsonToolResults: jsonToolResults, modelCode: modelCode!)
+        let aiModel = try await self.getAIModel(modelCode: modelCode)
+                    
+        return CloudChatSession(client: self, aiModel: aiModel, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager,toolAccess: toolAccess, messageThreadID: messageThreadID)
     }
     
     public func getMemoryChatSession(
@@ -1275,6 +980,8 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotRegistered
         }
         
+        let aiModel = try await self.getAIModel(modelCode: modelCode)
+        
         guard runLocation != .cloudRun else {
             self.logger("🚫 Tried to generate a local chat session when the run location is cloud.", .error)
             throw FreeTokenError.error(message: "Invalid run location - Tried to run on cloud with a local call. Try `getCloudChatSession` instead.", code: 10003)
@@ -1287,92 +994,15 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Is Device Capable?
-        guard deviceManager?.isAICapable == true else {
+        guard aiModel.canInitializeOnDevice() else {
             self.logger("🚫 Tried to generate a local chat session when the device is not AI capable.", .error)
             throw FreeTokenError.deviceNotCapable
         }
         
         // Generate System Message
-        let systemMessageContent = "\(systemInstructions)\n\n\(await toolDefinitionsManager.getToolInstructions())"
-        let systemMessage = Message(role: .system, content: systemMessageContent)
-        
-        // Initialize Messsage Preparer for later use
-        let messagePreparer: MessagePreparer
-        let config: AIModelConfiguration
-        let repoName: String
-        let modelFileURL: URL
-        let deviceManager: DeviceManager
-        let jsonToolResults: Bool
-        var modelCode = modelCode
-        
-#if os(iOS) || os(tvOS) || os(watchOS)
-        let modelBaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-            .appendingPathComponent("FreeToken")
-            .appendingPathComponent("Models")
-#else
-        let modelBaseURL = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".FreeToken") // Use a shared directory just in case they have more than one FreeToken supported app
-            .appendingPathComponent("Models")
-#endif
-        
-        if let modelCode = modelCode {
-            let aiModel = try await withCheckedThrowingContinuation { continuation in
-                Task {
-                    await self.getAIModel(modelCode: modelCode) { aiModel in
-                        continuation.resume(returning: aiModel)
-                    } error: { error in
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-            
-            
-            messagePreparer = MessagePreparer(promptTemplateConfig: aiModel.coding.config.promptTemplateConfig)
-            config = AIModelConfiguration(from: aiModel.coding.config.defaultSettings)
-#if os(iOS)
-            let memoryRequirement = aiModel.coding.clientsConfig["iOS"]!.requiredMemoryBytes
-#else
-            let memoryRequirement = aiModel.coding.clientsConfig["macOS"]!.requiredMemoryBytes
-#endif
-            deviceManager = DeviceManager(memoryRequirement: memoryRequirement)
-            
-            jsonToolResults = aiModel.coding.config.promptTemplateConfig.jsonToolResults
-            
-            if let llamaCpp = aiModel.coding.modelTypes?.llamaCpp {
-                repoName = llamaCpp.repo
-                let modelFileName = llamaCpp.modelFileName!
-                
-                let modelURL = modelBaseURL.appendingPathComponent(repoName.replacingOccurrences(of: "/", with: "_"))
-                modelFileURL = modelURL.appendingPathComponent(modelFileName)
-                
-            } else {
-                throw FreeTokenError.unsupportedModelType(message: "llama.cpp model type required, but not available.")
-            }
-        } else {
-            // Use default agent model
-            messagePreparer = MessagePreparer(promptTemplateConfig: deviceDetails!.aiModel.config.promptTemplateConfig)
-            config = AIModelConfiguration(from: deviceDetails!.aiModel.config.defaultSettings)
-#if os(iOS)
-            let memoryRequirement = deviceDetails!.aiModel.clientsConfig["iOS"]!.requiredMemoryBytes
-#else
-            let memoryRequirement = deviceDetails!.aiModel.clientsConfig["macOS"]!.requiredMemoryBytes
-#endif
-            deviceManager = DeviceManager(memoryRequirement: memoryRequirement)
-            jsonToolResults = deviceDetails!.aiModel.config.promptTemplateConfig.jsonToolResults
-            modelCode = deviceDetails!.aiModel.code
-            
-            if let llamaCpp = deviceDetails!.aiModel.modelTypes?.llamaCpp {
-                repoName = llamaCpp.repo
-                let modelFileName = llamaCpp.modelFileName!
-                
-                let modelURL = modelBaseURL.appendingPathComponent(repoName.replacingOccurrences(of: "/", with: "_"))
-                modelFileURL = modelURL.appendingPathComponent(modelFileName)
-            } else {
-                throw FreeTokenError.unsupportedModelType(message: "llama.cpp model type required, but not available.")
-            }
-        }
-        
-        return await MemoryChatSession(client: self, messagePreparer: messagePreparer, systemMessage: systemMessage, config: config, modelPath: modelFileURL.path, modelRepoName: repoName, deviceManager: deviceManager, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, jsonToolResults: jsonToolResults, modelCode: modelCode!, queue: AITaskQueue.shared, runID: runID, messages: messages)
+        let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
+
+        return await MemoryChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, queue: AITaskQueue.shared, runID: runID, messages: messages)
     }
     
     /// Create a New Completion Session
@@ -1396,9 +1026,9 @@ public class FreeToken: @unchecked Sendable {
         runLocation: RunLocation = .automatic
     ) async throws -> CompletionSessionProtocol {
         let downloadState = try await getAIModelDownloadState(modelCode: modelCode) == .downloaded
-        let isAICapable = deviceManager?.isAICapable == true
+        let aiModel = try await self.getAIModel(modelCode: modelCode)
         
-        if downloadState && isAICapable && runLocation != .cloudRun {
+        if downloadState && aiModel.availableMemoryToLoad() && runLocation != .cloudRun {
             return try await getLocalCompletionSession()
         } else {
             return try await getCloudCompletionSession()
@@ -1413,6 +1043,8 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotRegistered
         }
         
+        let aiModel = try await getAIModel(modelCode: modelCode)
+        
         // Is Model Downloaded?
         guard try await getAIModelDownloadState(modelCode: modelCode) == .downloaded else {
             self.logger("🚫 Tried to generate a local completion session when the model is not downloaded.", .error)
@@ -1420,81 +1052,12 @@ public class FreeToken: @unchecked Sendable {
         }
         
         // Is Device Capable?
-        guard deviceManager?.isAICapable == true else {
+        guard aiModel.canInitializeOnDevice() else {
             self.logger("🚫 Tried to generate a local completion session when the device is not AI capable.", .error)
             throw FreeTokenError.deviceNotCapable
         }
         
-        var modelCode = modelCode
-        let config: AIModelConfiguration
-        let deviceManager: DeviceManager
-        let repoName: String
-        let modelFileURL: URL
-        
-#if os(iOS) || os(tvOS) || os(watchOS)
-                let modelBaseURL = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                    .appendingPathComponent("FreeToken")
-                    .appendingPathComponent("Models")
-#else
-                let modelBaseURL = FileManager.default.homeDirectoryForCurrentUser
-                    .appendingPathComponent(".FreeToken") // Use a shared directory just in case they have more than one FreeToken supported app
-                    .appendingPathComponent("Models")
-#endif
-        
-        if let modelCode = modelCode {
-            let aiModel = try await withCheckedThrowingContinuation { continuation in
-                Task {
-                    await self.getAIModel(modelCode: modelCode) { aiModel in
-                        continuation.resume(returning: aiModel)
-                    } error: { error in
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-            
-#if os(iOS)
-            let memoryRequirement = aiModel.coding.clientsConfig["iOS"]!.requiredMemoryBytes
-#else
-            let memoryRequirement = aiModel.coding.clientsConfig["macOS"]!.requiredMemoryBytes
-#endif
-            
-            config = AIModelConfiguration(from: aiModel.coding.config.defaultSettings)
-            deviceManager = DeviceManager(memoryRequirement: memoryRequirement)
-            
-            
-            if let llamaCpp = aiModel.coding.modelTypes?.llamaCpp {
-                repoName = llamaCpp.repo
-                let modelFileName = llamaCpp.modelFileName!
-                
-                let modelURL = modelBaseURL.appendingPathComponent(repoName.replacingOccurrences(of: "/", with: "_"))
-                modelFileURL = modelURL.appendingPathComponent(modelFileName)
-                
-            } else {
-                throw FreeTokenError.unsupportedModelType(message: "llama.cpp model type required, but not available.")
-            }
-        } else {
-#if os(iOS)
-            let memoryRequirement = deviceDetails!.aiModel.clientsConfig["iOS"]!.requiredMemoryBytes
-#else
-            let memoryRequirement = deviceDetails!.aiModel.clientsConfig["macOS"]!.requiredMemoryBytes
-#endif
-            // Use default agent model
-            config = AIModelConfiguration(from: deviceDetails!.aiModel.config.defaultSettings)
-            deviceManager = DeviceManager(memoryRequirement: memoryRequirement)
-            modelCode = deviceDetails!.aiModel.code
-            
-            if let llamaCpp = deviceDetails!.aiModel.modelTypes?.llamaCpp {
-                repoName = llamaCpp.repo
-                let modelFileName = llamaCpp.modelFileName!
-                
-                let modelURL = modelBaseURL.appendingPathComponent(repoName.replacingOccurrences(of: "/", with: "_"))
-                modelFileURL = modelURL.appendingPathComponent(modelFileName)
-            } else {
-                throw FreeTokenError.unsupportedModelType(message: "llama.cpp model type required, but not available.")
-            }
-        }
-        
-        return try CompletionSession(client: self, runLocation: runLocation, config: config, modelPath: modelFileURL.path, modelRepoName: repoName, deviceManager: deviceManager, modelCode: modelCode!, queue: AITaskQueue.shared)
+        return try CompletionSession(client: self, aiModel: aiModel, runLocation: runLocation, queue: AITaskQueue.shared)
     }
     
     internal func getCloudCompletionSession(
@@ -1504,199 +1067,13 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotRegistered
         }
         
-        let config: AIModelConfiguration
-        var modelCode = modelCode
+        let aiModel = try await getAIModel(modelCode: modelCode)
         
-        if let modelCode = modelCode {
-            let aiModel = try await withCheckedThrowingContinuation { continuation in
-                Task {
-                    await self.getAIModel(modelCode: modelCode) { aiModel in
-                        continuation.resume(returning: aiModel)
-                    } error: { error in
-                        continuation.resume(throwing: error)
-                    }
-                }
-            }
-            
-            config = AIModelConfiguration(from: aiModel.coding.config.defaultSettings)
-        } else {
-            config = AIModelConfiguration(from: deviceDetails!.aiModel.config.defaultSettings)
-            modelCode = deviceDetails!.aiModel.code
-        }
-        
-        return CloudCompletionSession(client: self, config: config, modelCode: modelCode!)
+        return CloudCompletionSession(client: self, aiModel: aiModel)
     }
     
     
-    /// Token Counter
-    ///
-    ///
-    /// - Parameters:
-    ///    - text: The text to count tokens for
-    ///    - modelCode: Optional AI Model Code to use for token counting. If not provided, the default model will be used.
-    /// - Returns: The number of tokens in the provided text
-    @available(*, deprecated, message: "countTokens has been moved to a chatSession.  Generate a session via `getChatSession` and use `chatSession.countTokens(text:)` instead.")
-    public func countTokens(text: String, modelCode: Optional<String> = nil) async throws -> Int {
-        guard isDeviceRegistered() else {
-            FreeToken.shared.logger("🔴 Device not registered. Cannot count tokens.", .error)
-            return 0
-        }
-        
-        guard deviceManager?.isAICapable == true else {
-            FreeToken.shared.logger("🔴 Device is not AI capable, cannot tokenize text without a model", .error)
-            throw FreeTokenError.deviceNotCapable
-        }
-        
-        // Use the AI Model Manager to count tokens
-        let aiModelManager: AIModelManager?
-        
-        if let modelCode = modelCode {
-            if let modelManager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = modelManager
-            } else {
-                FreeToken.shared.logger("⏭️ Token counting called for model code \(modelCode) - model not loaded", .warning)
-                throw FreeTokenError.aiModelNotLoaded
-            }
-        } else {
-            // Use Default AI Model Manager
-            aiModelManager = self.aiModelManager
-        }
-        let message = Message(role: .user, content: text)
-        
-        if let aiModelManager = aiModelManager {
-            return try await aiModelManager.tokensCount(messages: [message]) - 2
-        } else {
-            FreeToken.shared.logger("🔴 No AI Model Manager available for token counting", .error)
-            throw FreeTokenError.aiModelNotLoaded
-        }
-    }
-    
-    
-    /// Generate an AI Completion
-    ///
-    /// ```
-    ///     // Basic usage
-    ///     client.generateCompletion(prompt: "A supernova is") { response in
-    ///         // Use the response to the completion how you would like:
-    ///         // response.completion
-    ///      } error: { error in
-    ///         // Handle any errors
-    ///     }
-    ///     
-    ///     // With token streaming
-    ///     client.generateCompletion(
-    ///         prompt: "A supernova is",
-    ///         tokenStream: { token in
-    ///             print(token, terminator: "")  // Print tokens as they arrive
-    ///             // Throw an error to cancel generation
-    ///         }
-    ///     ) { response in
-    ///         print("\nComplete: \(response.completion)")
-    ///     } error: { error in
-    ///         // Handle any errors (including .generationCancelled)
-    ///     }
-    /// ```
-    ///
-    /// > Note: This method will automatically determine whether to route the completion to the cloud or locally depending on
-    /// > the state of the local device and device capabilities.  For more control on whether this runs in the cloud or locally,
-    /// > use ``generateLocalCompletion(prompt:completion:)``
-    /// > or ``generateCloudCompletion(prompt:modelCode:completion:)`` respectively.
-    ///
-    /// > Note: Completion outputs are not persisted in the cloud or on device. Any output is ephemiral.
-    ///
-    /// > Tip: Use this for data processing or background AI work.
-    ///
-    /// - Parameters:
-    ///     - prompt: The prompt you want to send to the AI for completion
-    ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface. (Think of this like a model ID, unique to the individual AI model)
-    ///     - aiRunConfig: Optional configuration for AI generation including max tokens, temperature, etc.
-    ///     - tokenStream: Optional closure for streaming tokens as they're generated. Throw an error to cancel generation.
-    ///     - success: A closure to capture the results of the call to generate the completion
-    ///     - error: A closure to capture any errors that occur during the call
-    ///
-    /// - Returns: Void
-    @available(*, deprecated, message: "generateCompletion is deprecated. Please use `getCompletionSession` instead.")
-    public func generateCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ token: String) async throws -> Void> = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
-        guard isDeviceRegistered() else {
-            await errorCompletion(FreeTokenError.deviceNotRegistered)
-            return
-        }
-        
-        // Check if server forces cloud execution
-        if deviceDetails?.forceCloudRun == true {
-            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
-            return
-        }
-        
-        let aiModelManager: AIModelManager?
-        let deviceManager: DeviceManager?
-        
-        // Try to use the AI Model Manager for the specified model code
-        if let modelCode = modelCode {
-            if let modelManager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = modelManager
-                deviceManager = aiModelsManager.getDeviceManager(for: modelCode)
-            } else {
-                FreeToken.shared.logger("⏭️ Completion called for model code \(modelCode) - model not loaded, running in cloud.", .warning)
-                // Cloud Completion with model code
-                await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
-                return
-            }
-        } else {
-            // Run with Default AI Model Manager
-            aiModelManager = self.aiModelManager
-            deviceManager = self.deviceManager
-        }
-        
-        if await aiModelManager?.getDownloadState() == .downloaded, deviceManager?.isTooHot() == false  {
-            // Generate local completion
-            await generateLocalCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
-            return
-        } else {
-            // Generate cloud completion
-            await generateCloudCompletion(prompt: prompt, modelCode: modelCode, aiRunConfig: aiRunConfig, tokenStream: tokenStream, success: successCompletion, error: errorCompletion)
-        }
-    }
-    
-    /// Generate an AI Completion in the FreeToken Cloud
-    ///
-    /// ```
-    ///     // Basic usage
-    ///     client.generateCloudCompletion(prompt: "Complete the following phrase. My favorite star is") { response in
-    ///         // Process the resulting text
-    ///         // response.completion
-    ///      } error: { error in
-    ///         // Handle error response
-    ///     }
-    ///     
-    ///     // With token streaming
-    ///     client.generateCloudCompletion(
-    ///         prompt: "Complete the following phrase. My favorite star is",
-    ///         tokenStream: { token in
-    ///             print(token, terminator: "")  // Stream tokens from cloud
-    ///         }
-    ///     ) { response in
-    ///         print("\nComplete response: \(response.completion)")
-    ///     } error: { error in
-    ///         // Handle errors
-    ///     }
-    /// ```
-    ///
-    /// Warning: This will not function if you have Cloud completion disabled in the FreeToken Admin interface.
-    ///
-    /// Tip: Specify a larger model with `modelCode` in order to get access to more compute in the cloud for complex processing.
-    ///
-    /// - Parameters:
-    ///     - prompt: Prompt to have the AI complete
-    ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface. (Think of this like a model ID, unique to the individual AI model)
-    ///     - aiRunConfig: Optional configuration for AI generation including max tokens, temperature, etc.
-    ///     - tokenStream: Optional closure for streaming tokens as they're generated. Throw an error to cancel generation.
-    ///     - success: A closure to capture the results of the AI completion
-    ///     - error: A closure to capture any errors that occur during the call
-    ///
-    /// - Returns: Void
-    @available(*, deprecated, message: "generateCloudCompletion is deprecated. Please use `getCompletionSession` and specify runLocation of .cloudRun instead.")
-    public func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ token: String) async throws -> Void> = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    internal func generateCloudCompletion(prompt: String, modelCode: Optional<String> = nil, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ token: String) async throws -> Void> = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
         guard isDeviceRegistered() else {
             await errorCompletion(FreeTokenError.deviceNotRegistered)
             return
@@ -1813,114 +1190,17 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    /// Generate AI completion locally on device
-    ///
-    /// ```
-    ///     // Basic usage
-    ///     client.generateLocalCompletion(prompt: "Message to summarize: \(message). MESSAGE SUMMARY:") { response in
-    ///         // Process the resulting text
-    ///         // response.completion
-    ///     } error: { error in
-    ///         // Handle error response
-    ///     }
-    ///     
-    ///     // With token streaming for real-time output
-    ///     client.generateLocalCompletion(
-    ///         prompt: "Message to summarize: \(message). MESSAGE SUMMARY:",
-    ///         tokenStream: { token in
-    ///             print(token, terminator: "")  // Stream tokens locally
-    ///             // Can throw error to cancel
-    ///         }
-    ///     ) { response in
-    ///         print("\nSummary complete: \(response.completion)")
-    ///     } error: { error in
-    ///         if case .generationCancelled = error {
-    ///             print("Generation was cancelled")
-    ///         }
-    ///     }
-    /// ```
-    ///
-    /// > Warning: This will not function if the AI Model has not been downloaded. Ensure you call ``downloadAIModel(completion:)`` prior
-    /// > to execution of this method.
-    ///
-    /// - Parameters:
-    ///     - prompt: Prompt to have the AI complete
-    ///     - modelCode: AI Model Code defined by FreeToken in the Admin interface
-    ///     - aiRunConfig: Optional configuration for AI generation including max tokens, temperature, etc.
-    ///     - tokenStream: Optional closure for streaming tokens as they're generated. Throw an error to cancel generation.
-    ///     - success: A closure that is called after the successful call to the AI
-    ///     - error: A closure to capture any errors that occur during the call
-    ///
-    /// - Returns: Void
-    @available(*, deprecated, message: "generateLocalCompletion is deprecated. Please use `getCompletionSession` instead.")
-    public func generateLocalCompletion(prompt: String, modelCode: String? = nil, aiRunConfig: AIRunConfig? = nil, tokenStream: Optional<@Sendable (_ token: String) async throws -> Void> = nil, success successCompletion: @escaping @Sendable (Completion) async -> Void, error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void) async {
-        guard isDeviceRegistered() else {
-            await errorCompletion(FreeTokenError.deviceNotRegistered)
-            return
-        }
-        
-        guard self.deviceDetails?.aiModel.cloudOnly == false else {
-            await errorCompletion(FreeTokenError.isCloudOnlyModel)
-            return
-        }
-        
-        let aiModelManager: AIModelManager
-        
-        if let modelCode = modelCode {
-            if let modelManager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = modelManager
-            } else {
-                // Model not loaded
-                await errorCompletion(FreeTokenError.aiModelNotLoaded)
-                return
-            }
-        } else {
-            guard self.aiModelManager != nil else {
-                await errorCompletion(FreeTokenError.aiModelNotLoaded)
-                return
-            }
-            
-            // Use the default AI Model Manager
-            aiModelManager = self.aiModelManager!
-        }
-        
-        guard await aiModelManager.getDownloadState() == .downloaded else {
-            await errorCompletion(FreeTokenError.aiModelNotDownloaded)
-            return
-        }
-        
-        guard deviceManager?.isTooHot() == false else {
-            await errorCompletion(FreeTokenError.isTooHot)
-            return
-        }
-
-        let profiler = Profiler()
-        
-        do {
-            let response: String
-            let usage: TokenUsage?
-            
-            (response, usage) = try await aiModelManager.sendTextToAI(text: prompt, runLocation: .localRun, aiRunConfig: aiRunConfig, tokenStream: tokenStream)
-            let completion = Completion(response: response)
-
-            profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: true, tokenStats: usage)
-            await successCompletion(completion)
-        } catch {
-            if let error = error as? FreeTokenError {
-                profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
-                await errorCompletion(error)
-            } else {
-                let error = FreeTokenError.encoding(message: error.localizedDescription)
-                profiler.end(eventType: Profiler.EventType.generateLocalCompletion, isSuccess: false, errorMessage: error.message)
-                await errorCompletion(error)
-            }
-        }
-    }
-    
     /// Generate a chat completion in the cloud
     ///
     ///
-    func generateCloudChatCompletion(messages: [Message], model: String? = nil, aiRunConfig: AIRunConfig? = nil, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil, success successCallback: @escaping @Sendable (Message) async -> Void, error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void) async {
+    internal func generateCloudChatCompletion(
+        messages: [Message],
+        model: String? = nil,
+        aiRunConfig: AIRunConfig? = nil,
+        chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
+        success successCallback: @escaping @Sendable (Message) async -> Void,
+        error errorCallback: @escaping @Sendable (FreeTokenError) async -> Void
+    ) async {
         guard isDeviceRegistered() else {
             await errorCallback(FreeTokenError.deviceNotRegistered)
             return
@@ -2458,557 +1738,6 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    /// Stop a running generation of the local AI
-    ///
-    /// ```
-    ///    client.stopLocalGeneration()
-    /// ```
-    ///  > Tip: Use this method to stop generation as your app goes into the background. This will help prevent crashes.
-    ///
-    /// - Returns: Void
-    public func stopLocalGeneration() async {
-        guard isDeviceRegistered() else {
-            FreeToken.shared.logger("Device not registered, cannot stop generation", .error)
-            return
-        }
-        
-        await aiModelManager?.stopGeneration()
-    }
-    
-    /// Run a message thread through the AI
-    ///
-    /// ```
-    ///     // Basic usage
-    ///     client.runMessageThread(id: "msgthr-id", success: { response in
-    ///         // The thread has run successfully
-    ///         // Use the result message in your UI immediately (without fetching the thread)
-    ///         // response.resultMessage
-    ///     }, error: { error in
-    ///         // Handle the error - Retry?
-    ///     })
-    ///     
-    ///     // With streaming and cancellation support
-    ///     client.runMessageThread(
-    ///         id: "msgthr-id",
-    ///         chatStatusStream: { token, status in
-    ///             if let token = token {
-    ///                 print(token, terminator: "")
-    ///             }
-    ///             // Throw error to cancel generation
-    ///             if shouldCancel {
-    ///                 throw MyError.userCancelled
-    ///             }
-    ///         },
-    ///         success: { response in
-    ///             print("\nThread complete")
-    ///         },
-    ///         error: { error in
-    ///             if case .generationCancelled = error {
-    ///                 print("Thread was cancelled")
-    ///             }
-    ///         }
-    ///     )
-    /// ```
-    ///
-    /// > Tip: You can control where the AI runs with the `runLocation` parameter. Use `.cloudRun` to force cloud execution, `.localRun` to force local execution, or `.automatic` (default) to let the system decide.
-    ///
-    /// > Tip: Use `documentSearchScope` to change the context that the AI uses for RAG.  If left unset, the AI will use the document scope set in the Agent in the FreeToken Admin console.
-    ///
-    /// > Tip: Use `additionalContext` to inject ephemeral information into a message like a user's current location or details about them that you want the AI to take into account during the answer. This information will not be persisted into the message.
-    ///
-    /// > Tip: Use `toolAccess` to control which tools can be run during the message thread.  This allows you to limit the tools that can be used during the message thread execution. Order matters, so if you want to allow only one tool you can use `[.denyAll, .allow("my_tool")]`. This would deny all tools except "my_tool".
-    ///
-    /// > Warning: The AI model must be downloaded prior to using this method. It's recommended that you ensure that ``downloadAIModel(completion:)`` is called prior to use.
-    ///
-    /// - Parameters:
-    ///    - id: String of the message thread ID
-    ///    - runLocation: Specifies where to run the AI - `.automatic` (default), `.cloudRun`, or `.localRun`
-    ///    - documentSearchScope: Optional document search scope. Used for context for the AI
-    ///    - privateDocumentStoreIds: Optional array of private document store IDs for RAG context
-    ///    - aiRunConfig: Optional AI run configuration to override default AI model settings
-    ///    - modelCode: Optional AI Model Code to use a different model than provided by the device session (will force to cloud)
-    ///    - toolAccess: Optional ToolRunMask to control which tools can be run during the message thread
-    ///    - additionalContext: Optional add additional context to the last user message
-    ///    - success: A closure to capture the result of the run of the message thread
-    ///    - error: A closure to capture any errors that occur during the call
-    ///    - chatStatusStream: Optional closure to capture the status and streaming tokens. Throw an error to cancel generation.
-    ///    - toolCallback: Optional closure to handle tool calls
-    ///
-    /// - Returns: Void
-    @available(*, deprecated, message: "Deprecated in favor of using getChatSession and then runing generateNewMessage.")
-    public func runMessageThread(
-        id messageThreadID: String,
-        runLocation: RunLocation = .automatic,
-        runIdentifier: Optional<String> = nil,
-        documentSearchScope: Optional<String> = nil,
-        privateDocumentStoreIds: Optional<[String]> = nil,
-        aiRunConfig: Optional<AIRunConfig> = nil,
-        modelCode: Optional<String> = nil,
-        toolAccess: [ToolRunMask] = [.allowAll],
-        additionalContext: String = "",
-        success successCompletion: @escaping @Sendable (Message) async -> Void,
-        error errorCompletion: @escaping @Sendable (FreeTokenError) async -> Void,
-        chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
-        toolCallback: Optional<@Sendable ([ToolCall]) async -> String> = nil
-    ) async {
-        do {
-            try await chatStatusStream?(nil, .starting)
-        } catch {
-            // User cancelled immediately
-            await errorCompletion(FreeTokenError.generationCancelled)
-            return
-        }
-        
-        guard isDeviceRegistered() else {
-            do {
-                try await chatStatusStream?(nil, .failed)
-            } catch {
-                // Ignore errors in failed status
-            }
-            await errorCompletion(FreeTokenError.deviceNotRegistered)
-            return
-        }
-        
-        let effectiveRunLocation: RunLocation
-        
-        // Determine effective run location based on priority:
-        // 1. Explicit runLocation parameter (if not automatic)
-        // 2. Device session forceCloudRun setting
-        // 3. Default to automatic
-        if runLocation != .automatic {
-            effectiveRunLocation = runLocation
-        } else if let deviceDetails = deviceDetails, deviceDetails.forceCloudRun == true {
-            effectiveRunLocation = .cloudRun
-        } else {
-            effectiveRunLocation = .automatic
-        }
-        
-        var aiModelManager: AIModelManager? = nil
-        
-        // Only load AI model manager if we might run locally
-        if effectiveRunLocation != .cloudRun {
-            if let modelCode = modelCode {
-                if let manager = aiModelsManager.getManager(for: modelCode) {
-                    // Found a manager!
-                    aiModelManager = manager
-                } else {
-                    // Return an error since the model code is not loaded
-                    
-                    // Get model with checked
-                    do {
-                        let aiModel: AIModel = try await withCheckedThrowingContinuation { continuation in
-                            Task {
-                                await self.getAIModel(modelCode: modelCode) { aiModel in
-                                    continuation.resume(returning: aiModel)
-                                } error: { error in
-                                    continuation.resume(throwing: error)
-                                }
-                            }
-                        }
-                        if !aiModel.cloudOnly {
-                            await errorCompletion(FreeTokenError.aiModelNotDownloaded)
-                            return
-                        }
-                    } catch {
-                        await errorCompletion(FreeTokenError.unknownAIModelCode)
-                        return
-                    }
-                }
-            } else {
-                // No model code provided - use default AIModelManager
-                aiModelManager = self.aiModelManager
-            }
-        }
-        
-        // Workflow Context
-        let context = RunMessageThreadContext(
-            messageThreadID: messageThreadID,
-            runLocation: effectiveRunLocation,
-            runIdentifier: runIdentifier,
-            documentSearchScope: documentSearchScope,
-            privateDocumentStoreIds: privateDocumentStoreIds,
-            deviceDetails: deviceDetails,
-            aiModelManager: aiModelManager,
-            deviceManager: deviceManager,
-            messagesManager: messagesManager,
-            jsonToolResults: deviceDetails?.aiModel.config.promptTemplateConfig.jsonToolResults ?? false,
-            aiRunConfig: aiRunConfig,
-            modelCode: modelCode,
-            toolRunMasks: toolAccess,
-            additionalContext: additionalContext,
-            allToolDefinitions: await toolDefinitionsManager.allToolDefinitions(),
-            toolDefinitionsManager: toolDefinitionsManager,
-            chatStatusStream: chatStatusStream,
-            toolCallback: toolCallback
-        )
-        
-        // Workflow Steps
-        let workflowSteps: [WorkflowStep.Type] = [
-            GetMessages.self,
-            InjectAdditionalContext.self,
-            ToolCallMasking.self,
-            DetermineAIRunLocation.self,
-            LoadAIModel.self,
-            RunAIModelLocally.self, // Order of these two steps is important!
-            RunAIModelInCloud.self, // <---
-            AddMessageToThread.self,
-            SaveAISessionToDisk.self,
-            RunToolCalls.self
-        ]
-        
-        let workflow = WorkflowManager(context: context, steps: workflowSteps)
-        
-        let profiler = Profiler()
-        await workflow.execute { context in
-            let context = context as! RunMessageThreadContext
-            let profilerEventType: Profiler.EventType
-            if context.cloudRun! {
-                profilerEventType = .runMessageThreadCloud
-            } else {
-                profilerEventType = .runMessageThreadLocal
-            }
-            profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true)
-
-            await successCompletion(context.resultMessage!)
-        } failure: { error, context in
-            let context = context as! RunMessageThreadContext
-            let profilerEventType: Profiler.EventType
-            if let cloudRun = context.cloudRun {
-                if cloudRun {
-                    profilerEventType = .runMessageThreadCloud
-                } else {
-                    profilerEventType = .runMessageThreadLocal
-                }
-                profiler.end(eventType: profilerEventType, eventTypeID: context.messageThreadID, isSuccess: true, errorMessage: error.message)
-            } else {
-                // Couldn't determine run location - use local as default
-                profiler.end(eventType: .runMessageThreadLocal, eventTypeID: context.messageThreadID, isSuccess: false, errorMessage: error.message)
-            }
-            
-            await errorCompletion(error)
-        }
-    }
-        
-    /// Load the AI Model into the device memory
-    ///
-    /// ```
-    ///     client.loadModel(success: { loadedState in
-    ///         // Model is loaded and ready for use
-    ///         if loadedState == .loaded {
-    ///             // Use the AI model for local completions
-    ///         }
-    ///     }, error: { error in
-    ///         // Handle the error - Retry?
-    ///     })
-    /// ```
-    ///
-    /// > Note: You must run ``downloadAIModel`` prior to using this method.
-    ///
-    /// > Note: Any success callback means that your system is ready to run AI (regardless of passed state as it may be cloud-only).
-    ///
-    ///- Parameters:
-    ///    - modelCode: Optional AI Model Code to load a specific model, if not provided the default AI Model will be loaded
-    ///    - success: A closure to capture the result of loading the AI model
-    ///    - error: A closure to capture any errors that occur during the call
-    ///
-    /// - Returns: Void
-    @available(*, deprecated, message: "Deprecated. Moved to getChatSession. Automatically loads model on first use.")
-    public func loadModel(modelCode: String? = nil, success successCompletion: @escaping (_ loadedState: AIModelLoadingState) async -> Void, error errorCompletion: @escaping (FreeTokenError) async -> Void) async {
-        guard isDeviceRegistered() else {
-            await errorCompletion(FreeTokenError.deviceNotRegistered)
-            return
-        }
-        
-        guard deviceManager?.isAICapable == true else {
-            FreeToken.shared.logger("💾 Load Model: Device not capable of AI, nothing to do here", .info)
-            await successCompletion(.notAICapable)
-            return
-        }
-        
-        // Get the AI Model Manager
-        let aiModelManager: AIModelManager?
-        if let modelCode = modelCode {
-            if let manager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = manager
-            } else {
-                // Model not downloaded
-                await errorCompletion(FreeTokenError.aiModelNotDownloaded)
-                return
-            }
-        } else {
-            // Use the default AI Model Manager
-            aiModelManager = self.aiModelManager
-            
-            guard deviceDetails?.aiModel.cloudOnly == false else {
-                await successCompletion(.cloudOnly)
-                return
-            }
-        }
-        
-        guard let aiModelManager = aiModelManager else {
-            await errorCompletion(FreeTokenError.aiModelNotLoaded)
-            return
-        }
-        
-        // Check if the AI Model is downloaded
-        guard await aiModelManager.getDownloadState() == .downloaded else {
-            await errorCompletion(FreeTokenError.aiModelNotDownloaded)
-            return
-        }
-        
-        
-        let response = await aiModelManager.loadModel()
-        switch response {
-        case .success(let isSuccess):
-            await successCompletion(isSuccess)
-        case .failure(let error):
-            await errorCompletion(error)
-        }
-    }
-    
-    /// Prewarm AI Cache for a specific run identifier, useful for preparing the AI model for a specific task or run.
-    ///
-    /// ```
-    ///    await client.prewarmAIFor(runIdentifier: "run-id") {
-    ///        // Successfully prewarmed AI for run identifier
-    ///    } error: {
-    ///        // Handle error during prewarming
-    ///    }
-    /// ```
-    ///
-    /// Tip: Use this to prewarm a cache when convienient, then use this same run identifier when calling any run methods like `runMessageThread`.
-    ///
-    /// - Parameters:
-    ///   - runIdentifier: The identifier for the run to prewarm the AI model for
-    ///   - modelCode: Optional AI Model Code to prewarm a specific model, if not provided the default AI Model will be used
-    ///   - runConfig: Optional configuration for the AI run
-    ///   - success: A closure to capture the result of the prewarming operation
-    ///   - error: A closure to capture any errors that occur during the call
-    @available(*, deprecated, message: "Deprecated in favor of using getChatSession and then runing generateNewMessage with prewarm.  Note: getChatSession automatically prewarms on first use.")
-    public func prewarmAIFor(runIdentifier: String, modelCode: String? = nil, runConfig: AIRunConfig? = nil, toolAccess: [ToolRunMask] = [.allowAll], success successCallback: (@Sendable () async -> Void)? = nil, error errorCallback: (@Sendable (FreeTokenError) async -> Void)? = nil) async {
-        guard isDeviceRegistered() else {
-            FreeToken.shared.logger("🔴 Device not registered, cannot prewarm AI for run identifier", .error)
-            return
-        }
-        
-        // Get the AI Model Manager by Model Code
-        let aiModelManager: AIModelManager?
-        if let modelCode = modelCode {
-            if let manager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = manager
-            } else {
-                // Model not downloaded
-                await errorCallback?(FreeTokenError.aiModelNotDownloaded)
-                return
-            }
-        } else {
-            // Use the default AI Model Manager
-            aiModelManager = self.aiModelManager
-            
-            guard deviceDetails?.aiModel.cloudOnly == false else {
-                await errorCallback?(FreeTokenError.isCloudOnlyModel)
-                return
-            }
-        }
-        
-        do {
-            let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
-            
-            _ = try await aiModelManager?.loadSession(for: runIdentifier, runConfig: runConfig)
-            _ = try await aiModelManager?.prewarmForId(id: runIdentifier, systemMessage: systemMessage, runConfig: runConfig)
-            
-            await successCallback?()
-        } catch {
-            await errorCallback?(FreeTokenError.failedToLoadModel)
-        }
-    }
-        
-    
-    
-    /// Prewarm AI Cache for MessageThread
-    ///
-    /// ```
-    ///    await client.prewarmAIForMessageThread(messageThreadID: "msgthr-id")
-    /// ```
-    ///
-    /// Tip: Use this method when the initial hit of downloading the messages for a thread and loading the AI model is too slow and could be done at a more convienient time for the user.
-    ///
-    /// - Parameters:
-    ///    - messageThreadID: The ID of the message thread to prewarm the AI
-    /// - Returns: Void
-    @available(*, deprecated, message: "Deprecated in favor of using getChatSession.  Note: getChatSession automatically prewarms on first use.")
-    public func prewarmAIForMessageThread(
-        messageThreadID: String,
-        modelCode: String? = nil,
-        runConfig: AIRunConfig? = nil,
-        success successCallback: (@Sendable () async -> Void)? = nil,
-        error errorCallback: (@Sendable (FreeTokenError) async -> Void)? = nil
-    ) async {
-        guard isDeviceRegistered() else {
-            FreeToken.shared.logger("🔴 Device not registered, cannot prewarm AI for message thread", .error)
-            return
-        }
-        
-        // Get the AI Model Manager by Model Code
-        let aiModelManager: AIModelManager?
-        if let modelCode = modelCode {
-            if let manager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = manager
-            } else {
-                // Model not downloaded
-                await errorCallback?(FreeTokenError.aiModelNotDownloaded)
-                return
-            }
-        } else {
-            // Use the default AI Model Manager
-            aiModelManager = self.aiModelManager
-            
-            guard deviceDetails?.aiModel.cloudOnly == false else {
-                await errorCallback?(FreeTokenError.isCloudOnlyModel)
-                return
-            }
-        }
-        
-        await self.getMessageThread(id: messageThreadID) { thread in
-            do {
-                try await aiModelManager?.loadSessionFromDiskByID(id: messageThreadID, messages: thread.messages)
-                await successCallback?()
-                return
-            } catch {
-                FreeToken.shared.logger("⚠️ Unable to load message thread into AI memory from disk - loading manually: \(error.localizedDescription)", .warning)
-            }
-            
-            do {
-                _ = try await aiModelManager?.loadSession(for: messageThreadID, with: thread.messages, runConfig: runConfig)
-                await successCallback?()
-            } catch {
-                await errorCallback?(FreeTokenError.failedToLoadModel)
-            }
-        } error: { error in
-            await errorCallback?(error)
-        }
-    }
-    
-    /// Unload the AI Model from the device memory
-    ///
-    /// ```
-    ///     client.unloadModel()
-    /// ```
-    ///
-    /// > Note: This method will unload the AI model from the device memory, freeing up resources.
-    /// > It is useful when the AI model is no longer needed or when you want to switch to a different model.
-    ///
-    /// - Parameters:
-    ///    - modelCode: Optional AI Model Code to unload a specific model, if not provided the default AI Model will be unloaded
-    /// - Returns: Void
-    @available(*, deprecated, message: "Deprecated. AI model unloading is handled on individual chat and completion sessions. See getChatSession and getCompletionSession.")
-    public func unloadModel(modelCode: String? = nil) async {
-        
-        FreeToken.shared.logger("Unloading model\(modelCode != nil ? " with code (\(modelCode!))" : "")", .info)
-        // Get the AI Model Manager
-        let aiModelManager: AIModelManager?
-        if let modelCode = modelCode {
-            if let manager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = manager
-            } else {
-                // Model not downloaded
-                FreeToken.shared.logger("⚠️ AI Model with code \(modelCode) not loaded", .warning)
-                return
-            }
-        } else {
-            // Use the default AI Model Manager
-            aiModelManager = self.aiModelManager
-            
-            guard deviceDetails?.aiModel.cloudOnly == false else {
-                FreeToken.shared.logger("⚠️ AI Model is cloud-only, nothing to unload", .warning)
-                return
-            }
-        }
-        
-        await aiModelManager?.unloadModel()
-    }
-    
-    /// Send one message directly to the AI without going to the cloud
-    ///
-    /// ```
-    ///     do {
-    ///         let message = try await client.localChat(content: "Tell me about a supernova", role: "user")
-    ///         // Do what you will with the response.
-    ///     } catch {
-    ///         // Handle error
-    ///         print(error.message ?? error.localizedDescription)
-    ///     }
-    /// ```
-    ///
-    /// > Note: This is ephemerial and does not run via the cloud at all. This call does not include RAG or any context injection.
-    ///
-    /// > Note: This method does not manage context window size, be careful when using this method with large messages or many messages.
-    ///
-    /// > Warning: You must run ``downloadAIModel`` prior to using this method. This will not work on devices
-    /// > that do not support AI.
-    ///
-    /// - Parameters:
-    ///   - modelCode: Optional AI Model Code to use a specific model, if not provided the default AI Model will be used
-    ///   - messages: An array of Message objects to send to the AI
-    ///   - runIdentifier: Optional unique ID for the chat session. This ID helps keep the chat persistent in the device memory between runs.
-    ///   - aiRunConfig: Optional configuration for the AI Model run, such as temperature
-    ///   - outputStream: Optional closure to capture output stream as they are generated
-    /// - Returns: FreeToken.Message object
-    /// - Throws: FreeTokenError if the device is not registered or if there is an error during the local chat
-    public func localChat(
-        modelCode: String? = nil,
-        messages: [Message],
-        runIdentifier: String? = nil,
-        aiRunConfig: AIRunConfig? = nil,
-        outputStream: Optional<@Sendable (String) async -> Void> = nil
-    ) async throws -> Message {
-        guard isDeviceRegistered() else {
-            throw FreeTokenError.deviceNotRegistered
-        }
-        
-        let aiModelManager: AIModelManager
-        if let modelCode = modelCode {
-            if let manager = aiModelsManager.getManager(for: modelCode) {
-                aiModelManager = manager
-            } else {
-                throw FreeTokenError.aiModelNotDownloaded
-            }
-        } else {
-            guard self.aiModelManager != nil else {
-                throw FreeTokenError.aiModelNotLoaded
-            }
-            
-            // Use the default AI Model Manager
-            aiModelManager = self.aiModelManager!
-            
-            guard deviceDetails?.aiModel.cloudOnly == false else {
-                throw FreeTokenError.isCloudOnlyModel
-            }
-        }
-                
-        let runId: String
-        
-        if runIdentifier == nil {
-            runId = UUID().uuidString
-        } else {
-            runId = runIdentifier!
-        }
-        
-        let profiler = Profiler()
-        do {
-            let response: String
-            let usage: TokenUsage?
-            (response, usage) = try await aiModelManager.sendMessagesToAI(messages: messages, runIdentifier: runId, runLocation: .localRun, aiRunConfig: aiRunConfig, tokenStream: outputStream)
-            profiler.end(eventType: .generateLocalChatCompletion, isSuccess: true, tokenStats: usage)
-            let message = Message(role: .assistant, content: response, tokenUsage: usage)
-            
-            return message
-        } catch {
-            profiler.end(eventType: .generateLocalChatCompletion, isSuccess: false, errorMessage: "Failed to generate local chat with error: \(error.localizedDescription)")
-            throw error
-        }
-    }
-    
     // Internal Method
     func sendTelemetry(profiler: Profiler) {
         let eventData = Codings.TelemetryDataRequest(eventDurationInMilliseconds: profiler.msDuration(), eventTypeId: profiler.eventTypeID, eventObjectType: profiler.eventObjectType, isSuccess: profiler.isSuccess, errorMessage: profiler.errorMessage, tokenStats: profiler.tokenStats?.asCodable(), telemetryDataVersion: 1)
@@ -3037,7 +1766,7 @@ public class FreeToken: @unchecked Sendable {
     }
     
     private func isDeviceRegistered() -> Bool {
-        return deviceDetails != nil
+        return deviceSession != nil
     }
     
     /// Fetches a specific resource by ID with optional query parameters.

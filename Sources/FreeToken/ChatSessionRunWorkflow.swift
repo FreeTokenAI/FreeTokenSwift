@@ -114,18 +114,20 @@ extension FreeToken {
     }
     
     final class RunLocalChatSession: WorkflowStep, @unchecked Sendable {
-        let context: ChatSessionRunWorkflowContext
+        var context: ChatSessionContextProtocol
         
         init(context: any FreeToken.WorkflowContext) {
-            self.context = context as! ChatSessionRunWorkflowContext
+            self.context = context as! ChatSessionContextProtocol
         }
         
         func execute(
             success: @escaping @Sendable (any FreeToken.WorkflowContext) async -> Void,
             failure: @escaping @Sendable (FreeToken.FreeTokenError, any FreeToken.WorkflowContext) async -> Void) async {
                 
+                var resultContent = ""
                 do {
-                    var resultContent = ""
+                    try await self.context.chatStatusStream?(nil, .sending_to_local_ai)
+                    
                     let inputTokensCount = await context.chatSession.kvTokenCount()
                     var tokenCount = 0
                     for try await nextChunk in try await context.chatSession.generate(for: context.chatSession.runID) {
@@ -144,13 +146,17 @@ extension FreeToken {
                     
                     // Add New Assitant Message to Thread
                     let assistantMessage = Message(role: .assistant, content: resultContent, tokenUsage: tokenUsage)
-                    _ = try await self.context.chatSession.addMessage(message: assistantMessage)
+                    _ = try await self.context.chatSession.addMessage(message: assistantMessage, updateKVCache: false)
                     _ = try await self.context.chatSession.saveSession()
                     try await self.context.chatStatusStream?(nil, .new_message_created)
                     self.context.lastGeneratedMessage = assistantMessage
                     await success(self.context)
                     return
                 } catch {
+                    if resultContent != "" {
+                        let partialMessage = Message(role: .assistant, content: resultContent)
+                        _ = try? await self.context.chatSession.addMessage(message: partialMessage, updateKVCache: false)
+                    }
                     let err = FreeTokenError.failedToRunAIWithError(message: error.localizedDescription)
                     await failure(err, self.context)
                 }
@@ -169,14 +175,25 @@ extension FreeToken {
             do {
                 let messages = try await context.chatSession.getMessages()
                 
-                await FreeToken.shared.generateCloudChatCompletion(messages: messages, model: context.modelCode, aiRunConfig: context.aiRunConfig, chatStatusStream: self.context.chatStatusStream) { message in
-                    self.context.lastGeneratedMessage = message
-                    FreeToken.shared.logger("🏁 Cloud AI run completed with message: \(message.content)", .info)
-                    await success(self.context)
-                } error: { error in
-                    FreeToken.shared.logger("🔴 Cloud AI run failed with error: \(error)", .error)
-                    await failure(error, self.context)
+                let assistantMessage = try await withCheckedThrowingContinuation { continuation in
+                    Task {
+                        try await self.context.chatStatusStream?(nil, .sending_to_cloud_ai)
+                        await FreeToken.shared.generateCloudChatCompletion(messages: messages, model: context.modelCode, aiRunConfig: context.aiRunConfig, chatStatusStream: self.context.chatStatusStream) { message in
+                            continuation.resume(returning: message)
+                        } error: { error in
+                            FreeToken.shared.logger("🔴 Cloud AI run failed with error: \(error)", .error)
+                            continuation.resume(throwing: error)
+                        }
+                    }
                 }
+                
+                let message = try await self.context.chatSession.addMessage(message: assistantMessage, updateKVCache: false)
+                try await self.context.chatSession.saveSession()
+                try await self.context.chatStatusStream?(nil, .new_message_created)
+                self.context.lastGeneratedMessage = message
+                
+                FreeToken.shared.logger("🏁 Cloud AI run completed with message: \(assistantMessage.content)", .info)
+                await success(self.context)
             } catch {
                 await failure(error as! FreeTokenError, context)
             }
@@ -257,10 +274,8 @@ extension FreeToken {
                     
                     let toolMessage = Message(role: .tool, content: result)
                     _ = try await self.context.chatSession.addMessage(message: toolMessage)
-                    try? await self.context.chatStatusStream?(nil, .new_message_created)
-                    
-                    try await self.context.chatSession.updateModelContext()
                     try await self.context.chatSession.saveSession()
+//                    try? await self.context.chatStatusStream?(nil, .new_message_created)
                     
                     let additionalSteps: [any WorkflowStep.Type] = [
                         RunLocalChatSession.self,

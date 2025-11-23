@@ -77,15 +77,7 @@ extension FreeToken {
 
             // Derive destination directory exactly as download() would so paths align.
             let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
-#if os(iOS)
             let destinationRelative = "FreeToken/Models/" + sanitizedRepo
-            let destination = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
-                .appendingPathComponent(destinationRelative).path
-#else
-            let destinationRelative = ".FreeToken/Models/" + sanitizedRepo
-            let destination = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(destinationRelative).path
-#endif
 
             // Obtain model file metadata (URLs + optional SHA256 hashes). If this fails we cannot
             // build a session, so we log and return nil rather than throwing to keep signature simple.
@@ -118,19 +110,12 @@ extension FreeToken {
             success: @escaping @Sendable (_ destination: String) async -> Void,
             failure: @escaping @Sendable (FreeTokenError) async -> Void
         ) async throws {
-#if os(iOS) || os(tvOS) || os(watchOS)
             // Replace slashes in repo (e.g. "owner/repo") so we don't create nested directories unintentionally.
             let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
             // Set the destination directory Application Support/FreeToken/Models/<sanitizedRepo>
             let destinationRelative = "FreeToken/Models/" + sanitizedRepo
             let destination = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
                 .appendingPathComponent(destinationRelative).path
-#else
-            let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
-            let destinationRelative = ".FreeToken/Models/" + sanitizedRepo
-            let destination = FileManager.default.homeDirectoryForCurrentUser
-                .appendingPathComponent(destinationRelative).path
-#endif
             
             
             if let existingSession = downloadManager.getSession(id: modelRepo) {

@@ -84,6 +84,8 @@ extension FreeToken {
         func generate(for runID: String) async throws -> AsyncThrowingStream<String, Error>
         func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics?
         func saveSession() async throws
+        
+        func addMessage(message: Message, updateKVCache: Bool) async throws -> Message
     }
     
     
@@ -162,6 +164,7 @@ extension FreeToken {
         // MARK: - Properties
 
         let client: FreeToken
+        let aiModel: AIModel
         var messageThreadID: String?
         let runLocation: RunLocation
         var isPrewarmed: Bool = false
@@ -177,7 +180,6 @@ extension FreeToken {
         let toolAccess: [ToolRunMask]
         let runID: String = UUID().uuidString
         let modelCode: String
-        let config: AIModelConfiguration
         let modelPath: String
         let repoName: String
 
@@ -185,24 +187,18 @@ extension FreeToken {
 
         internal init(
             client: FreeToken,
-            messagePreparer: MessagePreparer,
+            aiModel: AIModel,
             systemMessage: Message,
             runLocation: RunLocation,
-            config: AIModelConfiguration,
-            modelPath: String,
-            modelRepoName: String,
-            deviceManager: DeviceManager,
             messagesManager: MessagesManager,
             toolDefinitionsManager: ToolDefinitionsManager,
             toolAccess: [ToolRunMask] = [.allowAll],
-            jsonToolResults: Bool,
-            modelCode: String,
             queue: AITaskQueue,
             messageThreadID: String? = nil
         ) async throws {
             self.client = client
-            self.messagePreparer = messagePreparer
-            self.deviceManager = deviceManager
+            self.messagePreparer = aiModel.messagePreparer()
+            self.deviceManager = aiModel.deviceManager!
             self.queue = queue
             self.messageThreadID = messageThreadID
             self.runLocation = runLocation
@@ -210,36 +206,13 @@ extension FreeToken {
             self.messagesManager = messagesManager
             self.toolDefinitionsManager = toolDefinitionsManager
             self.toolAccess = toolAccess
-            self.jsonToolResults = jsonToolResults
-            self.modelCode = modelCode
-            self.config = config
-            self.modelPath = modelPath
-            self.repoName = modelRepoName
+            self.jsonToolResults = aiModel.jsonToolResults
+            self.modelCode = aiModel.code
+            self.modelPath = aiModel.getRootModelPath().path
+            self.repoName = aiModel.repo!
+            self.aiModel = aiModel
             
-            // Initialize Model
-            let options = LlamaInitOptions(
-                contextSize: config.nCTX,
-                maxSequences: 1,  // Default to 4 parallel sequences
-                maxNewTokens: config.maxTokenCount,
-                temperature: config.temperature,
-                topK: config.topK,
-                topP: config.topP,
-                repeatPenalty: config.penaltyRepeat,
-                repeatLastN: Int(config.penaltyLastN),
-                frequencyPenalty: config.penaltyFrequency,
-                presencePenalty: config.penaltyPresence,
-                dryMultiplier: config.dryMultiplier,
-                dryBase: config.dryBase,
-                dryAllowedLength: Int(config.dryAllowedLength),
-                dryPenaltyLastN: Int(config.dryPenaltyLastN),
-                xtcProbability: config.xtcProbability,
-                xtcThreshold: config.xtcThreshold,
-                threadCount: DeviceManager.recommendedThreadCounts(reserve: 2).decode,
-                batchSize: config.batchSize,
-                threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
-            )
-            
-            self.model = try LlamaManager(modelPath: modelPath, options: options, repoName: modelRepoName)
+            self.model = try aiModel.llamaManager()
             
             await self.prewarm()
         }
@@ -258,11 +231,6 @@ extension FreeToken {
         ///
         /// - Note: This is a no-op if the session is already prewarmed.
         public func prewarm() async {
-            guard deviceManager.availableMemoryForRequestedSize() else {
-                client.logger("⚠️ Not enough available memory to load model", .warning)
-                return
-            }
-
             if isPrewarmed {
                 return
             }
@@ -274,6 +242,7 @@ extension FreeToken {
                     do {
                         try await self.model.loadSession(fileName: "\(messageThreadID).bin", systemMessage: self.systemMessage, runID: self.runID)
                         self.client.logger("✅ Loaded existing session from disk for prewarming.", .info)
+                        return
                     } catch {
                         self.client.logger("Failed to load session from disk. Likely does not exist. Proceeding with new creation.", .info)
                     }
@@ -363,7 +332,37 @@ extension FreeToken {
                 return try await withCheckedThrowingContinuation { continuation in
                     Task {
                         await client.addMessageToThread(id: messageThreadID, message: message) { message in
-                            continuation.resume(returning: message)
+                            do {
+                                try await self.model.addMessage(message: message, runID: self.runID)
+                                continuation.resume(returning: message)
+                            } catch {
+                                continuation.resume(throwing: error)
+                            }
+                            
+                        } error: { error in
+                            continuation.resume(throwing: error)
+                        }
+                    }
+                }
+            } else {
+                throw FreeTokenError.messageThreadNotCreated
+            }
+        }
+        
+        internal func addMessage(message: Message, updateKVCache: Bool = true) async throws -> Message {
+            if let messageThreadID = messageThreadID {
+                return try await withCheckedThrowingContinuation { continuation in
+                    Task {
+                        await client.addMessageToThread(id: messageThreadID, message: message) { message in
+                            do {
+                                if updateKVCache {
+                                    try await self.model.addMessage(message: message, runID: self.runID)
+                                }
+                                continuation.resume(returning: message)
+                            } catch {
+                                continuation.resume(throwing: error)
+                            }
+                            
                         } error: { error in
                             continuation.resume(throwing: error)
                         }
@@ -448,31 +447,16 @@ extension FreeToken {
             }
 
             try await chatStatusStream?(nil, .starting)
-            
-            // Determine Run Location (local or fallback to cloud)
-            var effectiveRunLocation = runLocation
-            if runLocation == .automatic {
-                if deviceManager.isAICapable && deviceManager.availableMemoryForRequestedSize() {
-                    // Run Locally
-                    client.logger("✅ Local AI run possible - proceeding with local generation.", .info)
-                    effectiveRunLocation = .localRun
-                    try await chatStatusStream?(nil, .sending_to_local_ai)
-                } else {
-                    effectiveRunLocation = .cloudRun
-                }
-            }
 
 
-            let cloudSession = CloudChatSession(client: client, messsagePreparer: messagePreparer, config: config, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager, jsonToolResults: jsonToolResults, modelCode: modelCode)
-
-            if effectiveRunLocation == .cloudRun {
-                client.logger("⚠️ Local AI run not possible, falling back to cloud.", .info)
-                try await chatStatusStream?(nil, .cloud_fallback)
-
-                return try await cloudSession.generateNewMessage(documentSearchScope: documentSearchScope, privateDocumentStoreIDs: privateDocumentStoreIDs, chatStatusStream: chatStatusStream, toolUseHandler: toolUseHandler)
-            }
-
-            try await self.updateModelContext()
+            let cloudSession = CloudChatSession(
+                client: client,
+                aiModel: aiModel,
+                messagesManager: messagesManager,
+                toolDefinitionsManager: toolDefinitionsManager,
+                toolAccess: toolAccess,
+                messageThreadID: messageThreadID
+            )
 
             let workflowSteps: [WorkflowStep.Type] = [
                 RunLocalChatSession.self, // Run Generation
@@ -555,29 +539,7 @@ extension FreeToken {
         /// - Note: This is typically called automatically when needed. Manual calls are only necessary if you've explicitly unloaded the model.
         public func load() async throws {
             await unload()
-            let options = LlamaInitOptions(
-                contextSize: config.nCTX,
-                maxSequences: 1,  // Default to 4 parallel sequences
-                maxNewTokens: config.maxTokenCount,
-                temperature: config.temperature,
-                topK: config.topK,
-                topP: config.topP,
-                repeatPenalty: config.penaltyRepeat,
-                repeatLastN: Int(config.penaltyLastN),
-                frequencyPenalty: config.penaltyFrequency,
-                presencePenalty: config.penaltyPresence,
-                dryMultiplier: config.dryMultiplier,
-                dryBase: config.dryBase,
-                dryAllowedLength: Int(config.dryAllowedLength),
-                dryPenaltyLastN: Int(config.dryPenaltyLastN),
-                xtcProbability: config.xtcProbability,
-                xtcThreshold: config.xtcThreshold,
-                threadCount: DeviceManager.recommendedThreadCounts(reserve: 2).decode,
-                batchSize: config.batchSize,
-                threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
-            )
-
-            self.model = try LlamaManager(modelPath: modelPath, options: options, repoName: repoName)
+            self.model = try aiModel.llamaManager()
 
             await self.prewarm()
         }
@@ -648,22 +610,19 @@ extension FreeToken {
         
         internal init(
             client: FreeToken,
-            messsagePreparer: MessagePreparer,
-            config: AIModelConfiguration,
+            aiModel: AIModel,
             messagesManager: MessagesManager,
             toolDefinitionsManager: ToolDefinitionsManager,
-            jsonToolResults: Bool,
-            modelCode: String,
             toolAccess: [ToolRunMask] = [.allowAll],
             messageThreadID: String? = nil
         ) {
             self.client = client
-            self.messagePreparer = messsagePreparer
-            self.config = config
+            self.messagePreparer = aiModel.messagePreparer()
+            self.config = aiModel.aiModelConfiguration
             self.messagesManager = messagesManager
             self.toolDefinitionsManager = toolDefinitionsManager
-            self.jsonToolResults = jsonToolResults
-            self.modelCode = modelCode
+            self.jsonToolResults = aiModel.jsonToolResults
+            self.modelCode = aiModel.code
             self.messageThreadID = messageThreadID
             self.toolAccess = toolAccess
         }
@@ -732,6 +691,22 @@ extension FreeToken {
         ///
         /// - Note: You must call `createMessageThread()` before adding messages to a new session.
         public func addMessage(message: Message) async throws -> Message {
+            if let messageThreadID = messageThreadID {
+                return try await withCheckedThrowingContinuation { continuation in
+                    Task {
+                        await client.addMessageToThread(id: messageThreadID, message: message) { message in
+                            continuation.resume(returning: message)
+                        } error: { error in
+                            continuation.resume(throwing: error)
+                        }
+                    }
+                }
+            } else {
+                throw FreeTokenError.messageThreadNotCreated
+            }
+        }
+        
+        internal func addMessage(message: Message, updateKVCache: Bool = true) async throws -> Message {
             if let messageThreadID = messageThreadID {
                 return try await withCheckedThrowingContinuation { continuation in
                     Task {
@@ -898,6 +873,7 @@ extension FreeToken {
     /// - Note: Obtain instances via `FreeToken.shared.getCompletionSession()`. Do not instantiate directly.
     public class CompletionSession: CompletionSessionProtocol, @unchecked Sendable {
         let client: FreeToken
+        let aiModel: AIModel
         let runLocation: RunLocation
         
         let deviceManager: DeviceManager
@@ -905,53 +881,22 @@ extension FreeToken {
         var model: LlamaManager
         let runID: String = UUID().uuidString
         let modelCode: String
-        let config: AIModelConfiguration
-        let modelPath: String
-        let repoName: String
         
         internal init(
             client: FreeToken,
+            aiModel: AIModel,
             runLocation: RunLocation,
-            config: AIModelConfiguration,
-            modelPath: String,
-            modelRepoName: String,
-            deviceManager: DeviceManager,
-            modelCode: String,
             queue: AITaskQueue
         ) throws {
             self.client = client
-            self.deviceManager = deviceManager
+            self.aiModel = aiModel
+            self.deviceManager = aiModel.deviceManager!
             self.queue = queue
             self.runLocation = runLocation
-            self.modelCode = modelCode
-            self.config = config // Keep this for cloud fallbacks
-            self.modelPath = modelPath
-            self.repoName = modelRepoName
+            self.modelCode = aiModel.code
             
             // Initialize Model
-            let options = LlamaInitOptions(
-                contextSize: config.nCTX,
-                maxSequences: 1,  // Default to 4 parallel sequences
-                maxNewTokens: config.maxTokenCount,
-                temperature: config.temperature,
-                topK: config.topK,
-                topP: config.topP,
-                repeatPenalty: config.penaltyRepeat,
-                repeatLastN: Int(config.penaltyLastN),
-                frequencyPenalty: config.penaltyFrequency,
-                presencePenalty: config.penaltyPresence,
-                dryMultiplier: config.dryMultiplier,
-                dryBase: config.dryBase,
-                dryAllowedLength: Int(config.dryAllowedLength),
-                dryPenaltyLastN: Int(config.dryPenaltyLastN),
-                xtcProbability: config.xtcProbability,
-                xtcThreshold: config.xtcThreshold,
-                threadCount: DeviceManager.recommendedThreadCounts(reserve: 2).decode,
-                batchSize: config.batchSize,
-                threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
-            )
-            
-            self.model = try LlamaManager(modelPath: modelPath, options: options, repoName: modelRepoName)
+            self.model = try aiModel.llamaManager()
         }
 
         // MARK: - Public Methods
@@ -986,29 +931,8 @@ extension FreeToken {
         /// - Note: If configured with `.automatic` run location, this will fallback to cloud if local execution fails.
         public func generateCompletion(from text: String, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil) async throws -> Completion {
             let message = Message(role: .user, content: text, attachments: nil)
-
-            var effectiveRunLocation = runLocation
-            if runLocation == .automatic {
-                if deviceManager.isAICapable && deviceManager.availableMemoryForRequestedSize() {
-                    // Run Locally
-                    client.logger("✅ Local AI run possible - proceeding with local generation.", .info)
-                    effectiveRunLocation = .localRun
-                    try await chatStatusStream?(nil, .sending_to_local_ai)
-                } else {
-                    effectiveRunLocation = .cloudRun
-                }
-            }
             
-            if effectiveRunLocation == .cloudRun {
-                client.logger("⚠️ Local AI run not possible, falling back to cloud.", .info)
-                try await chatStatusStream?(nil, .cloud_fallback)
-                
-                let cloudSession = CloudCompletionSession(client: client, config: config, modelCode: modelCode)
-                
-                return try await cloudSession.generateCompletion(from: text, chatStatusStream: chatStatusStream)
-            }
-            
-            try await self.model.updateContext(messages: [message], runID: self.runID)
+            try await self.model.addMessage(message: message, runID: runID)
             
             do {
                 let (result, tokenUsage) = try await queue.enqueue(name: "Completion Session", runLocation: .localRun) {
@@ -1037,7 +961,7 @@ extension FreeToken {
                     client.logger("⚠️ Local completion generation failed, falling back to Cloud: \(error.localizedDescription)", .warning)
                     try await chatStatusStream?(nil, .cloud_fallback)
                     
-                    let cloudSession = CloudCompletionSession(client: client, config: config, modelCode: modelCode)
+                    let cloudSession = CloudCompletionSession(client: client, aiModel: aiModel)
                     
                     return try await cloudSession.generateCompletion(from: text, chatStatusStream: chatStatusStream)
                 } else {
@@ -1062,29 +986,8 @@ extension FreeToken {
         /// - Note: This is typically called automatically when needed. Manual calls are only necessary if you've explicitly unloaded the model.
         public func load() async throws {
             await unload()
-            let options = LlamaInitOptions(
-                contextSize: config.nCTX,
-                maxSequences: 1,  // Default to 4 parallel sequences
-                maxNewTokens: config.maxTokenCount,
-                temperature: config.temperature,
-                topK: config.topK,
-                topP: config.topP,
-                repeatPenalty: config.penaltyRepeat,
-                repeatLastN: Int(config.penaltyLastN),
-                frequencyPenalty: config.penaltyFrequency,
-                presencePenalty: config.penaltyPresence,
-                dryMultiplier: config.dryMultiplier,
-                dryBase: config.dryBase,
-                dryAllowedLength: Int(config.dryAllowedLength),
-                dryPenaltyLastN: Int(config.dryPenaltyLastN),
-                xtcProbability: config.xtcProbability,
-                xtcThreshold: config.xtcThreshold,
-                threadCount: DeviceManager.recommendedThreadCounts(reserve: 2).decode,
-                batchSize: config.batchSize,
-                threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
-            )
-
-            self.model = try LlamaManager(modelPath: modelPath, options: options, repoName: repoName)
+            
+            self.model = try aiModel.llamaManager()
         }
     }
 
@@ -1105,17 +1008,16 @@ extension FreeToken {
     /// - Note: Obtain instances via `FreeToken.shared.getCompletionSession(runLocation: .cloudRun)`. Do not instantiate directly.
     public class CloudCompletionSession: CompletionSessionProtocol, @unchecked Sendable {
         let client: FreeToken
-        var config: AIModelConfiguration
+        let aiModel: AIModel
         let modelCode: String
         
         internal init(
             client: FreeToken,
-            config: AIModelConfiguration,
-            modelCode: String
+            aiModel: AIModel
         ) {
             self.client = client
-            self.config = config
-            self.modelCode = modelCode
+            self.aiModel = aiModel
+            self.modelCode = aiModel.code
         }
 
         // MARK: - Public Methods
@@ -1143,17 +1045,9 @@ extension FreeToken {
             let message = Message(role: .user, content: text)
             let messages = [message]
 
-            let aiRunConfig = AIRunConfig(
-                maxGenerationTokens: self.config.maxTokenCount,
-                contentWindowSize: self.config.nCTX,
-                topK: self.config.topK,
-                topP: self.config.topP,
-                temperature: self.config.temperature
-            )
-
             return try await withCheckedThrowingContinuation { continuation in
                 Task {
-                    await client.generateCloudChatCompletion(messages: messages, model: modelCode, aiRunConfig: aiRunConfig, chatStatusStream: chatStatusStream) { message in
+                    await client.generateCloudChatCompletion(messages: messages, model: modelCode, chatStatusStream: chatStatusStream) { message in
                         let result = Completion(response: message.content, tokenUsage: message.tokenUsage)
                         continuation.resume(returning: result)
                     } error: { error in
@@ -1208,10 +1102,10 @@ extension FreeToken {
         var messages: [Message]
         var isPrewarmed: Bool = false
         var model: LlamaManager
+        let aiModel: AIModel
         
         let client: FreeToken
         let messagePreparer: MessagePreparer
-        let config: AIModelConfiguration
         let modelPath: String
         let repoName: String
         let deviceManager: DeviceManager
@@ -1224,62 +1118,33 @@ extension FreeToken {
         
         internal init(
             client: FreeToken,
-            messagePreparer: MessagePreparer,
+            aiModel: AIModel,
             systemMessage: Message,
-            config: AIModelConfiguration,
-            modelPath: String,
-            modelRepoName: String,
-            deviceManager: DeviceManager,
             toolDefinitionsManager: ToolDefinitionsManager,
             toolAccess: [ToolRunMask] = [.allowAll],
-            jsonToolResults: Bool,
-            modelCode: String,
             queue: AITaskQueue,
             runID: String = UUID().uuidString,
             messages: [Message] = []
         ) async {
             self.client = client
-            self.messagePreparer = messagePreparer
-            self.config = config
-            self.modelPath = modelPath
-            self.repoName = modelRepoName
-            self.deviceManager = deviceManager
+            self.aiModel = aiModel
+            self.messagePreparer = aiModel.messagePreparer()
+            self.modelPath = aiModel.getRootModelPath().path
+            self.repoName = aiModel.repo!
+            self.deviceManager = aiModel.deviceManager!
             self.toolDefinitionsManager = toolDefinitionsManager
             self.toolAccess = toolAccess
-            self.jsonToolResults = jsonToolResults
-            self.modelCode = modelCode
+            self.jsonToolResults = aiModel.jsonToolResults
+            self.modelCode = aiModel.code
             self.queue = queue
             self.systemMessage = systemMessage
             self.runID = runID
             self.messages = messages
             
-            self.model = try! LlamaManager(
-                modelPath: modelPath,
-                options: LlamaInitOptions(
-                    contextSize: config.nCTX,
-                    maxSequences: 1,  // Default to 4 parallel sequences
-                    maxNewTokens: config.maxTokenCount,
-                    temperature: config.temperature,
-                    topK: config.topK,
-                    topP: config.topP,
-                    repeatPenalty: config.penaltyRepeat,
-                    repeatLastN: Int(config.penaltyLastN),
-                    frequencyPenalty: config.penaltyFrequency,
-                    presencePenalty: config.penaltyPresence,
-                    dryMultiplier: config.dryMultiplier,
-                    dryBase: config.dryBase,
-                    dryAllowedLength: Int(config.dryAllowedLength),
-                    dryPenaltyLastN: Int(config.dryPenaltyLastN),
-                    xtcProbability: config.xtcProbability,
-                    xtcThreshold: config.xtcThreshold,
-                    threadCount: DeviceManager.recommendedThreadCounts(reserve: 2).decode,
-                    batchSize: config.batchSize,
-                    threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
-                ),
-                repoName: modelRepoName
-            )
+            self.model = try! aiModel.llamaManager()
             
             _ = try? await self.addMessage(message: systemMessage)
+
             await self.prewarm()
         }
 
@@ -1372,6 +1237,15 @@ extension FreeToken {
         /// - Note: Messages are not persisted and will be lost when the session ends.
         public func addMessage(message: Message) async throws -> Message {
             self.messages.append(message)
+            try await self.model.addMessage(message: message, runID: self.runID)
+            return message
+        }
+        
+        internal func addMessage(message: Message, updateKVCache: Bool = true) async throws -> Message {
+            self.messages.append(message)
+            if updateKVCache {
+                try await self.model.addMessage(message: message, runID: self.runID)
+            }
             return message
         }
 
@@ -1406,8 +1280,6 @@ extension FreeToken {
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil
         ) async throws -> Message {
             try await chatStatusStream?(nil, .starting)
-                                    
-            try await self.updateModelContext()
             
             let workflowSteps: [WorkflowStep.Type] = [
                 RunLocalChatSession.self, // Run Generation
@@ -1478,29 +1350,8 @@ extension FreeToken {
         /// - Note: This is typically called automatically when needed. Manual calls are only necessary if you've explicitly unloaded the model.
         public func load() async throws {
             await unload()
-            let options = LlamaInitOptions(
-                contextSize: config.nCTX,
-                maxSequences: 1,  // Default to 4 parallel sequences
-                maxNewTokens: config.maxTokenCount,
-                temperature: config.temperature,
-                topK: config.topK,
-                topP: config.topP,
-                repeatPenalty: config.penaltyRepeat,
-                repeatLastN: Int(config.penaltyLastN),
-                frequencyPenalty: config.penaltyFrequency,
-                presencePenalty: config.penaltyPresence,
-                dryMultiplier: config.dryMultiplier,
-                dryBase: config.dryBase,
-                dryAllowedLength: Int(config.dryAllowedLength),
-                dryPenaltyLastN: Int(config.dryPenaltyLastN),
-                xtcProbability: config.xtcProbability,
-                xtcThreshold: config.xtcThreshold,
-                threadCount: DeviceManager.recommendedThreadCounts(reserve: 2).decode,
-                batchSize: config.batchSize,
-                threadCountBatch: DeviceManager.recommendedThreadCounts(reserve: 2).batch
-            )
 
-            self.model = try LlamaManager(modelPath: modelPath, options: options, repoName: repoName)
+            self.model = try aiModel.llamaManager()
 
             await self.prewarm()
         }

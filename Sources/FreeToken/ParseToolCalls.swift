@@ -14,7 +14,53 @@ extension FreeToken {
         private var allTools: String?
         private var parsedTools: [ToolCall] = []
         private let toolNames: [String]
-        
+
+        /// Codable struct for parsing tool call JSON
+        private struct ToolCallJSON: Codable {
+            let type: String?  // Optional field that can be omitted
+            let name: String?  // Optional field - can use 'type' if 'name' is missing
+            let arguments: [String: AnyCodableValue]?
+
+            /// Returns the tool name, using 'name' if available, otherwise 'type'
+            var toolName: String? {
+                return name ?? type
+            }
+
+            /// Helper to decode arguments with any value type
+            struct AnyCodableValue: Codable {
+                let value: Any
+
+                init(from decoder: Decoder) throws {
+                    let container = try decoder.singleValueContainer()
+
+                    if let stringValue = try? container.decode(String.self) {
+                        value = stringValue
+                    } else if let intValue = try? container.decode(Int.self) {
+                        value = intValue
+                    } else if let doubleValue = try? container.decode(Double.self) {
+                        value = doubleValue
+                    } else if let boolValue = try? container.decode(Bool.self) {
+                        value = boolValue
+                    } else if let arrayValue = try? container.decode([AnyCodableValue].self) {
+                        value = arrayValue.map { $0.value }
+                    } else if let dictValue = try? container.decode([String: AnyCodableValue].self) {
+                        value = dictValue.mapValues { $0.value }
+                    } else {
+                        value = NSNull()
+                    }
+                }
+
+                func encode(to encoder: Encoder) throws {
+                    var container = encoder.singleValueContainer()
+                    try container.encode(String(describing: value))
+                }
+
+                var stringValue: String {
+                    return String(describing: value)
+                }
+            }
+        }
+
         init(messageContent: String, toolNames: [String]) {
             self.messageContent = messageContent
             self.toolNames = toolNames
@@ -24,119 +70,98 @@ extension FreeToken {
             guard !toolNames.isEmpty else {
                 throw FreeTokenError.noToolNamesProvided
             }
-            
+
             // Clear previous results
             parsedTools = []
             toolMatches = []
-            
+
+            // Normalize whitespace: replace all newlines with spaces to handle multi-line JSON
+            messageContent = messageContent.replacingOccurrences(of: "\n", with: " ")
+                .replacingOccurrences(of: "\r", with: " ")
+
             var foundToolCalls: [String] = []
-            
+
             // First try to parse JSON syntax
             let jsonToolCalls = try parseJsonToolCalls()
             parsedTools.append(contentsOf: jsonToolCalls.toolCalls)
             foundToolCalls.append(contentsOf: jsonToolCalls.matches)
-            
+
             // Then parse square bracket syntax
             let squareBracketToolCalls = try parseSquareBracketToolCalls()
             parsedTools.append(contentsOf: squareBracketToolCalls.toolCalls)
             foundToolCalls.append(contentsOf: squareBracketToolCalls.matches)
-            
+
             toolMatches = foundToolCalls
             allTools = foundToolCalls.isEmpty ? nil : "[\(foundToolCalls.joined(separator: ", "))]"
-                        
+
             return parsedTools
         }
         
         private func parseJsonToolCalls() throws -> (toolCalls: [ToolCall], matches: [String]) {
             var toolCalls: [ToolCall] = []
             var matches: [String] = []
-            
-            // First try to find JSON arrays containing tool calls
-            // Use a more comprehensive pattern that handles nested objects
-            let arrayPattern = #"\[(?:\s*\{(?:[^{}]|\{[^}]*\})*\}\s*,?)+\]"#
-            if let arrayRegex = try? NSRegularExpression(pattern: arrayPattern, options: []) {
-                let arrayMatches = arrayRegex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
-                
-                for arrayMatch in arrayMatches {
-                    guard let arrayRange = Range(arrayMatch.range, in: messageContent) else { continue }
-                    let arrayString = String(messageContent[arrayRange])
-                    
-                    // Try to parse as JSON array
-                    if let data = arrayString.data(using: .utf8),
-                       let jsonArray = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
-                        for jsonObject in jsonArray {
-                            // Handle format: { "type": "anything or omitted", "name": "...", "arguments": {...} }
-                            // Type field is completely optional and can have any value
-                            if let name = jsonObject["name"] as? String,
-                               toolNames.contains(name) {
-                                
-                                var arguments: [String: String] = [:]
-                                if let argsDict = jsonObject["arguments"] as? [String: Any] {
-                                    for (key, value) in argsDict {
-                                        arguments[key] = String(describing: value)
-                                    }
-                                }
-                                
-                                let toolCall = ToolCall(name: name, arguments: arguments)
-                                toolCalls.append(toolCall)
-                                matches.append(arrayString)
+
+            // Extract all JSON objects from the message
+            let jsonObjects = extractJsonObjects(from: messageContent)
+
+            for jsonMatch in jsonObjects {
+                guard let data = jsonMatch.data(using: .utf8) else {
+                    continue
+                }
+
+                // First try to parse as an array of tool calls
+                if let toolCallArray = try? JSONDecoder().decode([ToolCallJSON].self, from: data) {
+                    for toolCallJSON in toolCallArray {
+                        // Get tool name from either 'name' or 'type' field
+                        guard let toolName = toolCallJSON.toolName else {
+                            continue  // Skip if neither field is present
+                        }
+
+                        // Check if tool name is in allowed list
+                        guard toolNames.contains(toolName) else {
+                            continue
+                        }
+
+                        // Extract arguments and convert to strings
+                        var arguments: [String: String] = [:]
+                        if let argsDict = toolCallJSON.arguments {
+                            for (key, value) in argsDict {
+                                arguments[key] = value.stringValue
                             }
                         }
+
+                        let toolCall = ToolCall(name: toolName, arguments: arguments)
+                        toolCalls.append(toolCall)
                     }
+
+                    matches.append(jsonMatch)
                 }
-            }
-            
-            // Also try to find individual JSON objects with optional type field (without array brackets)
-            // The type field can appear before or after name, or be omitted entirely
-            // Pattern 1: type before name
-            let pattern1 = #"\{\s*"type"\s*:\s*"[^"]+"\s*,\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
-            // Pattern 2: name before type
-            let pattern2 = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"type"\s*:\s*"[^"]+"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
-            // Pattern 3: no type field
-            let pattern3 = #"\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"arguments"\s*:\s*(\{(?:[^{}]|\{[^}]*\})*\})\s*\}"#
-            
-            for singleJsonWithTypePattern in [pattern1, pattern2, pattern3] {
-            if let singleJsonRegex = try? NSRegularExpression(pattern: singleJsonWithTypePattern, options: []) {
-                let singleJsonMatches = singleJsonRegex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
-                
-                for match in singleJsonMatches {
-                    guard let nameRange = Range(match.range(at: 1), in: messageContent),
-                          let argsRange = Range(match.range(at: 2), in: messageContent),
-                          let fullRange = Range(match.range, in: messageContent) else {
-                        continue
+                // If not an array, try to parse as a single tool call
+                else if let toolCallJSON = try? JSONDecoder().decode(ToolCallJSON.self, from: data) {
+                    // Get tool name from either 'name' or 'type' field
+                    guard let toolName = toolCallJSON.toolName else {
+                        continue  // Skip if neither field is present
                     }
-                    
-                    let toolName = String(messageContent[nameRange])
-                    let argsJson = String(messageContent[argsRange])
-                    let fullMatch = String(messageContent[fullRange])
-                    
-                    // Verify tool name is in allowed list
+
+                    // Check if tool name is in allowed list
                     guard toolNames.contains(toolName) else {
                         continue
                     }
-                    
-                    // Skip if already processed as part of an array
-                    if matches.contains(where: { $0.contains(fullMatch) }) {
-                        continue
-                    }
-                    
-                    // Parse JSON arguments
-                    if let data = argsJson.data(using: .utf8),
-                       let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-                        // Convert all values to strings
-                        var arguments: [String: String] = [:]
-                        for (key, value) in jsonObject {
-                            arguments[key] = String(describing: value)
+
+                    // Extract arguments and convert to strings
+                    var arguments: [String: String] = [:]
+                    if let argsDict = toolCallJSON.arguments {
+                        for (key, value) in argsDict {
+                            arguments[key] = value.stringValue
                         }
-                        
-                        let toolCall = ToolCall(name: toolName, arguments: arguments)
-                        toolCalls.append(toolCall)
-                        matches.append(fullMatch)
                     }
+
+                    let toolCall = ToolCall(name: toolName, arguments: arguments)
+                    toolCalls.append(toolCall)
+                    matches.append(jsonMatch)
                 }
             }
-            }
-            
+
             return (toolCalls, matches)
         }
         
@@ -177,33 +202,119 @@ extension FreeToken {
             guard !rawParams.trimmingCharacters(in: .whitespaces).isEmpty else {
                 return [:]
             }
-            
+
             var arguments: [String: String] = [:]
-            
+
             // Pattern to match key=value pairs with quoted or unquoted values
             let paramPattern = #"([a-zA-Z_][a-zA-Z0-9_]*)\s*=\s*("[^"]*"|'[^']*'|[^,\s]+)"#
             let paramRegex = try NSRegularExpression(pattern: paramPattern, options: [])
             let paramMatches = paramRegex.matches(in: rawParams, options: [], range: NSRange(location: 0, length: rawParams.utf16.count))
-            
+
             for match in paramMatches {
                 guard let keyRange = Range(match.range(at: 1), in: rawParams),
                       let valueRange = Range(match.range(at: 2), in: rawParams) else {
                     continue
                 }
-                
+
                 let key = String(rawParams[keyRange])
                 var value = String(rawParams[valueRange])
-                
+
                 // Remove surrounding quotes if present
                 if (value.hasPrefix("\"") && value.hasSuffix("\"")) ||
                    (value.hasPrefix("'") && value.hasSuffix("'")) {
                     value = String(value.dropFirst().dropLast())
                 }
-                
+
                 arguments[key] = value
             }
-            
+
             return arguments
+        }
+
+        /// Extracts JSON objects and arrays from text by counting braces/brackets
+        /// This is more robust than regex for nested JSON structures
+        private func extractJsonObjects(from text: String) -> [String] {
+            var jsonObjects: [String] = []
+            var currentObject = ""
+            var braceCount = 0
+            var bracketCount = 0
+            var inString = false
+            var escapeNext = false
+
+            for char in text {
+                // Handle escape sequences in strings
+                if escapeNext {
+                    escapeNext = false
+                    if braceCount > 0 || bracketCount > 0 {
+                        currentObject.append(char)
+                    }
+                    continue
+                }
+
+                if char == "\\" {
+                    escapeNext = true
+                    if braceCount > 0 || bracketCount > 0 {
+                        currentObject.append(char)
+                    }
+                    continue
+                }
+
+                // Track whether we're inside a string
+                if char == "\"" {
+                    inString.toggle()
+                    if braceCount > 0 || bracketCount > 0 {
+                        currentObject.append(char)
+                    }
+                    continue
+                }
+
+                // Only count braces/brackets outside of strings
+                if !inString {
+                    if char == "{" {
+                        if braceCount == 0 && bracketCount == 0 {
+                            currentObject = "{"
+                        } else {
+                            currentObject.append(char)
+                        }
+                        braceCount += 1
+                    } else if char == "}" {
+                        if braceCount > 0 {
+                            currentObject.append(char)
+                            braceCount -= 1
+
+                            // Complete object found
+                            if braceCount == 0 && bracketCount == 0 {
+                                jsonObjects.append(currentObject)
+                                currentObject = ""
+                            }
+                        }
+                    } else if char == "[" {
+                        if braceCount == 0 && bracketCount == 0 {
+                            currentObject = "["
+                        } else {
+                            currentObject.append(char)
+                        }
+                        bracketCount += 1
+                    } else if char == "]" {
+                        if bracketCount > 0 {
+                            currentObject.append(char)
+                            bracketCount -= 1
+
+                            // Complete array found
+                            if braceCount == 0 && bracketCount == 0 {
+                                jsonObjects.append(currentObject)
+                                currentObject = ""
+                            }
+                        }
+                    } else if braceCount > 0 || bracketCount > 0 {
+                        currentObject.append(char)
+                    }
+                } else if braceCount > 0 || bracketCount > 0 {
+                    currentObject.append(char)
+                }
+            }
+
+            return jsonObjects
         }
     }
 }

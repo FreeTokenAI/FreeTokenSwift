@@ -21,7 +21,7 @@ extension FreeToken {
         private var currentLogLevel: LogLevel = .info
         
         private init() {
-            self.osLogger = Logger(subsystem: "com.fractionallabs.FreeToken", category: "Client")
+            self.osLogger = Logger(subsystem: "ai.FreeToken", category: "Client")
         }
         
         /// Configure the logger with a specific verbosity level

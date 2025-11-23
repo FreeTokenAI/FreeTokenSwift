@@ -1,35 +1,32 @@
 ![FreeToken header](./github-header.png)
 
-The FreeToken Swift client provides seamless AI integration for iOS/macOS apps, supporting both on-device and cloud AI, document search, and more.
+The FreeToken Swift SDK provides seamless AI integration for iOS/macOS apps, supporting both on-device and cloud AI with automatic routing, document search (RAG), and more.
 
-For more in-depth guides, configuration options, and scenarios, visit the FreeToken documentation: https://docs.freetoken.ai
+For complete documentation, visit: https://docs.freetoken.ai
 
 ---
 
 ## Features
 
-- **On-device and Cloud AI**: Automatic fallback between local and cloud inference.
-- **Client-side Encryption**: Optional encryption/decryption for sensitive data using your own algorithms.
-- **Document Indexing & Search**: Store and retrieve context for Retrieval-Augmented Generation (RAG).
-- **Private Document Stores**: Secure, isolated document storage with server-generated IDs.
-- **Message Threading**: Multi-turn conversations with persistent threads in the cloud for syncing between clients.
-- **Function/Tool Calling**: Extendable for advanced AI workflows. 
-- **Built in RAG**: Automatically search and retrieve relevant documents for AI context.
-- **Web Search**: Automatically perform web searches to enhance AI responses.
-- **Streaming & Progress Callbacks**: Real-time feedback for long-running operations.
+- **Hybrid AI**: Automatic routing between on-device and cloud inference
+- **Session-Based API**: Modern session management with automatic memory handling
+- **Message Threading**: Persistent conversations synced to the cloud
+- **RAG (Document Search)**: Built-in document indexing and retrieval
+- **Tool/Function Calling**: Let AI call your app's functions
+- **Vision Support**: Multi-modal AI with image understanding
+- **Client-Side Encryption**: Optional encryption for sensitive data
+- **Streaming**: Real-time token streaming and progress callbacks
 
 ---
 
 ## Requirements
 
-- iOS 16+
-- macOS 15+
+- iOS 17+ or macOS 15+
+- Swift Package Manager
 
 ---
 
 ## Installation
-
-Add FreeToken to your project using Swift Package Manager:
 
 ```swift
 dependencies: [
@@ -39,623 +36,462 @@ dependencies: [
 
 ---
 
-## Basic Usage
+## Quick Start
 
 ### 1. Configuration
-
-Set up the FreeToken client with your API key from the [FreeToken console](https://app.freetoken.ai).  
-_Always call this before any other FreeToken operations._
 
 ```swift
 import FreeToken
 
-do {
-    let client = try FreeToken.shared.configure(appToken: "your-api-key")
-    // client is now configured
-} catch {
-    print("Failed to configure FreeToken: \(error)")
-}
+try FreeToken.shared.configure(appToken: "your-api-key")
 ```
+
+Get your API key from the [FreeToken Console](https://console.freetoken.ai).
 
 ---
 
 ### 2. Device Registration
 
-Register the device with FreeToken Cloud to determine AI capabilities and enable secure communication.
-
 ```swift
-await client.registerDeviceSession(scope: "my-app-v1") {
-    // Successfully registered
+await FreeToken.shared.registerDeviceSession(scope: "my-app-v1") {
+    print("Device registered")
 } error: { error in
-    print("Failed to register device: \(error)")
+    print("Registration failed: \(error)")
 }
 ```
 
-_Note:_ The scope parameter can be used for testing message prompts through configuring agent routes on the App in the [FreeToken console](https://app.freetoken.ai). You may want to elect to randomly add a unique scope by appending a letter or number to the end of the scope string, such as "my-app-v1-a". Then in the console you can configure routing so all "a" scoped sessions go to one agent and other sessions go to another.
+This determines device AI capabilities and initializes models.
 
 ---
 
 ### 3. Download AI Model
 
-Download the AI model for on-device inference.  
-_If the device is not capable, FreeToken will **not** download the model and try use cloud fallback for AI if the run location is set to `.automatic`._
-
 ```swift
-await client.downloadAIModel { state in
-    // Ready for use whether on-device or cloud
-    switch state {
-    case .downloaded:
-        // Device supports on-device AI
-        print("Model downloaded and ready")
-    case .aiNotSupported:
-        // Device cannot run the model locally; fallback to cloud
-        print("Device not AI-capable; will use cloud fallback")
-    default:
-        print("Model state: \(state)")
+await FreeToken.shared.downloadAIModel(
+    success: { state in
+        switch state {
+        case .downloaded:
+            print("Model ready for local AI")
+        case .aiNotSupported:
+            print("Device will use cloud AI")
+        }
+    },
+    error: { error in
+        print("Download failed: \(error)")
+    },
+    progressPercent: { progress in
+        print("Progress: \(Int(progress * 100))%")
     }
-} error: { error in
-    print("Download failed: \(error)")
-} progressPercent: { progress in
-    // progress is 0.0 ... 1.0
-    print("Download progress: \(Int(progress * 100))%")
-}
+)
 ```
-
-Note: The `success` callback returns a `DownloadedState` enum (for example `.downloaded` or `.aiNotSupported`) that indicates to your application what happened during the download process. Use the returned state to decide how to proceed.
 
 ---
 
-### 4. AI Sessions
+## Usage Examples
 
-FreeToken provides session-based APIs for managing AI interactions. Sessions handle model loading, memory management, and provide cleaner state management compared to older stateless APIs.
+### Chat Session (Recommended)
 
-#### Chat Sessions
-
-Chat sessions manage persistent conversation threads with automatic model preloading and state management.
-
-**Basic Usage:**
+The session-based API provides the best experience with automatic resource management:
 
 ```swift
-// Get a chat session (automatically determines local vs cloud based on device capabilities)
-let chatSession = try await client.getChatSession()
+// Get a chat session
+let session = try await FreeToken.shared.getChatSession()
 
-// Create a new thread
-let thread = try await chatSession.createMessageThread()
-// Save thread.id for future use
+// Create a thread for the conversation
+let thread = try await session.createMessageThread()
+print("Thread ID: \(thread.id)")  // Save this for later
 
 // Add a user message
-let userMessage = Message(role: .user, content: "What is a supernova?")
-try await chatSession.addMessage(message: userMessage)
+let userMsg = FreeToken.Message(role: .user, content: "What is quantum computing?")
+try await session.addMessage(message: userMsg)
 
-// Generate AI response
-let response = try await chatSession.generateNewMessage()
-print("AI: \(response.content)")
-
-// Free memory when done
-await chatSession.unload()
-```
-
-**With Streaming and Status Updates:**
-
-```swift
-let chatSession = try await client.getChatSession()
-let thread = try await chatSession.createMessageThread()
-
-let userMessage = Message(role: .user, content: "Explain black holes")
-try await chatSession.addMessage(message: userMessage)
-
-let response = try await chatSession.generateNewMessage(
+// Generate AI response with streaming
+let response = try await session.generateNewMessage(
     chatStatusStream: { token, status in
-        switch status {
-        case .starting:
-            print("Starting...")
-        case .sending_to_local_ai:
-            print("Using local AI")
-        case .sending_to_cloud_ai:
-            print("Using cloud AI")
-        case .cloud_fallback:
-            print("Falling back to cloud")
-        case .streaming_tokens:
-            if let token = token {
-                print(token, terminator: "")
-            }
-        case .evaluating_tool_calls:
-            print("\nEvaluating tools...")
-        case .new_message_created:
-            print("\nMessage saved")
-        case .stream_ended:
-            print("\nDone!")
-        case .failed:
-            print("\nFailed")
+        if let token = token {
+            print(token, terminator: "")  // Stream tokens as they arrive
         }
     }
 )
+
+print("\n\nComplete response: \(response.content)")
+
+// Unload model when done (important for memory management)
+await session.unload()
 ```
 
-**Force Cloud or Local:**
+---
+
+### Completion Session (Stateless)
+
+For simple text generation without persistent threads:
 
 ```swift
-// Force cloud-only execution
-let cloudSession = try await client.getChatSession(runLocation: .cloudRun)
+let session = try await FreeToken.shared.getCompletionSession()
 
-// Force local execution (will fail if model not downloaded)
-let localSession = try await client.getChatSession(runLocation: .localRun)
+let completion = try await session.generateCompletion(
+    from: "Write a haiku about coding",
+    chatStatusStream: { token, _ in
+        if let token = token {
+            print(token, terminator: "")
+        }
+    }
+)
+
+print("\n\nTokens used: \(completion.tokenUsage?.totalTokens ?? 0)")
+await session.unload()
 ```
 
-**Resume Existing Thread:**
+---
+
+### Chat with Document Search (RAG)
+
+Integrate document retrieval into AI responses:
 
 ```swift
-// Pass existing thread ID to resume a conversation
-let chatSession = try await client.getChatSession(messageThreadID: "existing-thread-id")
+// First, create and index documents
+await FreeToken.shared.createDocument(
+    content: "Your documentation content here...",
+    metadata: "category: manual",
+    searchScope: "product-docs",
+    success: { doc in
+        print("Document created: \(doc.id)")
+    },
+    error: { _ in }
+)
 
-// Get conversation history
-let messages = try await chatSession.getMessages()
-for message in messages {
-    print("\(message.role): \(message.content)")
+// Use documents in chat
+let session = try await FreeToken.shared.getChatSession()
+let thread = try await session.createMessageThread()
+
+let userMsg = FreeToken.Message(role: .user, content: "How do I install the product?")
+try await session.addMessage(message: userMsg)
+
+// AI will search documents and use them for context
+let response = try await session.generateNewMessage(
+    documentSearchScope: "product-docs"
+)
+
+print("AI response with context: \(response.content)")
+```
+
+---
+
+### Tool/Function Calling
+
+Let AI call your app's functions:
+
+```swift
+// 1. Register a tool definition
+let weatherTool = """
+{
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get current weather for a location",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "City name"
+                }
+            },
+            "required": ["location"]
+        }
+    }
 }
+"""
 
-// Add new message and continue
-let userMsg = Message(role: .user, content: "Tell me more")
-try await chatSession.addMessage(message: userMsg)
-let response = try await chatSession.generateNewMessage()
-```
-
-**In-Memory Chat Sessions:**
-
-For temporary conversations without cloud persistence:
-
-```swift
-// Memory-only session (no cloud storage)
-let memorySession = try await client.getMemoryChatSession()
-
-// Add messages (stored in memory only)
-try await memorySession.addMessage(message: Message(role: .user, content: "Hello"))
-let response = try await memorySession.generateNewMessage()
-
-// Messages are lost when session is deallocated
-```
-
-#### Completion Sessions
-
-Completion sessions provide stateless text generation without persistent threads. Ideal for one-off completions.
-
-**Basic Usage:**
-
-```swift
-// Get a completion session
-let completionSession = try await client.getCompletionSession()
-
-// Generate completion
-let completion = try await completionSession.generateCompletion(
-    from: "Write a haiku about coding"
+await FreeToken.shared.addToolDefinition(
+    name: "get_weather",
+    definitionJSON: weatherTool
 )
-print(completion.response)
 
-// Free memory when done
-await completionSession.unload()
-```
+// 2. Handle tool calls during generation
+let session = try await FreeToken.shared.getChatSession()
+let thread = try await session.createMessageThread()
 
-**With Streaming:**
+let userMsg = FreeToken.Message(role: .user, content: "What's the weather in San Francisco?")
+try await session.addMessage(message: userMsg)
 
-```swift
-let completionSession = try await client.getCompletionSession()
-
-let completion = try await completionSession.generateCompletion(
-    from: "Explain quantum computing",
-    chatStatusStream: { token, status in
-        switch status {
-        case .streaming_tokens:
-            if let token = token {
-                print(token, terminator: "")
+let response = try await session.generateNewMessage(
+    toolUseHandler: { toolCalls in
+        var results: [String] = []
+        for call in toolCalls {
+            if call.name == "get_weather" {
+                let location = call.arguments["location"] ?? "Unknown"
+                // Call your actual weather API here
+                results.append("Temperature in \(location): 72°F, sunny")
             }
-        case .cloud_fallback:
-            print("\nUsing cloud AI...")
-        default:
-            break
         }
+        return results.joined(separator: "\n")
     }
 )
+
+print("AI: \(response.content)")
 ```
 
-**Force Cloud or Local:**
+---
+
+### Vision (Image Understanding)
+
+Send images to vision-capable models:
 
 ```swift
-// Force cloud execution
-let cloudCompletion = try await client.getCompletionSession(runLocation: .cloudRun)
+let session = try await FreeToken.shared.getChatSession()
+let thread = try await session.createMessageThread()
 
-// Force local execution
-let localCompletion = try await client.getCompletionSession(runLocation: .localRun)
+// Prepare image
+let image = UIImage(named: "photo")!
+let imageData = image.pngData()!
+let attachment = FreeToken.MessageAttachment.image(imageData, filename: "photo.png")
+
+// Send message with image
+let message = FreeToken.Message(
+    role: .user,
+    content: "What's in this image?",
+    attachments: [attachment]
+)
+try await session.addMessage(message: message)
+
+// Get AI analysis
+let response = try await session.generateNewMessage()
+print("AI: \(response.content)")
 ```
 
-#### Thread Management (Legacy API)
+**Note:** Vision requires cloud models. Configure a vision-capable model in the console.
 
-For backward compatibility, direct thread management APIs are still available:
+---
+
+### Managing Message Threads Directly
+
+You can also manage threads without sessions:
 
 ```swift
-// Delete thread
-client.deleteMessageThread(id: "thread-id", success: { id in
-    print("Deleted: \(id)")
-}, error: { _ in })
+// Create thread
+await FreeToken.shared.createMessageThread { thread in
+    print("Thread ID: \(thread.id)")
+} error: { _ in }
+
+// Add message
+let msg = FreeToken.Message(role: .user, content: "Hello!")
+await FreeToken.shared.addMessageToThread(id: threadId, message: msg) { _ in
+    print("Message added")
+} error: { _ in }
 
 // Get thread with messages
-await client.getMessageThread(id: "thread-id", success: { thread in
+await FreeToken.shared.getMessageThread(id: threadId) { thread in
     print("Messages: \(thread.messages.count)")
-}, error: { _ in })
+} error: { _ in }
 
-// Get specific message
-await client.getMessage(id: "message-id", success: { message in
-    print("Content: \(message.content)")
-}, error: { _ in })
+// Delete thread
+FreeToken.shared.deleteMessageThread(id: threadId) { _ in
+    print("Deleted")
+} error: { _ in }
 ```
 
 ---
 
-### 5. Document Management
+## Advanced Features
 
-Store, retrieve, and search documents for use as AI context (RAG, knowledge base, etc.).
+### Encryption
 
-#### Create a Document
-
-```swift
-do {
-    try await client.createDocument(
-        content: "Document content",
-        metadata: "TITLE: Example Document\nAUTHOR: John Doe",
-        searchScope: "knowledge-base",
-        success: { document in
-            print("Document created: \(document.id)")
-        },
-        error: { error in
-            print("Failed to create document: \(error)")
-        }
-    )
-} catch {
-    print("Create document failed: \(error)")
-}
-```
-
-Note: The document data should be considered _public_ to all agents in the App context and immutable.
-
-#### Create a Document in a Private Store
-
-You can create documents within private document stores for enhanced security and isolation.
+Enable client-side encryption for messages and documents:
 
 ```swift
-do {
-    try await client.createDocument(
-        content: "Private document content",
-        metadata: "TITLE: Private Document\nCLASSIFICATION: Confidential",
-        searchScope: "private-knowledge",
-        privateDocumentStoreID: "store-id",
-        success: { document in
-            print("Private document created: \(document.id)")
-        },
-        error: { error in
-            print("Failed to create private document: \(error)")
-        }
-    )
-} catch {
-    print("Create private document failed: \(error)")
-}
-``` 
+// Generate encryption keys (only returned once!)
+let userKey = FreeToken.shared.enableEncryption(scope: .userPrivate)
+let publicKey = FreeToken.shared.enableEncryption(scope: .sharedPublic)
 
-#### Get a Document
+// Store keys securely (Keychain recommended)
 
-```swift
-client.getDocument(id: "doc-id", success: { document in
-    print("Document: \(document.content)")
-}, error: { error in
-    print("Failed to get document: \(error)")
-})
-```
-
-#### Search Documents
-
-```swift
-await client.searchDocuments(
-    query: "supernova explosion",
-    searchScope: "astronomy",
-    maxResults: 5,
-    success: { results in
-        for chunk in results.documentChunks {
-            print("Found relevant content: \(chunk.contentChunk)")
-        }
-    },
-    error: { error in
-        print("Search failed: \(error)")
-    }
+// Configure with encryption
+try FreeToken.shared.configure(
+    appToken: "your-api-key",
+    sharedPublicEncryptionKey: publicKey,
+    userPrivateEncryptionKey: userKey
 )
 ```
 
 ---
 
-### 6. Private Document Stores
-
-Private Document Stores provide secure, isolated document storage with server-generated IDs for enhanced security. Unlike public documents, private stores are only accessible by their unique ID and provide complete isolation between different contexts.
-
-
-#### Create a Private Document Store
+### Model Management
 
 ```swift
-await client.createPrivateDocumentStore(name: "My Private Documents") { store in
-    // Store the ID securely - this is the only way to access the store
-    let storeId = store.id
-    print("Created private store: \(storeId)")
-} error: { error in
-    print("Failed to create private store: \(error)")
+// List available models
+let models = try await FreeToken.shared.listAIModels()
+for model in models {
+    print("\(model.code): \(model.name)")
+    print("  Cloud only: \(model.cloudOnly)")
 }
+
+// Check device compatibility
+let isAvailable = try await FreeToken.shared.isModelAvailableForDevice(
+    modelCode: "llama-3.2-1b"
+)
+
+// Download specific model
+await FreeToken.shared.downloadAIModel(
+    modelCode: "gemma3n_e2b_it",
+    success: { _ in },
+    error: { _ in }
+)
+
+// Use specific model in session
+let session = try await FreeToken.shared.getChatSession(
+    modelCode: "gemma3n_e2b_it"
+)
 ```
-
-#### Delete a Private Document Store
-
-```swift
-await client.deletePrivateDocumentStore(id: "store-id") {
-    print("Private document store deleted successfully")
-} error: { error in
-    print("Failed to delete private store: \(error)")
-}
-```
-
-**Important Security Notes:**
-- Private document store IDs are server-generated for enhanced security
-- Once created, stores can only be accessed via their unique ID
-- There is no API to list private document stores (security by design)
-- Deleting a store permanently removes all documents within it
-- The `name` parameter is used for identification in the [FreeToken console](https://app.freetoken.ai)
-
-#### Integration with RAG and AI Context
-
-Private document stores seamlessly integrate with the AI system for Retrieval-Augmented Generation:
-
-- **Message Threads**: Include private documents in AI conversations
-- **Tool Calls**: The `article_lookup` tool automatically searches private stores when provided
-- **Search Operations**: Search across public and private documents simultaneously
-- **Automatic Context**: Private documents become part of the AI's knowledge base for enhanced responses
 
 ---
 
-### 7. Encryption
+### Run Location Control
 
-Enable client-side encryption/decryption for sensitive data. When enabled, all messages and documents will be encrypted before sending to the server and decrypted when received.
-```swift
-// Built-in key generation (recommended for most apps)
-// Generate keys (only returned once) for each scope and persist them securely.
-let sharedPublicKey = FreeToken.shared.enableEncryption(scope: .sharedPublic)
-let userPrivateKey = FreeToken.shared.enableEncryption(scope: .userPrivate)
-
-// Persist securely — Keychain is recommended. Example (insecure demonstration only):
-UserDefaults.standard.set(sharedPublicKey, forKey: "FTSharedPublicKey")
-UserDefaults.standard.set(userPrivateKey, forKey: "FTUserPrivateKey")
-
-// Later — initialize the client with the persisted keys
-do {
-    let sharedKey = UserDefaults.standard.string(forKey: "FTSharedPublicKey")
-    let privateKey = UserDefaults.standard.string(forKey: "FTUserPrivateKey")
-
-    let client = try FreeToken.shared.configure(
-        appToken: "your-api-key",
-        baseURL: nil,
-        sharedPublicEncryptionKey: sharedKey,
-        userPrivateEncryptionKey: privateKey,
-        logLevel: .info
-    )
-    // client is now configured with the built-in encryption keys
-} catch {
-    print("Failed to configure FreeToken: \(error)")
-}
-```
-
-Built-in encryption details:
-
-- Algorithm: AES-GCM (authenticated encryption).
-- Key size: 256-bit symmetric keys (generated using CryptoKit's `SymmetricKey(size: .bits256)`).
-- Format: Keys are returned as Base64-encoded bytes; pass the Base64 string to `configure(...)` via `sharedPublicEncryptionKey` and `userPrivateEncryptionKey` or call `setEncryptionKey(...)` internally.
-- Scope usage: use `.sharedPublic` for public-document encryption (documents shared among agents) and `.userPrivate` for messages and private-document-store encryption.
-- Security notes: The generated key string is only returned at creation time — persist it securely (Keychain). Do NOT store long-lived keys in plaintext or insecure stores like UserDefaults in production.
-
-If you need a custom encryption implementation (for example to integrate with a proprietary KMS or hardware-backed keys), you can register encryption/decryption closures instead:
+Control whether to use local or cloud AI:
 
 ```swift
-try FreeToken.shared.enableCustomEncryption(encrypt: { text, scope in
-    // Your encryption logic here (e.g. call into your KMS)
-    return "encryptedString"
-}, decrypt: { text, scope in
-    // Your decryption logic here
-    return "decryptedString"
-})
-```
+// Automatic (preferred local, cloud fallback)
+let session = try await FreeToken.shared.getChatSession(
+    runLocation: .automatic
+)
 
-Note: When you enable custom encryption the SDK will call your closures for encrypt/decrypt operations. Use the custom hook if you must integrate external hardware or KMS; otherwise prefer the built-in AES-GCM keys for simplicity and compatibility.
+// Force cloud
+let cloudSession = try await FreeToken.shared.getChatSession(
+    runLocation: .cloudRun
+)
+
+// Force local
+let localSession = try await FreeToken.shared.getChatSession(
+    runLocation: .localRun
+)
+```
 
 ---
 
-### 8. Web Search
+### Tool Access Control
 
-Perform web searches and retrieve results for use in AI or user-facing features.  This is the same method that is used by the AI to search the web for relevant information when generating responses.
+Control which tools AI can use:
 
 ```swift
-await client.webSearch(
+// Allow all tools
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.allowAll]
+)
+
+// Allow only specific tools
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.allowSpecific(["get_weather", "search_docs"])]
+)
+
+// Deny specific tools
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.denySpecific(["dangerous_tool"])]
+)
+```
+
+---
+
+### Web Search
+
+Perform web searches (requires console configuration):
+
+```swift
+await FreeToken.shared.webSearch(
     query: "latest AI news",
-    resultCount: 3,
+    resultCount: 5,
     success: { results in
         for result in results {
-            print("Web result: \(result.title) - \(result.url)")
+            print("\(result.title)")
+            print("\(result.url ?? "")")
         }
     },
-    error: { error in
-        print("Web search failed: \(error)")
-    }
+    error: { _ in }
 )
-```
-
-Note: You must setup the web search with an API key in the [FreeToken console](https://app.freetoken.ai) before using this feature.
-
----
-
-### 9. Tool Definitions
-
-Register custom tool definitions for function calling:
-
-```swift
-// Register multiple tool definitions at once
-await client.registerToolDefinitions([toolDef1, toolDef2])
-
-// Add a single tool definition from JSON
-await client.addToolDefinition(
-    name: "weather_tool",
-    definitionJSON: "{\"description\": \"Get weather info\"}"
-)
-
-// Remove all tool definitions
-await client.removeAllToolDefinitions()
 ```
 
 ---
 
-### 10. Model and Cache Management
+## Best Practices
 
-Reset caches and manage model storage. Model loading/unloading is now handled automatically by sessions (see section 4).
-
-```swift
-// Clear all model caches and persisted sessions
-try await client.resetModelCaches()
-
-// Clear only the embedding model cache
-try await client.resetEmbeddingModelCache()
-
-// Delete specific model cache
-await client.deleteAIModelCache(modelCode: "model-name")
-
-// Delete all model caches
-await client.deleteAIModelCache()
-```
-
-**Note:** Model loading and unloading is now managed through session objects. Use `session.load()` and `session.unload()` on `ChatSession` or `CompletionSession` instances.
+1. **Use Sessions**: Prefer `getChatSession()` and `getCompletionSession()` for better resource management
+2. **Unload Models**: Call `session.unload()` when done, especially on iOS devices
+3. **Save Thread IDs**: Thread IDs are only returned once - save them for future use
+4. **Automatic Fallback**: Use `runLocation: .automatic` for the best user experience
+5. **Monitor Streaming**: Use `chatStatusStream` to show progress to users
+6. **Secure Encryption Keys**: Store keys in Keychain, never in UserDefaults
 
 ---
 
-### 11. Stopping Local Generation
+## Data Structures
 
-Stop any running local AI generation. Useful when your app goes into the background or you want to cancel a long-running operation.
-
+### Message
 ```swift
-await client.stopLocalGeneration()
-```
-
----
-
-### 12. Additional APIs
-
-#### List Available AI Models
-
-```swift
-await client.listAIModels(
-    success: { models in
-        for model in models {
-            print("Model: \(model.name) - \(model.code)")
-        }
-    },
-    error: { error in
-        print("Failed to list models: \(error)")
-    }
+FreeToken.Message(
+    role: .user,           // .user, .assistant, .system, .tool
+    content: "Hello!",
+    attachments: nil       // Optional: [MessageAttachment]
 )
 ```
 
-#### Get AI Model Details
-
+### MessageThread
 ```swift
-await client.getAIModel(
-    modelCode: "model-code",
-    success: { model in
-        print("Model details: \(model.name)")
-    },
-    error: { error in
-        print("Failed to get model: \(error)")
-    }
-)
-```
-
-#### Check if Model is Available for Device
-
-Check if a specific AI model can run on the current device:
-
-```swift
-do {
-    let isAvailable = try await client.isModelAvailableForDevice(modelCode: "llama-3.2-1b")
-    if isAvailable {
-        print("This device can run the model locally")
-    } else {
-        print("This model is not available for this device")
-    }
-} catch {
-    print("Failed to check model availability: \(error)")
-}
-
-// Check default model availability
-let defaultAvailable = try await client.isModelAvailableForDevice(modelCode: nil)
-```
-
-#### Get Available Models for Device
-
-Get a list of all AI models that can run on the current device (includes both local models supported by this device and all cloud-only models):
-
-```swift
-do {
-    let availableModels = try await client.availableAIModelsForDevice()
-    for model in availableModels {
-        if model.cloudOnly {
-            print("Cloud model: \(model.name)")
-        } else {
-            print("Local model: \(model.name)")
-        }
-    }
-} catch {
-    print("Failed to get available models: \(error)")
+public class MessageThread {
+    let id: String
+    let messages: [Message]
+    let createdAt: Date
+    let updatedAt: Date
 }
 ```
 
-#### Count Tokens
+### ChatStreamStatus
+Stream status updates during generation:
+- `.starting` - Beginning
+- `.sending_to_local_ai` - Using local AI
+- `.sending_to_cloud_ai` - Using cloud AI
+- `.streaming_tokens` - Receiving tokens
+- `.cloud_fallback` - Falling back to cloud
+- `.stream_ended` - Complete
 
-Use a chat session to count tokens:
+---
 
-```swift
-let chatSession = try await client.getChatSession()
-let tokenCount = try await chatSession.countTokens(for: "Your text to count tokens")
-print("Token count: \(tokenCount)")
-```
+## Error Handling
 
-**Note:** Token counting is now performed through session objects for better model-specific accuracy.
+Common errors:
 
-#### Local Chat (Advanced)
+- `.clientNotConfigured` - Call `configure()` first
+- `.deviceNotRegistered` - Call `registerDeviceSession()` first
+- `.aiModelNotDownloaded` - Download model first
+- `.messageThreadNotCreated` - Call `createMessageThread()` first
+- `.deviceNotCapable` - Device cannot run model locally
+- `.generationCancelled` - User cancelled generation
 
-For more control over local AI conversations:
+---
 
-```swift
-await client.localChat(
-    messages: [
-        Message(role: .system, content: "You are a helpful assistant"),
-        Message(role: .user, content: "Hello!")
-    ],
-    uniqueID: "chat-session-id",
-    modelCode: "model-code",
-    success: { response in
-        print("AI response: \(response.content)")
-    },
-    error: { error in
-        print("Chat failed: \(error)")
-    }
-)
+## Testing
+
+```bash
+# Run all tests
+swift test
+
+# Run specific test
+swift test --filter testChatSession
+
+# Build only
+swift build
 ```
 
 ---
 
-## Learn more
+## Resources
 
-Full developer guides, walkthroughs, and advanced integration patterns are available at https://docs.freetoken.ai.
+- **Documentation**: [docs.freetoken.ai](https://docs.freetoken.ai)
+- **Console**: [console.freetoken.ai](https://console.freetoken.ai)
+- **GitHub**: [github.com/FreeTokenAI/FreeTokenSwift](https://github.com/FreeTokenAI/FreeTokenSwift)
+- **Support**: support@freetoken.ai
 
 ---
 
 ## License
 
-See [LICENSE.md](LICENSE.md).
-
+See [LICENSE](LICENSE) for details.

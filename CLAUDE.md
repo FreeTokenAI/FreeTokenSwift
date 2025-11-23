@@ -20,6 +20,7 @@ dependencies: [
 ## Core Concepts
 
 - **Hybrid AI**: Automatically routes requests between on-device and cloud AI based on device capabilities
+- **Session-Based API**: Modern session management for chat and completion workflows with automatic memory management
 - **Message Threads**: Persistent conversation threads stored in the cloud with local caching
 - **RAG (Retrieval Augmented Generation)**: Document search integrated into AI responses
 - **Tool Calling**: AI can call functions in your app to retrieve context or perform actions
@@ -46,7 +47,7 @@ try FreeToken.shared.configure(
 
 ### 2. Device Registration
 
-Required before using AI features. Determines device capabilities and downloads appropriate models.
+Required before using AI features. Determines device capabilities and initializes models.
 
 ```swift
 await FreeToken.shared.registerDeviceSession(
@@ -65,15 +66,19 @@ await FreeToken.shared.registerDeviceSession(
 ```swift
 await FreeToken.shared.downloadAIModel(
     modelCode: nil,  // Use default model
-    forceRedownload: false,
-    progressCallback: { progress in
-        print("Progress: \(Int(progress * 100))%")
-    },
-    success: {
-        print("Model ready")
+    success: { state in
+        switch state {
+        case .downloaded:
+            print("Model ready for local inference")
+        case .aiNotSupported:
+            print("Device not capable - will use cloud")
+        }
     },
     error: { error in
         print("Download failed: \(error)")
+    },
+    progressPercent: { progress in
+        print("Progress: \(Int(progress * 100))%")
     }
 )
 ```
@@ -82,17 +87,263 @@ await FreeToken.shared.downloadAIModel(
 
 ## API Reference
 
-### Message Threading & Chat
+### Session-Based Chat API
 
-Message threads provide persistent, context-aware conversations.
+The session-based API provides better resource management, preloading, and stateful conversation handling.
+
+#### Get Chat Session
+
+Creates a new chat session with automatic local/cloud routing:
+
+```swift
+// Automatic routing (local preferred, cloud fallback)
+let session = try await FreeToken.shared.getChatSession()
+
+// Force cloud-only
+let cloudSession = try await FreeToken.shared.getChatSession(
+    runLocation: .cloudRun
+)
+
+// Force local-only
+let localSession = try await FreeToken.shared.getChatSession(
+    runLocation: .localRun
+)
+
+// With existing message thread
+let session = try await FreeToken.shared.getChatSession(
+    messageThreadID: "thread-id"
+)
+
+// With specific model
+let session = try await FreeToken.shared.getChatSession(
+    modelCode: "llama-3.2-1b"
+)
+
+// With tool access control
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.allowSpecific(["get_weather", "search_docs"])]
+)
+```
+
+**Important:** `getChatSession()` automatically determines whether to use local or cloud execution based on:
+- Model download status
+- Device capabilities
+- Available memory
+- `runLocation` parameter
+
+#### Create Message Thread
+
+```swift
+// Create a new thread for the session
+let thread = try await session.createMessageThread()
+print("Thread ID: \(thread.id)")  // Save this ID for future use
+```
+
+**Note:** Each chat session can only have one thread. Create new sessions for new conversations.
+
+#### Add Message
+
+```swift
+// Add user message
+let userMsg = FreeToken.Message(role: .user, content: "What is quantum computing?")
+let addedMsg = try await session.addMessage(message: userMsg)
+```
+
+#### Generate AI Response
+
+```swift
+// Simple generation
+let response = try await session.generateNewMessage()
+print("AI: \(response.content)")
+
+// With streaming
+let response = try await session.generateNewMessage(
+    chatStatusStream: { token, status in
+        if let token = token {
+            print(token, terminator: "")
+        }
+
+        switch status {
+        case .starting:
+            print("[Starting]")
+        case .streaming_tokens:
+            break  // Printing tokens above
+        case .stream_ended:
+            print("\n[Complete]")
+        case .cloud_fallback:
+            print("[Falling back to cloud]")
+        default:
+            print("[\(status.rawValue)]")
+        }
+    }
+)
+
+// With document search (RAG)
+let response = try await session.generateNewMessage(
+    documentSearchScope: "product-docs",
+    privateDocumentStoreIDs: ["store-id-1"]
+)
+
+// With tool/function calling
+let response = try await session.generateNewMessage(
+    toolUseHandler: { toolCalls in
+        var results: [String] = []
+        for call in toolCalls {
+            if call.name == "get_weather" {
+                let location = call.arguments["location"] ?? "Unknown"
+                results.append("Weather in \(location): 72°F, sunny")
+            }
+        }
+        return results.joined(separator: "\n")
+    }
+)
+```
+
+**ChatStreamStatus Values:**
+- `.starting` - Operation beginning
+- `.sending_to_local_ai` - Using local AI
+- `.sending_to_cloud_ai` - Using cloud AI
+- `.streaming_tokens` - Receiving response tokens
+- `.evaluating_tool_calls` - Processing tool calls
+- `.new_message_created` - Message saved
+- `.cloud_fallback` - Local failed, trying cloud
+- `.stream_ended` - Complete
+- `.failed` - Operation failed
+
+**Cancellation:** Throw an error in `chatStatusStream` to cancel generation:
+
+```swift
+let response = try await session.generateNewMessage(
+    chatStatusStream: { token, status in
+        if shouldCancel {
+            throw CancellationError()
+        }
+    }
+)
+```
+
+#### Get Messages
+
+```swift
+let messages = try await session.getMessages()
+for msg in messages {
+    print("\(msg.role.rawValue): \(msg.content)")
+}
+```
+
+#### Count Tokens
+
+```swift
+let tokenCount = try await session.countTokens(for: "Some text")
+print("Tokens: \(tokenCount)")
+```
+
+**Note:** Token counting only works with local sessions. Cloud sessions will throw an error.
+
+#### Memory Management
+
+```swift
+// Unload model from memory
+await session.unload()
+
+// Reload model
+try await session.load()
+```
+
+**Best Practice:** Call `unload()` when done with a session to free memory, especially on iOS devices.
+
+---
+
+### Session-Based Completion API
+
+For stateless text generation without persistent threads.
+
+#### Get Completion Session
+
+```swift
+// Automatic routing
+let session = try await FreeToken.shared.getCompletionSession()
+
+// Force cloud
+let cloudSession = try await FreeToken.shared.getCompletionSession(
+    runLocation: .cloudRun
+)
+
+// With specific model
+let session = try await FreeToken.shared.getCompletionSession(
+    modelCode: "llama-3.2-1b"
+)
+```
+
+#### Generate Completion
+
+```swift
+// Simple completion
+let completion = try await session.generateCompletion(
+    from: "Write a poem about coding"
+)
+print("Response: \(completion.response)")
+print("Tokens used: \(completion.tokenUsage?.totalTokens ?? 0)")
+
+// With streaming
+let completion = try await session.generateCompletion(
+    from: "Explain quantum physics",
+    chatStatusStream: { token, status in
+        if let token = token {
+            print(token, terminator: "")
+        }
+    }
+)
+
+// Don't forget to unload when done
+await session.unload()
+```
+
+---
+
+### In-Memory Chat Session (Local Only)
+
+For temporary conversations without cloud persistence.
+
+```swift
+let session = try await FreeToken.shared.getMemoryChatSession(
+    modelCode: nil,  // Use default model
+    runLocation: .automatic,
+    toolAccess: [.allowAll],
+    messages: [],  // Optional: pre-populate with messages
+    systemInstructions: "You are a helpful assistant",
+    runID: UUID().uuidString  // Optional: custom run ID
+)
+
+// Add message (stored in memory only)
+let userMsg = FreeToken.Message(role: .user, content: "Hello!")
+try await session.addMessage(message: userMsg)
+
+// Generate response
+let response = try await session.generateNewMessage()
+print("AI: \(response.content)")
+
+// Messages are NOT persisted to cloud
+```
+
+**Important:**
+- Cannot call `createMessageThread()` on memory sessions
+- Messages only exist in memory
+- Use for temporary/privacy-sensitive conversations
+
+---
+
+### Legacy Message Thread API (Direct)
+
+Direct message thread operations without sessions. Still supported but sessions are preferred.
 
 #### Create Thread
 
 ```swift
 await FreeToken.shared.createMessageThread(
+    toolAccess: [.allowAll],
     success: { thread in
-        print("Created thread: \(thread.id)")
-        // IMPORTANT: Save thread.id for future use
+        print("Thread ID: \(thread.id)")
     },
     error: { error in
         print("Error: \(error)")
@@ -103,8 +354,7 @@ await FreeToken.shared.createMessageThread(
 #### Add Message to Thread
 
 ```swift
-let message = FreeToken.Message(role: .user, content: "What is a supernova?")
-
+let message = FreeToken.Message(role: .user, content: "Hello!")
 await FreeToken.shared.addMessageToThread(
     id: threadId,
     message: message,
@@ -117,58 +367,12 @@ await FreeToken.shared.addMessageToThread(
 )
 ```
 
-#### Run Thread (Execute AI)
-
-```swift
-await FreeToken.shared.runMessageThread(
-    id: threadId,
-    modelCode: nil,  // Optional: override default model
-    outputStream: { token in
-        print(token, terminator: "")  // Real-time token streaming
-    },
-    chatStatusStream: { status in
-        switch status {
-        case .starting:
-            print("Starting...")
-        case .sending_to_local_ai:
-            print("Processing locally...")
-        case .sending_to_cloud_ai:
-            print("Processing in cloud...")
-        case .streaming_tokens:
-            print("Streaming response...")
-        case .evaluating_tool_calls:
-            print("Calling tools...")
-        case .new_message_created:
-            print("Message saved")
-        case .stream_ended:
-            print("Complete!")
-        case .failed:
-            print("Failed")
-        }
-
-        // Throw to cancel generation
-        if shouldCancel {
-            throw CancellationError()
-        }
-    },
-    success: { response in
-        print("Final response: \(response.content)")
-    },
-    error: { error in
-        if case .generationCancelled = error {
-            print("Generation cancelled by user")
-        }
-    }
-)
-```
-
-#### Get Thread Details
+#### Get Thread
 
 ```swift
 await FreeToken.shared.getMessageThread(
     id: threadId,
     success: { thread in
-        print("Thread: \(thread.displayName)")
         print("Messages: \(thread.messages.count)")
     },
     error: { error in
@@ -193,129 +397,29 @@ FreeToken.shared.deleteMessageThread(
 
 ---
 
-### AI Completions
-
-Generate text without persistent threads.
-
-#### General Completion (Auto Local/Cloud)
-
-```swift
-await FreeToken.shared.generateCompletion(
-    prompt: "Write a poem about coding",
-    tokenStream: { token in
-        print(token, terminator: "")
-
-        // Cancel by throwing
-        if shouldCancel {
-            throw CancellationError()
-        }
-    },
-    success: { completion in
-        print("Response: \(completion.response)")
-        print("Tokens used: \(completion.tokenUsage)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Force Local Completion
-
-```swift
-await FreeToken.shared.generateLocalCompletion(
-    prompt: "Explain quantum computing",
-    modelCode: "llama-3.2-1b",
-    aiRunConfig: AIRunConfig(temperature: 0.8),
-    tokenStream: { token in
-        print(token, terminator: "")
-    },
-    success: { completion in
-        print("Local response: \(completion.response)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Force Cloud Completion
-
-```swift
-await FreeToken.shared.generateCloudCompletion(
-    prompt: "Generate a business plan",
-    modelCode: "gpt-4",
-    aiRunConfig: nil,
-    tokenStream: nil,
-    success: { completion in
-        print("Cloud response: \(completion.response)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Local Chat (Advanced)
-
-For direct multi-turn conversations with local AI:
-
-```swift
-let messages = [
-    FreeToken.Message(role: .system, content: "You are a helpful assistant"),
-    FreeToken.Message(role: .user, content: "What is Swift?")
-]
-
-let response = try await FreeToken.shared.localChat(
-    modelCode: nil,
-    messages: messages,
-    runIdentifier: "chat-session-1",  // Optional session ID
-    aiRunConfig: AIRunConfig(temperature: 0.7),
-    outputStream: { token in
-        print(token, terminator: "")
-    }
-)
-
-print("Assistant: \(response.content)")
-```
-
----
-
 ### Model Management
 
 #### List Available Models
 
 ```swift
-await FreeToken.shared.listAIModels(
-    success: { models in
-        for model in models {
-            print("\(model.code): \(model.name)")
-            print("  Platform: \(model.platform)")
-            print("  Vision: \(model.capabilities.imageToText)")
-        }
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
+let models = try await FreeToken.shared.listAIModels()
+for model in models {
+    print("\(model.code): \(model.name)")
+    print("  Platform: \(model.platform)")
+    print("  Vision: \(model.capabilities.imageToText)")
+    print("  Cloud only: \(model.cloudOnly)")
+}
 ```
 
 #### Get Model Details
 
 ```swift
-await FreeToken.shared.getAIModel(
-    modelCode: "llama-3.2-1b",
-    success: { model in
-        print("Model: \(model.name)")
-        print("Size: \(model.modelSize) bytes")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
+let model = try await FreeToken.shared.getAIModel(modelCode: "llama-3.2-1b")
+print("Model: \(model.name)")
+print("Memory required: \(model.memoryRequirement) bytes")
 ```
 
-#### Check Model Availability for Device
+#### Check Device Compatibility
 
 ```swift
 // Check specific model
@@ -323,442 +427,11 @@ let isAvailable = try await FreeToken.shared.isModelAvailableForDevice(
     modelCode: "llama-3.2-1b"
 )
 
-if isAvailable {
-    print("This device can run the model locally")
-}
-
-// Get all available models for this device
+// Get all compatible models
 let availableModels = try await FreeToken.shared.availableAIModelsForDevice()
 for model in availableModels {
-    if model.cloudOnly {
-        print("Cloud model: \(model.name)")
-    } else {
-        print("Local model: \(model.name)")
-    }
+    print("Can run: \(model.name)")
 }
-```
-
-#### Download Model
-
-```swift
-await FreeToken.shared.downloadAIModel(
-    modelCode: "llama-3.2-1b",
-    forceRedownload: false,
-    progressCallback: { progress in
-        print("Progress: \(Int(progress * 100))%")
-    },
-    success: {
-        print("Model downloaded")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Load/Unload Model
-
-```swift
-// Load into memory
-await FreeToken.shared.loadModel(
-    modelCode: "llama-3.2-1b",
-    success: { state in
-        print("Model state: \(state)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-
-// Unload from memory
-await FreeToken.shared.unloadModel(modelCode: "llama-3.2-1b")
-```
-
-#### Prewarm Model (Performance)
-
-Pre-load model before expected use for faster first response:
-
-```swift
-await FreeToken.shared.prewarmAIFor(
-    runIdentifier: "session-1",
-    modelCode: nil,
-    runConfig: AIRunConfig(temperature: 0.7),
-    toolAccess: [.allowAll],
-    success: {
-        print("AI prewarmed and ready")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-
-// Later, use same runIdentifier
-await FreeToken.shared.runMessageThread(
-    id: threadId,
-    runIdentifier: "session-1",  // Same ID = instant start
-    success: { response in
-        print("Fast response: \(response.content)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
----
-
-### Document Management (RAG)
-
-Retrieval Augmented Generation allows AI to search your documents for context.
-
-#### Create Private Document Store
-
-```swift
-await FreeToken.shared.createPrivateDocumentStore(
-    name: "User Personal Docs",
-    success: { store in
-        print("Store created: \(store.id)")
-        // IMPORTANT: Save store.id securely
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Create Public Document
-
-```swift
-await FreeToken.shared.createDocument(
-    name: "Product Manual",
-    content: "Long document content here...",
-    searchScope: "product-docs",
-    documentType: .publicDocument,
-    metadata: ["version": "2.0", "category": "manual"],
-    success: { document in
-        print("Document created: \(document.id)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Create Private Document
-
-```swift
-await FreeToken.shared.createDocument(
-    name: "Private Notes",
-    content: "Sensitive content...",
-    searchScope: "user-notes",
-    documentType: .privateDocument(storeId: storeId),
-    metadata: ["author": "User", "date": "2025-01-15"],
-    success: { document in
-        print("Private document created: \(document.id)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Search Documents
-
-```swift
-await FreeToken.shared.searchDocuments(
-    query: "installation instructions",
-    searchScope: "product-docs",
-    privateDocumentStoreIds: ["store-id-1", "store-id-2"],  // Optional
-    maxResults: 10,
-    success: { results in
-        print("Found \(results.totalCount) documents")
-        for chunk in results.chunks {
-            print("Document: \(chunk.documentName)")
-            print("Content: \(chunk.content)")
-            print("Relevance: \(chunk.relevanceScore)")
-        }
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Run Thread with Document Search
-
-```swift
-// Search public documents
-await FreeToken.shared.runMessageThread(
-    id: threadId,
-    documentSearchScope: "sales-docs",
-    success: { response in
-        print("Response with RAG: \(response.content)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-
-// Search private documents
-await FreeToken.shared.runMessageThread(
-    id: threadId,
-    documentSearchScope: "manuals",
-    privateDocumentStoreIds: ["store-id-1", "store-id-2"],
-    success: { response in
-        print("Response: \(response.content)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
----
-
-### Tool/Function Calling
-
-Enable AI to call functions in your app.
-
-#### Register Tool Definition
-
-```swift
-let weatherTool = """
-{
-    "type": "function",
-    "function": {
-        "name": "get_current_weather",
-        "description": "Get the current weather for a location",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "location": {
-                    "type": "string",
-                    "description": "City and country, e.g. San Francisco, CA"
-                },
-                "format": {
-                    "type": "string",
-                    "description": "Temperature format",
-                    "enum": ["celsius", "fahrenheit"]
-                }
-            },
-            "required": ["location", "format"]
-        }
-    }
-}
-"""
-
-await FreeToken.shared.addToolDefinition(
-    name: "get_current_weather",
-    definitionJSON: weatherTool
-)
-```
-
-#### Handle Tool Calls in Thread
-
-```swift
-await FreeToken.shared.runMessageThread(
-    id: threadId,
-    success: { response in
-        print("Response: \(response.content)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    },
-    toolCallback: { toolCalls in
-        // Handle each tool call
-        return toolCalls.map { toolCall in
-            if toolCall.name == "get_current_weather" {
-                let location = toolCall.arguments["location"] ?? "Unknown"
-                let format = toolCall.arguments["format"] ?? "celsius"
-
-                // Call your weather API
-                return "The weather in \(location) is 20 degrees \(format)."
-            }
-            return ""
-        }.joined(separator: "\n\n")
-    }
-)
-```
-
-#### Tool Access Control
-
-Restrict which tools can be used in a thread:
-
-```swift
-await FreeToken.shared.createMessageThread(
-    toolAccess: [
-        .allowAll,                                    // Allow all tools
-        .denyAll,                                     // Deny all tools
-        .allowSpecific(["get_weather", "calculator"]), // Allow specific
-        .denySpecific(["dangerous_tool"])             // Deny specific
-    ],
-    success: { thread in
-        print("Thread created with tool restrictions")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Remove All Tools
-
-```swift
-await FreeToken.shared.removeAllToolDefinitions()
-```
-
----
-
-### Vision Support (Multi-Modal)
-
-Send images to vision-capable AI models.
-
-#### Analyze Image
-
-```swift
-// 1. Prepare image
-let imageData = UIImage(named: "photo")!.pngData()!
-let attachment = FreeToken.MessageAttachment.image(imageData, filename: "photo.png")
-
-// 2. Create message with image
-let message = FreeToken.Message(
-    role: .user,
-    content: "What's in this image?",
-    attachments: [attachment]
-)
-
-// 3. Add to thread
-await FreeToken.shared.addMessageToThread(
-    id: threadId,
-    message: message,
-    success: { message in
-        print("Message with image added")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-
-// 4. Run with vision model
-await FreeToken.shared.runMessageThread(
-    id: threadId,
-    modelCode: "llama_4_scout_cloud",  // Vision-capable model
-    success: { response in
-        print("AI analysis: \(response.content)")
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
-#### Multiple Images
-
-```swift
-let attachment1 = FreeToken.MessageAttachment.image(image1Data, filename: "photo1.png")
-let attachment2 = FreeToken.MessageAttachment.image(image2Data, filename: "photo2.png")
-
-let message = FreeToken.Message(
-    role: .user,
-    content: "Compare these two images",
-    attachments: [attachment1, attachment2]
-)
-```
-
-**Note**: Vision currently works with cloud models only. Local vision support coming soon.
-
----
-
-### Encryption
-
-Client-side encryption for messages and documents.
-
-#### Generate Encryption Keys
-
-```swift
-// Generate keys (only returned once - store securely!)
-let userPrivateKey = FreeToken.shared.enableEncryption(scope: .userPrivate)
-let publicKey = FreeToken.shared.enableEncryption(scope: .sharedPublic)
-
-// Store in Keychain (recommended) or secure storage
-// WARNING: Keys are only returned once!
-```
-
-#### Configure with Encryption
-
-```swift
-try FreeToken.shared.configure(
-    appToken: "your-api-key",
-    sharedPublicEncryptionKey: publicKey,
-    userPrivateEncryptionKey: userPrivateKey,
-    logLevel: .info
-)
-```
-
-#### Custom Encryption
-
-```swift
-try FreeToken.shared.enableCustomEncryption(
-    encrypt: { text, scope in
-        // Your encryption logic
-        return encryptedText
-    },
-    decrypt: { text, scope in
-        // Your decryption logic
-        return decryptedText
-    }
-)
-```
-
-**Encryption Scopes**:
-- `.sharedPublic`: For public documents (shared across app users)
-- `.userPrivate`: For messages and private document stores
-
-**What's Encrypted**:
-- Messages (with user private key)
-- Private documents (with user private key)
-- Public documents (with shared public key)
-
-**Not Encrypted**:
-- Web search queries
-- Cloud AI inference requests
-- Telemetry data
-
----
-
-### Web Search
-
-Perform web searches (requires configuration in console):
-
-```swift
-await FreeToken.shared.webSearch(
-    query: "latest AI news",
-    resultCount: 5,
-    success: { results in
-        for result in results {
-            print("\(result.title)")
-            print("\(result.url)")
-            print("\(result.snippet)")
-        }
-    },
-    error: { error in
-        print("Error: \(error)")
-    }
-)
-```
-
----
-
-### Utilities
-
-#### Count Tokens
-
-```swift
-let tokenCount = try await FreeToken.shared.countTokens(
-    text: "Your text here",
-    modelCode: "llama-3.2-1b"  // Optional
-)
-print("Token count: \(tokenCount)")
 ```
 
 #### Check Download State
@@ -780,65 +453,28 @@ case .failed(let error):
 }
 ```
 
-#### Reset & Cleanup
+#### Delete Model Cache
 
 ```swift
-// Reset device registration
-try await FreeToken.shared.resetDevice()
+// Delete specific model
+await FreeToken.shared.deleteAIModelCache(modelCode: "llama-3.2-1b")
 
-// Delete model caches
-await FreeToken.shared.deleteAIModelCache(modelCode: "llama-3.2-1b")  // Specific
-await FreeToken.shared.deleteAIModelCache()  // All models
-
-// Reset all caches
-try await FreeToken.shared.resetModelCaches()
-try await FreeToken.shared.resetEmbeddingModelCache()
-```
-
-#### Stop Local Generation
-
-```swift
-await FreeToken.shared.stopLocalGeneration()
+// Delete all models
+await FreeToken.shared.deleteAIModelCache()
 ```
 
 ---
 
-## Common Patterns
+### Document Management (RAG)
 
-### Complete Chat Flow
+#### Create Private Document Store
 
 ```swift
-// 1. Configure
-try FreeToken.shared.configure(appToken: "api-key")
-
-// 2. Register device
-await FreeToken.shared.registerDeviceSession(scope: "my-app-v1") {
-    print("Registered")
-} error: { _ in }
-
-// 3. Download model
-await FreeToken.shared.downloadAIModel { _ in } error: { _ in }
-
-// 4. Create thread
-var threadId: String?
-await FreeToken.shared.createMessageThread { thread in
-    threadId = thread.id
-} error: { _ in }
-
-// 5. Add message
-let message = FreeToken.Message(role: .user, content: "Hello!")
-await FreeToken.shared.addMessageToThread(id: threadId!, message: message) { _ in
-    print("Message added")
-} error: { _ in }
-
-// 6. Run AI
-await FreeToken.shared.runMessageThread(
-    id: threadId!,
-    outputStream: { token in
-        print(token, terminator: "")
-    },
-    success: { response in
-        print("\nResponse: \(response.content)")
+await FreeToken.shared.createPrivateDocumentStore(
+    name: "User Personal Docs",
+    success: { store in
+        print("Store ID: \(store.id)")
+        // Save store.id securely
     },
     error: { error in
         print("Error: \(error)")
@@ -846,41 +482,319 @@ await FreeToken.shared.runMessageThread(
 )
 ```
 
-### Using Multiple Models
+#### Create Document
 
 ```swift
-// Download specific model
-await FreeToken.shared.downloadAIModel(
-    modelCode: "gemma3n_e2b_it",
-    success: { _ in
-        print("Model downloaded")
+// Public document
+await FreeToken.shared.createDocument(
+    content: "Document content...",
+    metadata: "category: manual",
+    searchScope: "product-docs",
+    success: { document in
+        print("Document created: \(document.id)")
     },
-    error: { _ in }
+    error: { error in
+        print("Error: \(error)")
+    }
 )
 
-// Use specific model for completion
-await FreeToken.shared.generateCompletion(
-    prompt: "Hello",
-    modelCode: "gemma3n_e2b_it",
-    success: { completion in
-        print(completion.response)
+// Private document
+await FreeToken.shared.createDocument(
+    content: "Private notes...",
+    metadata: "author: User",
+    searchScope: "user-notes",
+    privateDocumentStoreID: "store-id",
+    success: { document in
+        print("Private document created")
     },
-    error: { _ in }
+    error: { error in
+        print("Error: \(error)")
+    }
 )
 ```
 
-### Cloud-Only Models
+#### Search Documents
 
 ```swift
-// No download needed for cloud-only models
-await FreeToken.shared.generateCompletion(
-    prompt: "Complex reasoning task",
-    modelCode: "deepseek_r1_0528_cloud",
-    success: { completion in
-        print(completion.response)
+await FreeToken.shared.searchDocuments(
+    query: "installation instructions",
+    searchScope: "product-docs",
+    privateDocumentStoreIds: ["store-id-1"],
+    maxResults: 10,
+    success: { results in
+        print("Found \(results.documentChunks.count) chunks")
+        for chunk in results.documentChunks {
+            print("Document: \(chunk.documentID)")
+            print("Content: \(chunk.contentChunk)")
+        }
     },
-    error: { _ in }
+    error: { error in
+        print("Error: \(error)")
+    }
 )
+```
+
+#### Get Document
+
+```swift
+await FreeToken.shared.getDocument(
+    id: "doc-id",
+    success: { document in
+        print("Content: \(document.content)")
+    },
+    error: { error in
+        print("Error: \(error)")
+    }
+)
+```
+
+#### Delete Private Document Store
+
+```swift
+await FreeToken.shared.deletePrivateDocumentStore(
+    id: "store-id",
+    success: {
+        print("Store deleted")
+    },
+    error: { error in
+        print("Error: \(error)")
+    }
+)
+```
+
+---
+
+### Tool/Function Calling
+
+#### Register Tool Definition
+
+```swift
+let weatherTool = """
+{
+    "type": "function",
+    "function": {
+        "name": "get_current_weather",
+        "description": "Get the current weather for a location",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "location": {
+                    "type": "string",
+                    "description": "City and country, e.g. San Francisco, CA"
+                },
+                "format": {
+                    "type": "string",
+                    "enum": ["celsius", "fahrenheit"]
+                }
+            },
+            "required": ["location", "format"]
+        }
+    }
+}
+"""
+
+await FreeToken.shared.addToolDefinition(
+    name: "get_current_weather",
+    definitionJSON: weatherTool
+)
+```
+
+#### Handle Tool Calls
+
+```swift
+let response = try await session.generateNewMessage(
+    toolUseHandler: { toolCalls in
+        var results: [String] = []
+
+        for call in toolCalls {
+            if call.name == "get_current_weather" {
+                let location = call.arguments["location"] ?? "Unknown"
+                let format = call.arguments["format"] ?? "celsius"
+
+                // Call your weather API
+                let weather = getWeather(location: location, format: format)
+                results.append("Temperature in \(location): \(weather)")
+            }
+        }
+
+        return results.joined(separator: "\n\n")
+    }
+)
+```
+
+#### Tool Access Control
+
+```swift
+// Allow all tools
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.allowAll]
+)
+
+// Deny all tools
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.denyAll]
+)
+
+// Allow specific tools
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.allowSpecific(["get_weather", "search_docs"])]
+)
+
+// Deny specific tools
+let session = try await FreeToken.shared.getChatSession(
+    toolAccess: [.denySpecific(["dangerous_tool"])]
+)
+```
+
+#### Remove All Tools
+
+```swift
+await FreeToken.shared.removeAllToolDefinitions()
+```
+
+---
+
+### Vision Support (Multi-Modal)
+
+Send images to vision-capable AI models.
+
+```swift
+// 1. Prepare image
+let image = UIImage(named: "photo")!
+let imageData = image.pngData()!
+let attachment = FreeToken.MessageAttachment.image(
+    imageData,
+    filename: "photo.png",
+    contentType: "image/png"
+)
+
+// 2. Create message with image
+let message = FreeToken.Message(
+    role: .user,
+    content: "What's in this image?",
+    attachments: [attachment]
+)
+
+// 3. Add to thread
+try await session.addMessage(message: message)
+
+// 4. Generate response with vision model
+let response = try await session.generateNewMessage()
+print("AI analysis: \(response.content)")
+```
+
+**Multiple Images:**
+
+```swift
+let attachment1 = FreeToken.MessageAttachment.image(image1Data, filename: "photo1.png")
+let attachment2 = FreeToken.MessageAttachment.image(image2Data, filename: "photo2.png")
+
+let message = FreeToken.Message(
+    role: .user,
+    content: "Compare these images",
+    attachments: [attachment1, attachment2]
+)
+```
+
+**Note:** Vision requires cloud models. The default model must support vision, or you need to specify a vision-capable model like `"llama_4_scout_cloud"`.
+
+---
+
+### Encryption
+
+Client-side encryption for messages and documents.
+
+#### Generate Encryption Keys
+
+```swift
+// Generate keys (only returned once - store securely!)
+let userPrivateKey = FreeToken.shared.enableEncryption(scope: .userPrivate)
+let publicKey = FreeToken.shared.enableEncryption(scope: .sharedPublic)
+
+// Store in Keychain or secure storage
+// WARNING: Keys are only returned once!
+```
+
+#### Configure with Encryption
+
+```swift
+try FreeToken.shared.configure(
+    appToken: "your-api-key",
+    sharedPublicEncryptionKey: publicKey,
+    userPrivateEncryptionKey: userPrivateKey
+)
+```
+
+#### Custom Encryption
+
+```swift
+try FreeToken.shared.enableCustomEncryption(
+    encrypt: { text, scope in
+        // Your encryption logic
+        return encryptedText
+    },
+    decrypt: { text, scope in
+        // Your decryption logic
+        return decryptedText
+    }
+)
+```
+
+**Encryption Scopes:**
+- `.sharedPublic`: For public documents
+- `.userPrivate`: For messages and private documents
+
+**What's Encrypted:**
+- Messages (user private key)
+- Private documents (user private key)
+- Public documents (shared public key)
+
+**Not Encrypted:**
+- Web search queries
+- Cloud AI requests
+- Telemetry
+
+---
+
+### Web Search
+
+```swift
+await FreeToken.shared.webSearch(
+    query: "latest AI news",
+    resultCount: 5,
+    success: { results in
+        for result in results {
+            print("\(result.title)")
+            print("\(result.url ?? "")")
+            print("\(result.snippet)")
+        }
+    },
+    error: { error in
+        print("Error: \(error)")
+    }
+)
+```
+
+**Note:** Must configure web search in console with API key.
+
+---
+
+### Utilities
+
+#### Reset & Cleanup
+
+```swift
+// Reset device registration
+try await FreeToken.shared.resetDevice()
+
+// Clear chat session caches
+try await FreeToken.shared.resetChatCache()
+
+// Reset all model caches
+try await FreeToken.shared.resetModelCaches()
+
+// Reset embedding model cache
+try await FreeToken.shared.resetEmbeddingModelCache()
 ```
 
 ---
@@ -891,29 +805,59 @@ await FreeToken.shared.generateCompletion(
 
 ```swift
 public class Message {
-    let id: String
+    let id: String?
     let role: MessageRole  // .system, .user, .assistant, .tool
     let content: String
-    let attachments: [MessageAttachment]?  // For images
-    let toolCalls: [ToolCall]?
-    let tokenUsage: TokenUsage?
+    let attachments: [MessageAttachment]?
+    let createdAt: Date?
+    var tokenUsage: TokenUsage?
 
-    init(role: MessageRole, content: String)
-    init(role: MessageRole, content: String, attachments: [MessageAttachment])
+    init(role: MessageRole, content: String, attachments: [MessageAttachment]? = nil)
 }
 ```
 
-### AIRunConfig
+### MessageRole
 
 ```swift
-public struct AIRunConfig {
-    let temperature: Float?       // 0.0-2.0, controls randomness
-    let maxTokens: Int?           // Maximum tokens to generate
-    let topP: Float?              // 0.0-1.0, nucleus sampling
-    let topK: Int?                // Top-k sampling
-    let repeatPenalty: Float?     // Penalty for repetition
-    let systemPrompt: String?     // Override system prompt
-    let seed: Int?                // For reproducible outputs
+public enum MessageRole: String {
+    case user
+    case assistant
+    case system
+    case tool
+}
+```
+
+### MessageAttachment
+
+```swift
+public class MessageAttachment {
+    let id: String?
+    let type: AttachmentType  // .image
+    let data: Data
+    let filename: String?
+    let contentType: String
+
+    static func image(_ imageData: Data, filename: String? = nil, contentType: String = "image/png") -> MessageAttachment
+}
+```
+
+### MessageThread
+
+```swift
+public class MessageThread {
+    let id: String
+    let messages: [Message]
+    let createdAt: Date
+    let updatedAt: Date
+}
+```
+
+### Completion
+
+```swift
+public class Completion {
+    let response: String
+    let tokenUsage: TokenUsage?
 }
 ```
 
@@ -921,9 +865,31 @@ public struct AIRunConfig {
 
 ```swift
 public struct TokenUsage {
-    let promptTokens: Int         // Input tokens
-    let completionTokens: Int     // Output tokens
-    let totalTokens: Int          // Total
+    let totalTokens: Int
+    let tokensPerSecond: Float
+    let inputTokens: Int
+    let outputTokens: Int
+    let modelCode: String
+}
+```
+
+### ToolCall
+
+```swift
+struct ToolCall {
+    let name: String
+    let arguments: [String: String]
+}
+```
+
+### ToolRunMask
+
+```swift
+public enum ToolRunMask {
+    case allowAll
+    case denyAll
+    case allowSpecific([String])
+    case denySpecific([String])
 }
 ```
 
@@ -939,7 +905,197 @@ public enum ChatStreamStatus: String {
     case sending_to_cloud_ai
     case evaluating_tool_calls
     case new_message_created
+    case cloud_fallback
 }
+```
+
+### RunLocation
+
+```swift
+public enum RunLocation: String {
+    case automatic  // Prefer local, fallback to cloud
+    case cloudRun   // Force cloud
+    case localRun   // Force local (may throw if not available)
+}
+```
+
+### ModelDownloadState
+
+```swift
+public enum ModelDownloadState {
+    case notDownloaded
+    case downloading(Double)  // Progress 0.0-1.0
+    case downloaded
+    case failed(Error)
+}
+```
+
+### DownloadedState
+
+```swift
+public enum DownloadedState {
+    case downloaded
+    case aiNotSupported
+}
+```
+
+### Document
+
+```swift
+public class Document {
+    let id: String
+    let documentType: DocumentType  // .privateDocument or .publicDocument
+    let searchScope: String
+    let metadata: String?
+    let content: String
+    let createdAt: Date
+}
+```
+
+### DocumentChunk
+
+```swift
+public class DocumentChunk {
+    let documentID: String
+    let documentType: DocumentType
+    let documentMetadata: String?
+    let contentChunk: String
+}
+```
+
+### DocumentSearchResults
+
+```swift
+public class DocumentSearchResults {
+    let documentChunks: [DocumentChunk]
+}
+```
+
+### WebSearchResult
+
+```swift
+public class WebSearchResult {
+    let url: String?
+    let title: String
+    let snippet: String
+    let description: String
+    let age: String
+    let thumbnail: String?
+    let metadata: String
+}
+```
+
+---
+
+## Common Patterns
+
+### Complete Chat Flow (Session-Based)
+
+```swift
+// 1. Configure
+try FreeToken.shared.configure(appToken: "api-key")
+
+// 2. Register device
+await FreeToken.shared.registerDeviceSession(scope: "my-app-v1") {
+    print("Registered")
+} error: { _ in }
+
+// 3. Download model
+await FreeToken.shared.downloadAIModel(success: { _ in }) error: { _ in }
+
+// 4. Get chat session
+let session = try await FreeToken.shared.getChatSession()
+
+// 5. Create thread
+let thread = try await session.createMessageThread()
+
+// 6. Add message
+let userMsg = FreeToken.Message(role: .user, content: "Hello!")
+try await session.addMessage(message: userMsg)
+
+// 7. Generate response
+let response = try await session.generateNewMessage(
+    chatStatusStream: { token, status in
+        if let token = token {
+            print(token, terminator: "")
+        }
+    }
+)
+
+print("\n\nFinal response: \(response.content)")
+
+// 8. Unload when done
+await session.unload()
+```
+
+### Completion Flow
+
+```swift
+// Get completion session
+let session = try await FreeToken.shared.getCompletionSession()
+
+// Generate completion
+let completion = try await session.generateCompletion(
+    from: "Explain quantum computing",
+    chatStatusStream: { token, _ in
+        if let token = token {
+            print(token, terminator: "")
+        }
+    }
+)
+
+print("\n\nTokens used: \(completion.tokenUsage?.totalTokens ?? 0)")
+
+// Unload
+await session.unload()
+```
+
+### Using Specific Models
+
+```swift
+// Download specific model
+await FreeToken.shared.downloadAIModel(
+    modelCode: "gemma3n_e2b_it",
+    success: { _ in },
+    error: { _ in }
+)
+
+// Use in session
+let session = try await FreeToken.shared.getChatSession(
+    modelCode: "gemma3n_e2b_it"
+)
+```
+
+### Cloud-Only Models
+
+```swift
+// No download needed
+let session = try await FreeToken.shared.getChatSession(
+    modelCode: "deepseek_r1_0528_cloud",
+    runLocation: .cloudRun
+)
+```
+
+### Multi-Turn Conversation
+
+```swift
+let session = try await FreeToken.shared.getChatSession()
+let thread = try await session.createMessageThread()
+
+// Turn 1
+try await session.addMessage(
+    message: Message(role: .user, content: "What is AI?")
+)
+let response1 = try await session.generateNewMessage()
+
+// Turn 2
+try await session.addMessage(
+    message: Message(role: .user, content: "How does it learn?")
+)
+let response2 = try await session.generateNewMessage()
+
+// Get full history
+let messages = try await session.getMessages()
 ```
 
 ---
@@ -951,35 +1107,37 @@ Common errors from `FreeTokenError`:
 - `.clientNotConfigured` - Call `configure()` first
 - `.deviceNotRegistered` - Call `registerDeviceSession()` first
 - `.aiModelNotDownloaded` - Download model first
-- `.aiModelNotLoaded` - Model not in memory
-- `.isCloudOnlyModel` - Cannot run locally
-- `.generationCancelled` - User cancelled generation
+- `.messageThreadNotCreated` - Call `createMessageThread()` first
+- `.deviceNotCapable` - Device can't run model locally
+- `.notEnoughMemoryForModel` - Insufficient memory
+- `.generationCancelled` - User cancelled via stream callback
 - `.visionModelRequired` - Images sent to non-vision model
+- `.cloudCompletionFailed` - Cloud AI error
+- `.encryptionError` - Encryption/decryption failed
 
 ---
 
 ## Best Practices
 
-1. **Save IDs**: Thread IDs and document store IDs are only returned once
-2. **Prewarm models**: Use `prewarmAIFor()` before expected AI usage
-3. **Use message threads**: Prefer `runMessageThread()` over `localChat()` for better performance
-4. **Secure encryption keys**: Store in Keychain, never in UserDefaults
-5. **Check device capabilities**: Use `isModelAvailableForDevice()` before downloading
-6. **Handle cancellation**: Support user cancellation via throwing in stream closures
-7. **Monitor status**: Use `chatStatusStream` for UX feedback
+1. **Use Sessions:** Prefer `getChatSession()` and `getCompletionSession()` over legacy APIs
+2. **Memory Management:** Call `unload()` when done with sessions, especially on iOS
+3. **Save IDs:** Thread IDs and document store IDs are only returned once
+4. **Check Capabilities:** Use `isModelAvailableForDevice()` before downloading
+5. **Handle Cancellation:** Support cancellation via throwing in stream closures
+6. **Secure Keys:** Store encryption keys in Keychain, never UserDefaults
+7. **Monitor Status:** Use `chatStatusStream` for UX feedback
+8. **Automatic Fallback:** Use `runLocation: .automatic` for best UX
 
 ---
 
 ## Testing
-
-Run tests from command line:
 
 ```bash
 # All tests
 swift test
 
 # Specific test
-swift test --filter testLocalCompletion
+swift test --filter testChatSession
 
 # Build only
 swift build
@@ -989,6 +1147,6 @@ swift build
 
 ## Additional Resources
 
-- **Full Documentation**: [docs.freetoken.ai](https://docs.freetoken.ai)
+- **Documentation**: [docs.freetoken.ai](https://docs.freetoken.ai)
 - **Console**: [console.freetoken.ai](https://console.freetoken.ai)
 - **GitHub**: [github.com/FreeTokenAI/FreeTokenSwift](https://github.com/FreeTokenAI/FreeTokenSwift)

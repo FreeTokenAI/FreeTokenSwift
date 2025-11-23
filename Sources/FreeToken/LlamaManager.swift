@@ -46,12 +46,8 @@ extension FreeToken {
             self.options = options
             self.modelFileName = URL(fileURLWithPath: modelPath).lastPathComponent
             
-            #if os(iOS)
             self.stateBaseURL = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
                 .appendingPathComponent("FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
-            #else
-            self.stateBaseURL = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".FreeToken").appendingPathComponent("chats").appendingPathComponent(repoName).appendingPathComponent(modelFileName)
-            #endif
             
             FreeTokenLogger.shared.log("LlamaManager initialized with contextSize=\(options.contextSize)", level: .info)
         }
@@ -140,7 +136,8 @@ extension FreeToken {
                 self.n_keep = Int32(prewarmedTokens.count)
                 FreeToken.shared.logger("🏃‍♂️ Loaded prewarm buffer with \(prewarmedTokens.count) tokens", .info)
             } catch {
-                FreeToken.shared.logger("⚠️ No prewarm buffer found for system message - try generating the prewarm first", .warning)
+                FreeToken.shared.logger("Prewarm buffer not found, generating new one", .info)
+                try await generatePrewarmBuffer(systemMessage)
             }
         }
         
@@ -192,6 +189,19 @@ extension FreeToken {
         
         // MARK: - Simplified Context Update
         
+        func addMessage(message: Message, runID: String) async throws {
+            try ensureActive()
+            let newMessageTokens = try await templateMessages([message])
+            
+            if templatedTokens.count + newMessageTokens.count > options.contextSize {
+                try await slidingTokenChunkUpdate(newTokens: newMessageTokens)
+            } else {
+                // Just direct update the tokens
+                try await session.evalOptimized(tokens: newMessageTokens.map { Int($0) }, feedToSampler: false, needsLogits: false)
+                templatedTokens.append(contentsOf: newMessageTokens)
+            }
+        }
+        
         /// Update context with new messages using token-based approach
         func updateContext(messages desired: [Message], runID: String) async throws {
             try ensureActive()
@@ -217,12 +227,38 @@ extension FreeToken {
                 FreeTokenLogger.shared.log("KV_SLIDING: updateContext requires full rebuild (token count decreased)", level: .warning)
                 needsRebuild = true
             } else {
+                var tokenDeltaCount = 0
                 for templatedIndex in 0..<templatedTokenCount {
                     if templatedTokens[templatedIndex] != tokens[templatedIndex] {
-                        FreeTokenLogger.shared.log("KV_SLIDING: updateContext requires full rebuild (token divergence at index \(templatedIndex))", level: .warning)
-                        needsRebuild = true
-                        break
+                        tokenDeltaCount += 1
+//                        FreeTokenLogger.shared.log("KV_SLIDING: updateContext requires full rebuild (token divergence at index \(templatedIndex))", level: .warning)
+//                        
+//                        // Output the 10 tokens before including the divergence point for context
+//                        let templatedTokenSlice = templatedTokens[(templatedIndex - 10)...templatedIndex]
+//                        let tokenSlice = tokens[max(0, templatedIndex - 10)...templatedIndex]
+//                        let desiredSlice = try await session.detokenize(tokenSlice.map { Int($0) })
+//                        let currentSlice = try await session.detokenize(templatedTokenSlice.map { Int($0) })
+//                        
+//                        FreeTokenLogger.shared.log("KV_SLIDING: Divergence context - Desired: \(desiredSlice)", level: .debug)
+//                        FreeTokenLogger.shared.log("KV_SLIDING: Divergence context - Current: \(currentSlice)", level: .debug)
+                        
+                        
+//                        let desired = try await session.detokenize(tokens.map { Int($0) })
+//                        let current = try await session.detokenize(templatedTokens.map { Int($0) })
+//                        FreeTokenLogger.shared.log("KV_SLIDING: Desired context: \(desired)", level: .debug)
+//                        FreeTokenLogger.shared.log("KV_SLIDING: Current context: \(current)", level: .debug)
+                        
+//                        needsRebuild = true
+//                        break
                     }
+                }
+                
+                // If 99% of tokens are the same, just keep going.
+                if Float(tokenDeltaCount) / Float(templatedTokenCount) > 0.01 {
+                    FreeTokenLogger.shared.log("KV_SLIDING: updateContext requires full rebuild (token divergence exceeds 99% similarity threshold: \(Float(tokenDeltaCount) / Float(templatedTokenCount))) - delta token count: \(tokenDeltaCount)", level: .warning)
+                    needsRebuild = true
+                } else {
+                    FreeToken.shared.logger("KV_SLIDING: Token divergence meets threshold - no rebuild required. Diverged token count: \(tokenDeltaCount)", .debug)
                 }
             }
             
@@ -262,32 +298,35 @@ extension FreeToken {
             }
             
             if (deltaTokens.count + templatedTokenCount) > options.contextSize {
-                
-                // Let's batch the tokens in 50% context size chunks
-                let chunkSize = options.contextSize / 2
-                // Slice the deltaTokens Array into chunks
-                var startIndex = 0
-                while startIndex < deltaTokens.count {
-                    let endIndex = min(startIndex + chunkSize, deltaTokens.count)
-                    let chunk = Array(deltaTokens[startIndex..<endIndex])
-                    
-                    if chunk.count + templatedTokenCount >= options.contextSize {
-                        FreeTokenLogger.shared.log("KV_SLIDING: Chunk of \(chunk.count) tokens exceeds context size; performing KV slide before evaluation", level: .warning)
-                        try await performKVSliding()
-                    }
-                    
-                    FreeTokenLogger.shared.log("KV_SLIDING: Evaluating chunk of \(chunk.count) tokens", level: .debug)
-                    
-                    try await session.evalOptimized(tokens: chunk.map { Int($0) }, feedToSampler: false, needsLogits: false)
-                    templatedTokens.append(contentsOf: chunk)
-                    
-                    
-                    startIndex += chunkSize
-                }
+                try await slidingTokenChunkUpdate(newTokens: deltaTokens)
             } else {
                 FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(deltaTokens.count) new tokens", level: .debug)
                 try await session.evalOptimized(tokens: deltaTokens.map { Int($0) }, feedToSampler: false, needsLogits: false)
                 templatedTokens.append(contentsOf: deltaTokens)
+            }
+        }
+        
+        private func slidingTokenChunkUpdate(newTokens deltaTokens: [Int32]) async throws {
+            // Let's batch the tokens in 50% context size chunks
+            let chunkSize = options.contextSize / 2
+            // Slice the deltaTokens Array into chunks
+            var startIndex = 0
+            while startIndex < deltaTokens.count {
+                let endIndex = min(startIndex + chunkSize, deltaTokens.count)
+                let chunk = Array(deltaTokens[startIndex..<endIndex])
+                
+                if chunk.count + templatedTokenCount >= options.contextSize {
+                    FreeTokenLogger.shared.log("KV_SLIDING: Chunk of \(chunk.count) tokens exceeds context size; performing KV slide before evaluation", level: .warning)
+                    try await performKVSliding()
+                }
+                
+                FreeTokenLogger.shared.log("KV_SLIDING: Evaluating chunk of \(chunk.count) tokens", level: .debug)
+                
+                try await session.evalOptimized(tokens: chunk.map { Int($0) }, feedToSampler: false, needsLogits: false)
+                templatedTokens.append(contentsOf: chunk)
+                
+                
+                startIndex += chunkSize
             }
         }
         
@@ -399,6 +438,7 @@ extension FreeToken {
                 // Feed to sampler since these are part of generation
                 let slotTokensInt = assistantSlotTokens.map { Int($0) }
                 try await session.evalOptimized(tokens: slotTokensInt, feedToSampler: true, needsLogits: true)
+                templatedTokens.append(contentsOf: assistantSlotTokens)
             }
             
             return AsyncThrowingStream { continuation in

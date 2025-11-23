@@ -1407,27 +1407,7 @@ extension FreeToken {
             
     }
     
-    public struct AIModel: Sendable {
-        public let code: String
-        public let name: String
-        public let trainingCutoffDate: String
-        public let cloudOnly: Bool
-        public let jsonToolCalls: Bool
-        public let capabilities: AIModelCapabilities
-        public let recommendedPlatforms: AIModelRecommendedPlatforms
-        internal let coding: Codings.AiModelResponse
-        
-        init(from: Codings.AiModelResponse) {
-            self.code = from.code
-            self.name = from.name
-            self.trainingCutoffDate = from.trainingCutoffDate
-            self.cloudOnly = from.cloudOnly
-            self.jsonToolCalls = from.jsonToolCalls ?? false
-            self.coding = from
-            self.capabilities = AIModelCapabilities(from: from.capabilities)
-            self.recommendedPlatforms = AIModelRecommendedPlatforms(from: from.recommendedPlatforms)
-        }
-    }
+    
     
     public struct AIModelCapabilities: Sendable {
         public let text: Bool
@@ -1459,6 +1439,7 @@ extension FreeToken {
         case notDownloaded
         case downloading
         case downloaded
+        case cloudOnly
         case failed(error: String)
     }
     
