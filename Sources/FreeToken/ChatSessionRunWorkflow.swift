@@ -277,10 +277,19 @@ extension FreeToken {
                     try await self.context.chatSession.saveSession()
 //                    try? await self.context.chatStatusStream?(nil, .new_message_created)
                     
-                    let additionalSteps: [any WorkflowStep.Type] = [
-                        RunLocalChatSession.self,
-                        self.context.runLocation == .localRun ? ChatSessionRunToolCalls.self : RunCloudChatSession.self
-                    ]
+                    let additionalSteps: [any WorkflowStep.Type]
+                    
+                    if self.context.runLocation == .localRun {
+                        additionalSteps = [
+                            RunLocalChatSession.self,
+                            ChatSessionRunToolCalls.self
+                        ]
+                    } else {
+                        additionalSteps = [
+                            RunCloudChatSession.self,
+                            ChatSessionRunToolCalls.self
+                        ]
+                    }
                     
                     if let context = self.context as? ChatSessionRunWorkflowContext {
                         let workflow = WorkflowManager(context: context, steps: additionalSteps)
