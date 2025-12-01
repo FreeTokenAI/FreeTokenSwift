@@ -75,6 +75,9 @@ extension FreeToken {
             parsedTools = []
             toolMatches = []
 
+            FreeToken.shared.logger("🔍 ParseToolCalls.parse() called with toolNames: \(toolNames)", .info)
+            FreeToken.shared.logger("🔍 Message content (first 500 chars): \(String(messageContent.prefix(500)))", .info)
+
             // Normalize whitespace: replace all newlines with spaces to handle multi-line JSON
             messageContent = messageContent.replacingOccurrences(of: "\n", with: " ")
                 .replacingOccurrences(of: "\r", with: " ")
@@ -98,6 +101,11 @@ extension FreeToken {
 
             toolMatches = foundToolCalls
             allTools = foundToolCalls.isEmpty ? nil : "[\(foundToolCalls.joined(separator: ", "))]"
+
+            FreeToken.shared.logger("🔍 ParseToolCalls.parse() completed: found \(parsedTools.count) tool calls", .info)
+            for tc in parsedTools {
+                FreeToken.shared.logger("🔍   Tool: \(tc.name) with args: \(tc.arguments)", .info)
+            }
 
             return parsedTools
         }
@@ -323,45 +331,47 @@ extension FreeToken {
         }
 
         /// Parse XML-style <toolUse> tags followed by JSON arguments
-        /// Format: <toolUse>tool_name</toolUse> followed by ```json {...} ```
+        /// Format: <toolUse>tool_name</toolUse> followed by ```json {...} ``` or just {...}
+        /// This method is more robust - it finds toolUse tags first, then looks for JSON after
         private func parseXmlToolUseCalls() throws -> (toolCalls: [ToolCall], matches: [String]) {
             var toolCalls: [ToolCall] = []
             var matches: [String] = []
 
-            // Pattern to match <toolUse>tool_name</toolUse> followed by JSON in code block
-            // The JSON can be in ```json {...} ``` or just {...}
-            // Note: newlines are already normalized to spaces at this point
-            let pattern = #"<toolUse>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*</toolUse>\s*(?:```(?:json)?\s*)?\{([^}]*)\}\s*(?:```)?"#
-            let regex = try NSRegularExpression(pattern: pattern, options: [])
+            FreeToken.shared.logger("🔍 parseXmlToolUseCalls: checking for <toolUse> tags", .info)
+            FreeToken.shared.logger("🔍 parseXmlToolUseCalls: content contains '<toolUse>': \(messageContent.contains("<toolUse>"))", .info)
 
-            // Use NSString for consistent UTF-16 handling to avoid emoji offset issues
+            // Step 1: Find all <toolUse>tool_name</toolUse> tags
+            let tagPattern = #"<toolUse>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*</toolUse>"#
+            let tagRegex = try NSRegularExpression(pattern: tagPattern, options: [])
             let nsContent = messageContent as NSString
-            let xmlMatches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: nsContent.length))
+            let tagMatches = tagRegex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: nsContent.length))
 
-            for match in xmlMatches {
-                // Use NSString substring to avoid UTF-16/Swift String offset mismatches with emojis
-                let toolNameNSRange = match.range(at: 1)
-                let argsNSRange = match.range(at: 2)
-                let fullNSRange = match.range
+            FreeToken.shared.logger("🔍 parseXmlToolUseCalls: found \(tagMatches.count) toolUse tags", .info)
 
-                guard toolNameNSRange.location != NSNotFound,
-                      argsNSRange.location != NSNotFound,
-                      fullNSRange.location != NSNotFound else {
-                    continue
-                }
+            for tagMatch in tagMatches {
+                let toolNameRange = tagMatch.range(at: 1)
+                guard toolNameRange.location != NSNotFound else { continue }
 
-                let toolName = nsContent.substring(with: toolNameNSRange)
-                let argsInner = nsContent.substring(with: argsNSRange)
-                let argsContent = "{\(argsInner)}"
-                let fullMatch = nsContent.substring(with: fullNSRange)
+                let toolName = nsContent.substring(with: toolNameRange)
+                FreeToken.shared.logger("🔍 parseXmlToolUseCalls: extracted toolName='\(toolName)'", .info)
 
                 // Verify tool name is in allowed list
                 guard toolNames.contains(toolName) else {
+                    FreeToken.shared.logger("🔍 parseXmlToolUseCalls: toolName '\(toolName)' NOT in allowed list: \(toolNames)", .warning)
                     continue
                 }
 
-                // Parse JSON arguments
-                if let data = argsContent.data(using: .utf8),
+                FreeToken.shared.logger("🔍 parseXmlToolUseCalls: toolName '\(toolName)' IS in allowed list!", .info)
+
+                // Step 2: Look for JSON after the closing </toolUse> tag
+                let afterTagStart = tagMatch.range.location + tagMatch.range.length
+                let remainingContent = nsContent.substring(from: afterTagStart)
+
+                // Extract JSON objects from the remaining content (handles nested braces correctly)
+                let jsonObjects = extractJsonObjects(from: remainingContent)
+
+                if let firstJson = jsonObjects.first,
+                   let data = firstJson.data(using: .utf8),
                    let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
                     // Convert all values to strings
                     var arguments: [String: String] = [:]
@@ -371,7 +381,14 @@ extension FreeToken {
 
                     let toolCall = ToolCall(name: toolName, arguments: arguments)
                     toolCalls.append(toolCall)
+
+                    // Create a match string for tracking
+                    let fullMatch = nsContent.substring(with: tagMatch.range) + " " + firstJson
                     matches.append(fullMatch)
+
+                    FreeToken.shared.logger("🔍 parseXmlToolUseCalls: successfully parsed tool call: \(toolName) with args: \(arguments)", .info)
+                } else {
+                    FreeToken.shared.logger("🔍 parseXmlToolUseCalls: no valid JSON found after </toolUse> for '\(toolName)'", .warning)
                 }
             }
 

@@ -79,8 +79,14 @@ extension FreeToken {
             }
 
             if !remainingToolCalls.isEmpty {
+                FreeToken.shared.logger("🔍 ToolCallsManager: sending \(remainingToolCalls.count) tool calls to external handler", .info)
+                for tc in remainingToolCalls {
+                    FreeToken.shared.logger("🔍   External tool: \(tc.name)", .info)
+                }
                 let result = await self.handleExternalCalls(toolCalls: remainingToolCalls, externalToolCallHandler: externalToolCallHandler)
                 results += "\n\n\(result)"
+            } else {
+                FreeToken.shared.logger("🔍 ToolCallsManager: no remaining tool calls for external handler", .info)
             }
 
             if !internalCalls.isEmpty {
@@ -99,9 +105,14 @@ extension FreeToken {
         
         private func parseToolCalls() throws {
             let toolNames = builtInToolDefinitions.map { $0.name } + applicationToolDefinitions.map { $0.name } + cloudToolDefinitions.map { $0.name }
+            FreeToken.shared.logger("🔍 ToolCallsManager.parseToolCalls: combined toolNames = \(toolNames)", .info)
+            FreeToken.shared.logger("🔍   builtIn: \(builtInToolDefinitions.map { $0.name })", .info)
+            FreeToken.shared.logger("🔍   application: \(applicationToolDefinitions.map { $0.name })", .info)
+            FreeToken.shared.logger("🔍   cloud: \(cloudToolDefinitions.map { $0.name })", .info)
             let parser = ParseToolCalls(messageContent: messageContent, toolNames: toolNames)
-            
+
             self.toolCalls = try parser.parse()
+            FreeToken.shared.logger("🔍 ToolCallsManager.parseToolCalls: parsed \(self.toolCalls.count) tool calls", .info)
         }
         
         private func handleInternalLocalCalls(toolCalls: [ToolCall]) async -> String {
