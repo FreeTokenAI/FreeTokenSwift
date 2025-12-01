@@ -65,7 +65,7 @@ extension FreeToken {
             self.messageContent = messageContent
             self.toolNames = toolNames
         }
-        
+
         func parse() throws -> [ToolCall] {
             guard !toolNames.isEmpty else {
                 throw FreeTokenError.noToolNamesProvided
@@ -91,12 +91,17 @@ extension FreeToken {
             parsedTools.append(contentsOf: squareBracketToolCalls.toolCalls)
             foundToolCalls.append(contentsOf: squareBracketToolCalls.matches)
 
+            // Then parse XML toolUse syntax
+            let xmlToolCalls = try parseXmlToolUseCalls()
+            parsedTools.append(contentsOf: xmlToolCalls.toolCalls)
+            foundToolCalls.append(contentsOf: xmlToolCalls.matches)
+
             toolMatches = foundToolCalls
             allTools = foundToolCalls.isEmpty ? nil : "[\(foundToolCalls.joined(separator: ", "))]"
 
             return parsedTools
         }
-        
+
         private func parseJsonToolCalls() throws -> (toolCalls: [ToolCall], matches: [String]) {
             var toolCalls: [ToolCall] = []
             var matches: [String] = []
@@ -164,40 +169,40 @@ extension FreeToken {
 
             return (toolCalls, matches)
         }
-        
+
         private func parseSquareBracketToolCalls() throws -> (toolCalls: [ToolCall], matches: [String]) {
             var toolCalls: [ToolCall] = []
             var matches: [String] = []
-            
+
             // Create pattern to match any of the specified tool names followed by parentheses
             let escapedToolNames = toolNames.map { NSRegularExpression.escapedPattern(for: $0) }
             let toolNamesPattern = escapedToolNames.joined(separator: "|")
             let pattern = #"(\#(toolNamesPattern))\s*\(([^)]*)\)"#
-            
+
             let regex = try NSRegularExpression(pattern: pattern, options: [])
             let bracketMatches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: messageContent.utf16.count))
-            
+
             for match in bracketMatches {
                 guard let toolNameRange = Range(match.range(at: 1), in: messageContent),
                       let paramsRange = Range(match.range(at: 2), in: messageContent) else {
                     continue
                 }
-                
+
                 let toolName = String(messageContent[toolNameRange])
                 let rawParams = String(messageContent[paramsRange])
                 let fullMatch = String(messageContent[Range(match.range, in: messageContent)!])
-                
+
                 // Parse parameters
                 let arguments = try parseParameters(rawParams)
                 let toolCall = ToolCall(name: toolName, arguments: arguments)
-                
+
                 toolCalls.append(toolCall)
                 matches.append(fullMatch)
             }
-            
+
             return (toolCalls, matches)
         }
-        
+
         private func parseParameters(_ rawParams: String) throws -> [String: String] {
             guard !rawParams.trimmingCharacters(in: .whitespaces).isEmpty else {
                 return [:]
@@ -315,6 +320,62 @@ extension FreeToken {
             }
 
             return jsonObjects
+        }
+
+        /// Parse XML-style <toolUse> tags followed by JSON arguments
+        /// Format: <toolUse>tool_name</toolUse> followed by ```json {...} ```
+        private func parseXmlToolUseCalls() throws -> (toolCalls: [ToolCall], matches: [String]) {
+            var toolCalls: [ToolCall] = []
+            var matches: [String] = []
+
+            // Pattern to match <toolUse>tool_name</toolUse> followed by JSON in code block
+            // The JSON can be in ```json {...} ``` or just {...}
+            // Note: newlines are already normalized to spaces at this point
+            let pattern = #"<toolUse>\s*([a-zA-Z_][a-zA-Z0-9_]*)\s*</toolUse>\s*(?:```(?:json)?\s*)?\{([^}]*)\}\s*(?:```)?"#
+            let regex = try NSRegularExpression(pattern: pattern, options: [])
+
+            // Use NSString for consistent UTF-16 handling to avoid emoji offset issues
+            let nsContent = messageContent as NSString
+            let xmlMatches = regex.matches(in: messageContent, options: [], range: NSRange(location: 0, length: nsContent.length))
+
+            for match in xmlMatches {
+                // Use NSString substring to avoid UTF-16/Swift String offset mismatches with emojis
+                let toolNameNSRange = match.range(at: 1)
+                let argsNSRange = match.range(at: 2)
+                let fullNSRange = match.range
+
+                guard toolNameNSRange.location != NSNotFound,
+                      argsNSRange.location != NSNotFound,
+                      fullNSRange.location != NSNotFound else {
+                    continue
+                }
+
+                let toolName = nsContent.substring(with: toolNameNSRange)
+                let argsInner = nsContent.substring(with: argsNSRange)
+                let argsContent = "{\(argsInner)}"
+                let fullMatch = nsContent.substring(with: fullNSRange)
+
+                // Verify tool name is in allowed list
+                guard toolNames.contains(toolName) else {
+                    continue
+                }
+
+                // Parse JSON arguments
+                if let data = argsContent.data(using: .utf8),
+                   let jsonObject = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+                    // Convert all values to strings
+                    var arguments: [String: String] = [:]
+                    for (key, value) in jsonObject {
+                        arguments[key] = String(describing: value)
+                    }
+
+                    let toolCall = ToolCall(name: toolName, arguments: arguments)
+                    toolCalls.append(toolCall)
+                    matches.append(fullMatch)
+                }
+            }
+
+            return (toolCalls, matches)
         }
     }
 }
