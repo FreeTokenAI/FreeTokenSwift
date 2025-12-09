@@ -1150,7 +1150,7 @@ extension FreeToken {
             
             self.model = try! aiModel.llamaManager(aiRunConfig: aiRunConfig)
             
-            _ = try? await self.addMessage(message: systemMessage)
+            self.messages.insert(systemMessage, at: 0)
 
             await self.prewarm()
         }
