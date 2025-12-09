@@ -76,7 +76,7 @@ extension FreeToken {
         
         // Cloud Model Config
         let modelCode: String
-        let aiRunConfig: AIRunConfig
+        var aiRunConfig: AIRunConfig? = nil
         
         // Status
         let chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>
@@ -93,7 +93,7 @@ extension FreeToken {
             documentSearchScope: String? = nil,
             privateDocumentStoreIDs: [String]? = nil,
             modelCode: String,
-            aiRunConfig: AIRunConfig,
+            aiRunConfig: AIRunConfig? = nil,
             toolMask: [ToolRunMask] = [.allowAll],
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil,

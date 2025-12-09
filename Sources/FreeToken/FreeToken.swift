@@ -900,15 +900,16 @@ public class FreeToken: @unchecked Sendable {
         messageThreadID: String? = nil,
         modelCode: String? = nil,
         runLocation: RunLocation = .automatic,
-        toolAccess: [ToolRunMask] = [.allowAll]
+        toolAccess: [ToolRunMask] = [.allowAll],
+        aiRunConfig: AIRunConfig? = nil
     ) async throws -> ChatSessionProtocol {
         let downloadState = try await getAIModelDownloadState(modelCode: modelCode) == .downloaded
         let aiModel = try await getAIModel(modelCode: modelCode)
         
         if downloadState && aiModel.availableMemoryToLoad() && runLocation != .cloudRun {
-            return try await getLocalChatSession(messageThreadID: messageThreadID, modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess)
+            return try await getLocalChatSession(messageThreadID: messageThreadID, modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess, aiRunConfig: aiRunConfig)
         } else {
-            return try await getCloudChatSession(messageThreadID: messageThreadID, modelCode: modelCode, toolAccess: toolAccess)
+            return try await getCloudChatSession(messageThreadID: messageThreadID, modelCode: modelCode, toolAccess: toolAccess, aiRunConfig: aiRunConfig)
         }
     }
     
@@ -916,7 +917,8 @@ public class FreeToken: @unchecked Sendable {
         messageThreadID: String? = nil,
         modelCode: String? = nil,
         runLocation: RunLocation = .automatic,
-        toolAccess: [ToolRunMask] = [.allowAll]
+        toolAccess: [ToolRunMask] = [.allowAll],
+        aiRunConfig: AIRunConfig? = nil
     ) async throws -> ChatSessionProtocol {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
@@ -944,7 +946,7 @@ public class FreeToken: @unchecked Sendable {
         if aiModel.availableMemoryToLoad() {
             let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
             
-            return try await ChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, runLocation: runLocation, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager, queue: AITaskQueue.shared, messageThreadID: messageThreadID)
+            return try await ChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, runLocation: runLocation, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager, queue: AITaskQueue.shared, messageThreadID: messageThreadID, aiRunConfig: aiRunConfig)
         } else if runLocation == .automatic {
             // Go to cloud
             return try await self.getCloudChatSession(messageThreadID: messageThreadID, modelCode: aiModel.code, toolAccess: toolAccess)
@@ -957,7 +959,8 @@ public class FreeToken: @unchecked Sendable {
     internal func getCloudChatSession(
         messageThreadID: String? = nil,
         modelCode: String? = nil,
-        toolAccess: [ToolRunMask] = [.allowAll]
+        toolAccess: [ToolRunMask] = [.allowAll],
+        aiRunConfig: AIRunConfig? = nil
     ) async throws -> CloudChatSession {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
@@ -965,7 +968,7 @@ public class FreeToken: @unchecked Sendable {
         
         let aiModel = try await self.getAIModel(modelCode: modelCode)
                     
-        return CloudChatSession(client: self, aiModel: aiModel, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager,toolAccess: toolAccess, messageThreadID: messageThreadID)
+        return CloudChatSession(client: self, aiModel: aiModel, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager,toolAccess: toolAccess, messageThreadID: messageThreadID, aiRunConfig: aiRunConfig)
     }
     
     public func getMemoryChatSession(
@@ -974,7 +977,8 @@ public class FreeToken: @unchecked Sendable {
         toolAccess: [ToolRunMask] = [.allowAll],
         messages: [Message] = [],
         systemInstructions: String = "",
-        runID: String = UUID().uuidString
+        runID: String = UUID().uuidString,
+        aiRunConfig: AIRunConfig? = nil
     ) async throws -> MemoryChatSession {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
@@ -1002,7 +1006,7 @@ public class FreeToken: @unchecked Sendable {
         // Generate System Message
         let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
 
-        return await MemoryChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, queue: AITaskQueue.shared, runID: runID, messages: messages)
+        return await MemoryChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, queue: AITaskQueue.shared, runID: runID, messages: messages, aiRunConfig: aiRunConfig)
     }
     
     /// Create a New Completion Session
@@ -1023,21 +1027,23 @@ public class FreeToken: @unchecked Sendable {
     ///  - Returns: A `CompletionSessionProtocol` object representing the completion session.
     public func getCompletionSession(
         modelCode: String? = nil,
-        runLocation: RunLocation = .automatic
+        runLocation: RunLocation = .automatic,
+        aiRunConfig: AIRunConfig? = nil
     ) async throws -> CompletionSessionProtocol {
         let downloadState = try await getAIModelDownloadState(modelCode: modelCode) == .downloaded
         let aiModel = try await self.getAIModel(modelCode: modelCode)
         
         if downloadState && aiModel.availableMemoryToLoad() && runLocation != .cloudRun {
-            return try await getLocalCompletionSession()
+            return try await getLocalCompletionSession(modelCode: modelCode, runLocation: runLocation, aiRunConfig: aiRunConfig)
         } else {
-            return try await getCloudCompletionSession()
+            return try await getCloudCompletionSession(modelCode: modelCode, aiRunConfig: aiRunConfig)
         }
     }
     
     internal func getLocalCompletionSession(
         modelCode: String? = nil,
-        runLocation: RunLocation = .automatic
+        runLocation: RunLocation = .automatic,
+        aiRunConfig: AIRunConfig? = nil
     ) async throws -> CompletionSession {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
@@ -1057,11 +1063,12 @@ public class FreeToken: @unchecked Sendable {
             throw FreeTokenError.deviceNotCapable
         }
         
-        return try CompletionSession(client: self, aiModel: aiModel, runLocation: runLocation, queue: AITaskQueue.shared)
+        return try CompletionSession(client: self, aiModel: aiModel, runLocation: runLocation, queue: AITaskQueue.shared, aiRunConfig: aiRunConfig)
     }
     
     internal func getCloudCompletionSession(
-        modelCode: String? = nil
+        modelCode: String? = nil,
+        aiRunConfig: AIRunConfig? = nil
     ) async throws -> CloudCompletionSession {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
@@ -1069,7 +1076,7 @@ public class FreeToken: @unchecked Sendable {
         
         let aiModel = try await getAIModel(modelCode: modelCode)
         
-        return CloudCompletionSession(client: self, aiModel: aiModel)
+        return CloudCompletionSession(client: self, aiModel: aiModel, aiRunConfig: aiRunConfig)
     }
     
     

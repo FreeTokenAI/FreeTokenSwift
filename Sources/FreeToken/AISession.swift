@@ -182,6 +182,7 @@ extension FreeToken {
         let modelCode: String
         let modelPath: String
         let repoName: String
+        var aiRunConfig: AIRunConfig? = nil
 
         // MARK: - Initialization
 
@@ -194,7 +195,8 @@ extension FreeToken {
             toolDefinitionsManager: ToolDefinitionsManager,
             toolAccess: [ToolRunMask] = [.allowAll],
             queue: AITaskQueue,
-            messageThreadID: String? = nil
+            messageThreadID: String? = nil,
+            aiRunConfig: AIRunConfig? = nil
         ) async throws {
             self.client = client
             self.messagePreparer = aiModel.messagePreparer()
@@ -211,8 +213,9 @@ extension FreeToken {
             self.modelPath = aiModel.getRootModelPath().path
             self.repoName = aiModel.repo!
             self.aiModel = aiModel
+            self.aiRunConfig = aiRunConfig
             
-            self.model = try aiModel.llamaManager()
+            self.model = try aiModel.llamaManager(aiRunConfig: aiRunConfig)
             
             await self.prewarm()
         }
@@ -539,7 +542,7 @@ extension FreeToken {
         /// - Note: This is typically called automatically when needed. Manual calls are only necessary if you've explicitly unloaded the model.
         public func load() async throws {
             await unload()
-            self.model = try aiModel.llamaManager()
+            self.model = try aiModel.llamaManager(aiRunConfig: self.aiRunConfig)
 
             await self.prewarm()
         }
@@ -607,6 +610,7 @@ extension FreeToken {
         let jsonToolResults: Bool
         let toolAccess: [ToolRunMask]
         let modelCode: String
+        var aiRunConfig: AIRunConfig? = nil
         
         internal init(
             client: FreeToken,
@@ -614,7 +618,8 @@ extension FreeToken {
             messagesManager: MessagesManager,
             toolDefinitionsManager: ToolDefinitionsManager,
             toolAccess: [ToolRunMask] = [.allowAll],
-            messageThreadID: String? = nil
+            messageThreadID: String? = nil,
+            aiRunConfig: AIRunConfig? = nil
         ) {
             self.client = client
             self.messagePreparer = aiModel.messagePreparer()
@@ -625,6 +630,7 @@ extension FreeToken {
             self.modelCode = aiModel.code
             self.messageThreadID = messageThreadID
             self.toolAccess = toolAccess
+            self.aiRunConfig = aiRunConfig
         }
 
         // MARK: - Public Methods
@@ -778,20 +784,12 @@ extension FreeToken {
                 ChatSessionRunToolCalls.self // Handle Tool Calls
             ]
             
-            let aiRunConfig = AIRunConfig(
-                maxGenerationTokens: self.config.maxTokenCount,
-                contentWindowSize: self.config.nCTX,
-                topK: self.config.topK,
-                topP: self.config.topP,
-                temperature: self.config.temperature
-            )
-            
             let workflowContext = CloudChatSessionRunWorklowContext(
                 chatSession: self,
                 documentSearchScope: documentSearchScope,
                 privateDocumentStoreIDs: privateDocumentStoreIDs,
                 modelCode: self.modelCode,
-                aiRunConfig: aiRunConfig,
+                aiRunConfig: self.aiRunConfig,
                 chatStatusStream: chatStatusStream,
                 toolUseHandler: toolUseHandler,
                 jsonToolResults: jsonToolResults,
@@ -881,12 +879,14 @@ extension FreeToken {
         var model: LlamaManager
         let runID: String = UUID().uuidString
         let modelCode: String
+        var aiRunConfig: AIRunConfig? = nil
         
         internal init(
             client: FreeToken,
             aiModel: AIModel,
             runLocation: RunLocation,
-            queue: AITaskQueue
+            queue: AITaskQueue,
+            aiRunConfig: AIRunConfig? = nil
         ) throws {
             self.client = client
             self.aiModel = aiModel
@@ -894,9 +894,10 @@ extension FreeToken {
             self.queue = queue
             self.runLocation = runLocation
             self.modelCode = aiModel.code
+            self.aiRunConfig = aiRunConfig
             
             // Initialize Model
-            self.model = try aiModel.llamaManager()
+            self.model = try aiModel.llamaManager(aiRunConfig: aiRunConfig)
         }
 
         // MARK: - Public Methods
@@ -987,7 +988,7 @@ extension FreeToken {
         public func load() async throws {
             await unload()
             
-            self.model = try aiModel.llamaManager()
+            self.model = try aiModel.llamaManager(aiRunConfig: self.aiRunConfig)
         }
     }
 
@@ -1010,14 +1011,17 @@ extension FreeToken {
         let client: FreeToken
         let aiModel: AIModel
         let modelCode: String
+        var aiRunConfig: AIRunConfig? = nil
         
         internal init(
             client: FreeToken,
-            aiModel: AIModel
+            aiModel: AIModel,
+            aiRunConfig: AIRunConfig? = nil
         ) {
             self.client = client
             self.aiModel = aiModel
             self.modelCode = aiModel.code
+            self.aiRunConfig = aiRunConfig
         }
 
         // MARK: - Public Methods
@@ -1047,7 +1051,7 @@ extension FreeToken {
 
             return try await withCheckedThrowingContinuation { continuation in
                 Task {
-                    await client.generateCloudChatCompletion(messages: messages, model: modelCode, chatStatusStream: chatStatusStream) { message in
+                    await client.generateCloudChatCompletion(messages: messages, model: modelCode, aiRunConfig: self.aiRunConfig, chatStatusStream: chatStatusStream) { message in
                         let result = Completion(response: message.content, tokenUsage: message.tokenUsage)
                         continuation.resume(returning: result)
                     } error: { error in
@@ -1115,6 +1119,7 @@ extension FreeToken {
         let modelCode: String
         let queue: AITaskQueue
         let systemMessage: Message
+        var aiRunConfig: AIRunConfig? = nil
         
         internal init(
             client: FreeToken,
@@ -1124,7 +1129,8 @@ extension FreeToken {
             toolAccess: [ToolRunMask] = [.allowAll],
             queue: AITaskQueue,
             runID: String = UUID().uuidString,
-            messages: [Message] = []
+            messages: [Message] = [],
+            aiRunConfig: AIRunConfig? = nil
         ) async {
             self.client = client
             self.aiModel = aiModel
@@ -1140,8 +1146,9 @@ extension FreeToken {
             self.systemMessage = systemMessage
             self.runID = runID
             self.messages = messages
+            self.aiRunConfig = aiRunConfig
             
-            self.model = try! aiModel.llamaManager()
+            self.model = try! aiModel.llamaManager(aiRunConfig: aiRunConfig)
             
             _ = try? await self.addMessage(message: systemMessage)
 
@@ -1351,7 +1358,7 @@ extension FreeToken {
         public func load() async throws {
             await unload()
 
-            self.model = try aiModel.llamaManager()
+            self.model = try aiModel.llamaManager(aiRunConfig: self.aiRunConfig)
 
             await self.prewarm()
         }

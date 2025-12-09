@@ -161,7 +161,7 @@ extension FreeToken {
             return deviceManager!.availableMemoryForRequestedSize()
         }
         
-        internal func llamaManager() throws -> LlamaManager {
+        internal func llamaManager(aiRunConfig: AIRunConfig? = nil) throws -> LlamaManager {
             if cloudOnly {
                 throw FreeTokenError.isCloudOnlyModel
             }
@@ -171,13 +171,16 @@ extension FreeToken {
                 .path
             
             let config = aiModelConfiguration
+            
+            
+            
             let options = LlamaInitOptions(
-                contextSize: config.nCTX,
+                contextSize: aiRunConfig?.contextWindowSize ?? config.nCTX,
                 maxSequences: 1,  // Default to 4 parallel sequences
-                maxNewTokens: config.maxTokenCount,
-                temperature: config.temperature,
-                topK: config.topK,
-                topP: config.topP,
+                maxNewTokens: aiRunConfig?.maxGenerationTokens ?? config.maxTokenCount,
+                temperature: aiRunConfig?.temperature ?? config.temperature,
+                topK: aiRunConfig?.topK ?? config.topK,
+                topP: aiRunConfig?.topP ?? config.topP,
                 repeatPenalty: config.penaltyRepeat,
                 repeatLastN: Int(config.penaltyLastN),
                 frequencyPenalty: config.penaltyFrequency,
