@@ -64,11 +64,6 @@ extension FreeToken {
             }
         }
         
-        // Public read-only access to messages (without token tracking)
-//        var currentMessages: [Message] {
-//            return messages
-//        }
-//        
         // MARK: - Prewarm System Message
         
         func generatePrewarmBuffer(_ systemMessage: Message) async throws {
@@ -108,7 +103,8 @@ extension FreeToken {
                 try await self.resetSession()
                 _ = try await session.evalOptimized(tokens: tokens, feedToSampler: false, needsLogits: false) // Evaluate it into the KV cache
                 self.templatedTokens = prewarmedTokens
-                
+                self.n_keep = Int32(prewarmedTokens.count) // Protect system message from being slid out
+
                 // Write session to disk
                 try await session.writeStateToFile(fileName: stateFileName, basePath: stateBaseURL, tokens: prewarmedTokens)
                 
@@ -200,8 +196,17 @@ extension FreeToken {
         func addMessage(message: Message, runID: String) async throws {
             try ensureActive()
             let newMessageTokens = try await templateMessages([message])
-            
+
+            FreeTokenLogger.shared.log("KV_SLIDING: addMessage called - role=\(message.role.rawValue), tokenCount=\(newMessageTokens.count), templatedTokens.count=\(templatedTokens.count), n_keep=\(n_keep), pos=\(await session.getPos())", level: .debug)
+
+            // If this is the first message (system message), set n_keep to protect it from sliding
+            if templatedTokens.isEmpty && n_keep == 0 {
+                n_keep = Int32(newMessageTokens.count)
+                FreeTokenLogger.shared.log("KV_SLIDING: Set n_keep=\(n_keep) from first message in addMessage", level: .info)
+            }
+
             if Int(await session.getPos()) + newMessageTokens.count > options.contextSize {
+                FreeTokenLogger.shared.log("KV_SLIDING: addMessage triggering slidingTokenChunkUpdate - n_keep=\(n_keep)", level: .debug)
                 try await slidingTokenChunkUpdate(newTokens: newMessageTokens)
             } else {
                 // Just direct update the tokens
@@ -239,25 +244,6 @@ extension FreeToken {
                 for templatedIndex in 0..<templatedTokenCount {
                     if templatedTokens[templatedIndex] != tokens[templatedIndex] {
                         tokenDeltaCount += 1
-//                        FreeTokenLogger.shared.log("KV_SLIDING: updateContext requires full rebuild (token divergence at index \(templatedIndex))", level: .warning)
-//                        
-//                        // Output the 10 tokens before including the divergence point for context
-//                        let templatedTokenSlice = templatedTokens[(templatedIndex - 10)...templatedIndex]
-//                        let tokenSlice = tokens[max(0, templatedIndex - 10)...templatedIndex]
-//                        let desiredSlice = try await session.detokenize(tokenSlice.map { Int($0) })
-//                        let currentSlice = try await session.detokenize(templatedTokenSlice.map { Int($0) })
-//                        
-//                        FreeTokenLogger.shared.log("KV_SLIDING: Divergence context - Desired: \(desiredSlice)", level: .debug)
-//                        FreeTokenLogger.shared.log("KV_SLIDING: Divergence context - Current: \(currentSlice)", level: .debug)
-                        
-                        
-//                        let desired = try await session.detokenize(tokens.map { Int($0) })
-//                        let current = try await session.detokenize(templatedTokens.map { Int($0) })
-//                        FreeTokenLogger.shared.log("KV_SLIDING: Desired context: \(desired)", level: .debug)
-//                        FreeTokenLogger.shared.log("KV_SLIDING: Current context: \(current)", level: .debug)
-                        
-//                        needsRebuild = true
-//                        break
                     }
                 }
                 
@@ -293,19 +279,18 @@ extension FreeToken {
                 FreeTokenLogger.shared.log("KV_SLIDING: No new tokens to evaluate after context update", level: .info)
                 return
             }
-            
-            if needsRebuild {
-                // Reset n_keep to the first message
-                if !desired.isEmpty {
-                    let firstMessageTokens = try await templateMessages([desired[0]])
-                    n_keep = Int32(firstMessageTokens.count)
-                    FreeTokenLogger.shared.log("KV_SLIDING: Calculated n_keep=\(n_keep) from first message", level: .info)
-                } else {
-                    n_keep = 0
-                }
+
+            // Reset n_keep to the first message
+            if !desired.isEmpty {
+                let firstMessageTokens = try await templateMessages([desired[0]])
+                n_keep = Int32(firstMessageTokens.count)
+                FreeTokenLogger.shared.log("KV_SLIDING: Calculated n_keep=\(n_keep) from first message", level: .info)
+            } else {
+                n_keep = 0
             }
             
             if (deltaTokens.count + Int(await session.getPos())) > options.contextSize {
+                FreeTokenLogger.shared.log("KV_SLIDING: updateContext triggering slidingTokenChunkUpdate - n_keep=\(n_keep), deltaTokens=\(deltaTokens.count), pos=\(await session.getPos())", level: .debug)
                 try await slidingTokenChunkUpdate(newTokens: deltaTokens)
             } else {
                 FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(deltaTokens.count) new tokens", level: .debug)
@@ -324,7 +309,7 @@ extension FreeToken {
                 let chunk = Array(deltaTokens[startIndex..<endIndex])
                 
                 if chunk.count + Int(await session.getPos()) >= options.contextSize {
-                    FreeTokenLogger.shared.log("KV_SLIDING: Chunk of \(chunk.count) tokens exceeds context size; performing KV slide before evaluation", level: .warning)
+                    FreeTokenLogger.shared.log("KV_SLIDING: Chunk of \(chunk.count) tokens exceeds context size; performing KV slide before evaluation. n_keep=\(n_keep)", level: .warning)
                     try await performKVSliding()
                 }
                 
@@ -346,7 +331,7 @@ extension FreeToken {
             try ensureActive()
             
             guard n_keep > 0 else {
-                FreeTokenLogger.shared.log("KV_SLIDING: ERROR - Cannot slide without n_keep set", level: .error)
+                FreeTokenLogger.shared.log("KV_SLIDING: ERROR - Cannot slide without n_keep set. templatedTokens.count=\(templatedTokens.count), pos=\(await session.getPos()), isPrewarmed=\(isPrewarmed)", level: .error)
                 throw FreeTokenError.aiRunFailed(message: "KV sliding requires n_keep to be set")
             }
             
@@ -439,8 +424,15 @@ extension FreeToken {
             // Find the assistant slot tokens (delta from current state)
             
             if !assistantSlotTokens.isEmpty {
+                // Check if we need to slide BEFORE evaluating assistant slot tokens
+                let currentPos = Int(await session.getPos())
+                if currentPos + assistantSlotTokens.count > options.contextSize {
+                    FreeTokenLogger.shared.log("KV_SLIDING: Not enough headroom for \(assistantSlotTokens.count) assistant slot tokens (pos=\(currentPos)) - triggering slide", level: .warning)
+                    try await performKVSliding()
+                }
+
                 FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(assistantSlotTokens.count) assistant slot tokens", level: .debug)
-                
+
                 // Evaluate all assistant slot tokens in one batch
                 // The C bridge will handle logits efficiently (only for last token when needsLogits=true)
                 // Feed to sampler since these are part of generation
@@ -622,6 +614,7 @@ extension FreeToken {
         
         func resetSession() async throws {
             try ensureActive()
+            FreeTokenLogger.shared.log("KV_SLIDING: resetSession called - clearing n_keep (was \(n_keep))", level: .debug)
             await session.resetForRebuild()
             n_keep = 0
             templatedTokens.removeAll()
