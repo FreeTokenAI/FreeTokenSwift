@@ -559,15 +559,15 @@ extension FreeToken {
                 throw FreeTokenError.messageThreadNotCreated
             }
         }
-        
+
         internal func kvTokenCount() async -> Int {
-            return await self.model.templatedTokenCount
+            return await self.model.kvCachePosition
         }
-        
+
         internal func generate(for runID: String) async throws -> AsyncThrowingStream<String, any Error> {
             return try await self.model.generate(runID: runID)
         }
-        
+
         internal func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics? {
             return await self.model.getLastGenerationMetrics()
         }
@@ -937,7 +937,7 @@ extension FreeToken {
             do {
                 let (result, tokenUsage) = try await queue.enqueue(name: "Completion Session", runLocation: .localRun) {
                     var resultContent = ""
-                    let inputTokensCount = await self.model.templatedTokenCount
+                    let inputTokensCount = await self.model.kvCachePosition
                     var tokenCount = 0
                     for try await nextChunk in try await self.model.generate(runID: self.runID) {
                         try await chatStatusStream?(nextChunk, .streaming_tokens)
@@ -1367,15 +1367,15 @@ extension FreeToken {
         internal func saveSession() async throws {
             try await self.model.saveSession(fileName: "local_chat_\(runID).bin")
         }
-        
+
         internal func kvTokenCount() async -> Int {
-            return await self.model.templatedTokenCount
+            return await self.model.kvCachePosition
         }
-        
+
         internal func generate(for runID: String) async throws -> AsyncThrowingStream<String, any Error> {
             return try await self.model.generate(runID: runID)
         }
-        
+
         internal func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics? {
             return await self.model.getLastGenerationMetrics()
         }

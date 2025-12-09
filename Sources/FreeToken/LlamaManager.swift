@@ -55,6 +55,14 @@ extension FreeToken {
         var templatedTokenCount: Int {
             return templatedTokens.count
         }
+
+        /// Get the actual KV cache position from the session
+        /// More accurate than templatedTokenCount after context sliding or state reload
+        var kvCachePosition: Int {
+            get async {
+                return Int(await session.getPos())
+            }
+        }
         
         // Public read-only access to messages (without token tracking)
 //        var currentMessages: [Message] {
@@ -193,7 +201,7 @@ extension FreeToken {
             try ensureActive()
             let newMessageTokens = try await templateMessages([message])
             
-            if templatedTokens.count + newMessageTokens.count > options.contextSize {
+            if Int(await session.getPos()) + newMessageTokens.count > options.contextSize {
                 try await slidingTokenChunkUpdate(newTokens: newMessageTokens)
             } else {
                 // Just direct update the tokens
@@ -297,7 +305,7 @@ extension FreeToken {
                 }
             }
             
-            if (deltaTokens.count + templatedTokenCount) > options.contextSize {
+            if (deltaTokens.count + Int(await session.getPos())) > options.contextSize {
                 try await slidingTokenChunkUpdate(newTokens: deltaTokens)
             } else {
                 FreeTokenLogger.shared.log("KV_SLIDING: Evaluating \(deltaTokens.count) new tokens", level: .debug)
@@ -315,7 +323,7 @@ extension FreeToken {
                 let endIndex = min(startIndex + chunkSize, deltaTokens.count)
                 let chunk = Array(deltaTokens[startIndex..<endIndex])
                 
-                if chunk.count + templatedTokenCount >= options.contextSize {
+                if chunk.count + Int(await session.getPos()) >= options.contextSize {
                     FreeTokenLogger.shared.log("KV_SLIDING: Chunk of \(chunk.count) tokens exceeds context size; performing KV slide before evaluation", level: .warning)
                     try await performKVSliding()
                 }

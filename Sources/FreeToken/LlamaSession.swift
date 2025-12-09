@@ -173,6 +173,15 @@ extension FreeToken {
         func getPos() -> Int32 {
             return self.pos
         }
+
+        /// Get the actual KV cache position directly from llama.cpp
+        /// This queries the memory module for the true last position, which is more reliable
+        /// than the tracked `pos` variable after operations like context sliding or state loading.
+        func getKVCachePos() -> Int32 {
+            let memory = llama_get_memory(context)
+            let lastPos = llama_memory_seq_pos_max(memory, 0)
+            return lastPos + 1  // Return next position (consistent with pos semantics)
+        }
         
         /// Tokenize text -> token ids
         @inline(__always)
@@ -459,13 +468,18 @@ extension FreeToken {
         func loadStateFromFile(fileName: String, basePath: URL) throws -> (tokens: [llama_token], token_count_out: Int) {
             let fullPath = basePath.appending(component: configSHA256, directoryHint: .isDirectory)
             let fileURL = fullPath.appendingPathComponent(fileName)
-            
+
             if !FileManager.default.fileExists(atPath: fileURL.path) {
                 FreeToken.shared.logger("⚠️ State file does not exist at \(fileURL.path)", .warning)
                 throw FreeTokenError.llamaFailedToReadSessionStateFromFile
             } else {
                 let result = LlamaAPI.loadStateFromDisk(context, path: fileURL.path)
-                pos = Int32(result.tokens.count)
+                // Query the KV cache directly for its actual last position
+                // This is more reliable than token count after context window sliding
+                let memory = llama_get_memory(context)
+                let lastPos = llama_memory_seq_pos_max(memory, 0)
+                pos = lastPos + 1  // Next position to use (-1 + 1 = 0 if empty)
+                FreeTokenLogger.shared.log("Loaded state from file, KV cache last pos=\(lastPos), setting pos=\(pos)", level: .debug)
                 return result
             }
         }
