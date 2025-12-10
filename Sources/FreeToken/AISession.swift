@@ -497,6 +497,15 @@ extension FreeToken {
                     }
                 }
             } catch {
+                if error is FreeTokenError && (error as! FreeTokenError).code == FreeTokenError.generationCancelled.code {
+                    client.logger("⚠️ Generation cancelled by user.", .warning)
+                    self.isPrewarmed = false
+                    await self.prewarm() // We need to re-prewarm because when generation is cancelled the context window is flushed to prevent a bad state.
+                    
+                    throw error
+                }
+                
+                
                 // Optional Cloud Fallback
                 if runLocation == .automatic {
                     client.logger("⚠️ Local generation failed, falling back to Cloud: \(error.localizedDescription)", .warning)
@@ -1169,11 +1178,6 @@ extension FreeToken {
         ///
         /// - Note: This is a no-op if the session is already prewarmed.
         public func prewarm() async {
-            guard deviceManager.availableMemoryForRequestedSize() else {
-                client.logger("⚠️ Not enough available memory to load model", .warning)
-                return
-            }
-
             if isPrewarmed {
                 return
             }
@@ -1317,7 +1321,14 @@ extension FreeToken {
                                 continuation.resume(throwing: FreeTokenError.failedToRunAIWithError(message: "Failed to Generate Message"))
                             }
                         } failure: { error, context in
-                            continuation.resume(throwing: error)
+                            if error.code == FreeTokenError.generationCancelled.code {
+                                self.client.logger("⚠️ Generation cancelled by user.", .warning)
+                                self.isPrewarmed = false
+                                await self.prewarm() // We need to re-prewarm because when generation is cancelled the context window is flushed to prevent a bad state.
+                                continuation.resume(throwing: error)
+                            } else {
+                                continuation.resume(throwing: error)
+                            }
                         }
                     }
                 }
