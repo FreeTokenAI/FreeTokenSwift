@@ -81,7 +81,13 @@ extension FreeToken {
             let recommendedMax = UInt64(device.recommendedMaxWorkingSetSize)
             let reservedMemory: UInt64 = UInt64(Float(currentAllocated) * 0.2) // Reserve 20% for fluctuations
             
-            let available = recommendedMax > currentAllocated ? recommendedMax - currentAllocated - reservedMemory : 0
+            let available: UInt64
+            if recommendedMax > currentAllocated {
+                let afterAllocation = recommendedMax - currentAllocated
+                available = afterAllocation > reservedMemory ? afterAllocation - reservedMemory : 0
+            } else {
+                available = 0
+            }
             
             FreeToken.shared.logger("🖥️ GPU Memory Check: \(formatBytes(available)) available, \(formatBytes(UInt64(memoryRequirement))) required", .debug)
             
