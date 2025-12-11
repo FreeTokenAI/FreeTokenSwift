@@ -60,16 +60,10 @@ extension FreeToken {
         // MARK: - Base Root Directory Helpers (Relative Path Persistence)
 
         /// Returns the stable root directory under which all managed downloads live.
-        /// On iOS-family platforms this is the current sandbox's Application Support directory;
-        /// on macOS it's the user's home directory. All persisted destination paths are stored
-        /// relative to this root so they remain valid across sandbox UUID changes (iOS) or
-        /// application reinstalls.
+        /// This uses the Application Support directory on all platforms, ensuring consistency
+        /// with other parts of the codebase that store models and related data.
         static func baseRootDirectory() -> String {
-#if os(iOS)
-            return FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.path
-#else
-            return FileManager.default.homeDirectoryForCurrentUser.path
-#endif
+            return URL.applicationSupportDirectory.path
         }
 
         /// Convert an absolute on-disk path to a relative path (if it resides inside the base root).
@@ -91,31 +85,20 @@ extension FreeToken {
 
         /// Produce an absolute path from a persisted path value. If the persisted path was
         /// already absolute (legacy metadata) but belongs to an old sandbox, we attempt to
-        /// relocate it by trimming everything before the first "Application Support/" (iOS) or
-        /// the first ".FreeToken" component (macOS) and re-attaching to the current base root.
+        /// relocate it by extracting the relative portion after Application Support and
+        /// re-attaching to the current base root.
         static func absolutePathFromPersisted(_ persisted: String) -> String {
-            // If already absolute and appears to live inside current sandbox/home, trust it.
             if persisted.hasPrefix("/") {
-                // iOS sandbox UUID may have changed; attempt repair.
-#if os(iOS)
-                if persisted.contains("Application Support/") {
-                    // Extract relative portion after Application Support/
-                    if let range = persisted.range(of: "Application Support/") {
-                        let relative = String(persisted[range.upperBound...])
-                        return (baseRootDirectory() as NSString).appendingPathComponent(relative)
-                    }
-                }
-                return persisted // fallback
-#else
-                if let range = persisted.range(of: ".FreeToken") { // keep from .FreeToken forward
-                    let tail = String(persisted[range.lowerBound...])
-                    return (baseRootDirectory() as NSString).appendingPathComponent(tail)
+                // Legacy absolute path - attempt repair for sandbox changes
+                let appSupportPath = URL.applicationSupportDirectory.path
+                if let range = persisted.range(of: appSupportPath) {
+                    let relative = String(persisted[range.upperBound...]).trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+                    return URL.applicationSupportDirectory.appendingPathComponent(relative).path
                 }
                 return persisted
-#endif
             }
             // Relative path – append to base root.
-            return (baseRootDirectory() as NSString).appendingPathComponent(persisted)
+            return URL.applicationSupportDirectory.appendingPathComponent(persisted).path
         }
         
         /// Attaches or reattaches the background URL session with the predefined identifier.

@@ -7,7 +7,6 @@
 
 import Foundation
 import llama
-import Hub
 
 extension FreeToken {
     
@@ -36,14 +35,15 @@ extension FreeToken {
         
         struct Config {
             let modelName: String
-            let modelPath: URL // Where the model is stored in the app cache directory
             let modelConfig: Codings.EmbeddingModelResponse
+            var modelDirectoryPath: String? = nil // Absolute path to FreeToken/Models/{repo}
         }
-        
+
         let modelStateActor = ModelStateActor()
-        
+
         var config: Config? = nil
         var deviceAICapable: Bool? = nil
+        private var modelDownloadManager: ModelDownloadManager?
         var managerState: ManagerState = .unknown
         var embeddingModelName: String {
             get {
@@ -52,9 +52,7 @@ extension FreeToken {
         }
         
         func config(modelConfig: Codings.EmbeddingModelResponse, deviceAICapable: Bool) {
-            let modelPath = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("FreeToken/EmbeddingModels/\(modelConfig.name)")
-            
-            self.config = Config(modelName: modelConfig.name, modelPath: modelPath, modelConfig: modelConfig)
+            self.config = Config(modelName: modelConfig.name, modelConfig: modelConfig)
             self.managerState = .configured
             self.deviceAICapable = deviceAICapable
         }
@@ -87,78 +85,98 @@ extension FreeToken {
                 failureCallback?(FreeTokenError.managerNotConfigured)
                 return
             }
-            let config = self.config!
-            
-            // If the model path doesn't exist, create it
-            if !FileManager.default.fileExists(atPath: config.modelPath.path) {
-                do {
-                    try FileManager.default.createDirectory(at: config.modelPath, withIntermediateDirectories: true, attributes: nil)
-                } catch {
-                    FreeToken.shared.logger("🔴 Error creating embedding model directory: \(error.localizedDescription)", .error)
+            guard var config = self.config else {
+                failureCallback?(FreeTokenError.managerNotConfigured)
+                return
+            }
+
+            let modelRepo = config.modelConfig.modelTypes.llamaCpp.repo
+            let modelFileName = config.modelConfig.modelTypes.llamaCpp.modelFileName!
+
+            // Create ModelDownloadManager (same pattern as AI models)
+            let downloadManager = ModelDownloadManager.llama(
+                modelRepo: modelRepo,
+                modelFileName: modelFileName
+            )
+            self.modelDownloadManager = downloadManager
+
+            // Check if already downloaded via session state
+            if let state = await downloadManager.downloadState(), state == .completed {
+                let sanitizedRepo = modelRepo.replacingOccurrences(of: "/", with: "_")
+                let modelDir = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+                    .appendingPathComponent("FreeToken/Models/\(sanitizedRepo)").path
+
+                let modelFilePath = URL(fileURLWithPath: modelDir).appendingPathComponent(modelFileName).path
+                if FileManager.default.fileExists(atPath: modelFilePath) {
+                    FreeToken.shared.logger("✅ Embedding model already downloaded, skipping.", .info)
+                    config.modelDirectoryPath = modelDir
+                    self.config = config
+                    await modelStateActor.setModelState(.ready)
+                    progressCompleted?(100.0)
+                    successCallback?()
                     return
                 }
             }
-            
-            let repo = Hub.Repo(id: config.modelConfig.modelTypes.llamaCpp.repo)
-            let filesToDownload = [config.modelConfig.modelTypes.llamaCpp.modelFileName!] // Should always exist
-            let downloadPath: URL
-            
-            // Check if the model is already downloaded
-            if filesToDownload.allSatisfy({ FileManager.default.fileExists(atPath: config.modelPath.appendingPathComponent($0).path) }) {
-                FreeToken.shared.logger("✅ Embedding model files already exist, skipping download.", .info)
-                await modelStateActor.setModelState(.ready)
-                progressCompleted?(100.0)
-                successCallback?()
-                return
-            }
-            
+
+            // Start download
+            await modelStateActor.setModelState(.downloading)
+
+            // Capture config values for use in closures
+            let capturedConfig = config
+
             do {
-                await modelStateActor.setModelState(.downloading)
-                downloadPath = try await Hub.snapshot(from: repo) { progress in
-                    progressCompleted?(progress.fractionCompleted * 100.0)
-                }
+                try await downloadManager.download(
+                    progress: { percent in
+                        progressCompleted?(percent * 100.0)
+                    },
+                    success: { [weak self] destination in
+                        guard let self = self else { return }
+                        var updatedConfig = capturedConfig
+                        updatedConfig.modelDirectoryPath = destination
+                        self.config = updatedConfig
+                        Task {
+                            await self.modelStateActor.setModelState(.ready)
+                        }
+                        FreeToken.shared.logger("✅ Embedding model downloaded to: \(destination)", .info)
+                        successCallback?()
+                    },
+                    failure: { [weak self] error in
+                        FreeToken.shared.logger("🔴 Failed to download embedding model: \(error)", .error)
+                        Task {
+                            await self?.modelStateActor.setModelState(.downloadInvalid)
+                        }
+                        failureCallback?(error)
+                    }
+                )
             } catch {
-                FreeToken.shared.logger("🔴 Error downloading embedding model files: \(error.localizedDescription)", .error)
+                FreeToken.shared.logger("🔴 Error starting embedding model download: \(error.localizedDescription)", .error)
                 await modelStateActor.setModelState(.downloadInvalid)
                 failureCallback?(FreeTokenError.aiModelDownload)
-                return
             }
-            
-            // Move the downloaded files to the model path
-            let fileManager = FileManager.default
-            
-            for fileName in filesToDownload {
-                let sourceURL = downloadPath.appendingPathComponent(fileName)
-                let destinationURL = config.modelPath.appendingPathComponent(fileName)
-                
-                do {
-                    if fileManager.fileExists(atPath: destinationURL.path) {
-                        try fileManager.removeItem(at: destinationURL)
-                    }
-                    try fileManager.moveItem(at: sourceURL, to: destinationURL)
-                } catch {
-                    FreeToken.shared.logger("🔴 Error moving downloaded model file \(fileName): \(error.localizedDescription)", .error)
-                    failureCallback?(FreeTokenError.modelDownload)
-                    return
-                }
-            }
-            
-            await modelStateActor.setModelState(.ready)
-            successCallback?()
         }
         
         func resetCache() async throws {
-            let fileManager = FileManager.default
-            
-            do {
-                let modelStore = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!.appendingPathComponent("FreeToken/EmbeddingModels")
-                try fileManager.removeItem(at: modelStore)
-                
-                await modelStateActor.setModelState(.unknown)
-            } catch {
-                FreeToken.shared.logger("Error removing embedding model directory: \(error.localizedDescription)", .error)
-                throw FreeTokenError.couldNotRemoveModel
+            if let config = self.config {
+                let modelRepo = config.modelConfig.modelTypes.llamaCpp.repo
+
+                // Remove the download session from DownloadManager
+                FreeToken.DownloadManager.shared.removeSession(id: modelRepo)
+
+                // Delete the model files from disk
+                if let modelDirectoryPath = config.modelDirectoryPath {
+                    try? FileManager.default.removeItem(atPath: modelDirectoryPath)
+                    FreeToken.shared.logger("Deleted embedding model files at: \(modelDirectoryPath)", .info)
+                }
+
+                // Clear config path reference
+                var updatedConfig = config
+                updatedConfig.modelDirectoryPath = nil
+                self.config = updatedConfig
             }
+
+            self.modelDownloadManager = nil
+            await modelStateActor.setModelState(.unknown)
+            FreeToken.shared.logger("Embedding model cache cleared", .info)
         }
 
         
@@ -166,15 +184,21 @@ extension FreeToken {
             if await modelStateActor.modelState != .ready {
                 return nil
             }
-            
+
             if managerState != .configured {
                 return nil
             }
-            
-            let config = self.config!
-            
-            let pathToGGUF = config.modelPath.appendingPathComponent(config.modelConfig.modelTypes.llamaCpp.modelFileName!).path
-            
+
+            guard let config = self.config,
+                  let modelDirectoryPath = config.modelDirectoryPath else {
+                FreeToken.shared.logger("🔴 Embedding model directory path not set", .error)
+                return nil
+            }
+
+            let pathToGGUF = URL(fileURLWithPath: modelDirectoryPath)
+                .appendingPathComponent(config.modelConfig.modelTypes.llamaCpp.modelFileName!)
+                .path
+
             let model = LlamaEmbeddingClient(modelPath: pathToGGUF, contextSize: config.modelConfig.config.contextSize, batchSize: config.modelConfig.config.contextSize, poolingType: config.modelConfig.config.poolingType, deviceAICapable: deviceAICapable!)
             try model.loadModel()
             return model

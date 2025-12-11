@@ -238,16 +238,18 @@ extension FreeToken {
                 
                 // Get metadata for each file
                 let metadata = try await hubApi.getFileMetadata(from: repo, matching: filesToFetch)
-                
+
                 // Build result array with URLs and SHA256 hashes
-                for file in metadata {
-                    // Construct the download URL
-                    let fileURL = URL(string: file.location) ?? URL(string: "https://huggingface.co/\(modelRepo)/resolve/main/\(file.location)")!
-                    
+                // Zip filesToFetch with metadata to preserve original filenames (metadata.location may be a CDN URL with a hash)
+                for (originalFilename, file) in zip(filesToFetch, metadata) {
+                    // Construct the canonical HuggingFace URL using the original filename from FreeToken API
+                    // This ensures the download path uses the proper filename (e.g., "model.gguf") instead of the CDN hash
+                    let fileURL = URL(string: "https://huggingface.co/\(modelRepo)/resolve/main/\(originalFilename)")!
+
                     // Extract SHA256 from etag if it's a valid hash (LFS files have SHA256 as etag)
                     let sha256Pattern = "^[0-9a-f]{64}$"
                     let sha256: String?
-                    
+
                     if let etag = file.etag,
                        let regex = try? NSRegularExpression(pattern: sha256Pattern),
                        regex.firstMatch(in: etag, options: [], range: NSRange(location: 0, length: etag.count)) != nil {
@@ -257,13 +259,13 @@ extension FreeToken {
                         // For non-LFS files or files without SHA256 etag, use empty string
                         // The download manager will skip verification for these
                         sha256 = nil
-                        FreeToken.shared.logger("⚠️ No SHA256 hash available for \(file.location)", .warning)
+                        FreeToken.shared.logger("⚠️ No SHA256 hash available for \(originalFilename)", .warning)
                     }
-                    
+
                     modelFiles.append((fileURL, sha256))
-                    
+
                     let hashInfo = sha256 == nil ? " (no hash)" : " (SHA256: \(sha256!.prefix(8))...)"
-                    FreeToken.shared.logger("📄 Found Llama model file: \(file.location)\(hashInfo)", .debug)
+                    FreeToken.shared.logger("📄 Found Llama model file: \(originalFilename)\(hashInfo)", .debug)
                 }
                 
             } catch {

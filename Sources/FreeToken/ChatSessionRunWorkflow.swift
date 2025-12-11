@@ -125,41 +125,67 @@ extension FreeToken {
             failure: @escaping @Sendable (FreeToken.FreeTokenError, any FreeToken.WorkflowContext) async -> Void) async {
                 
                 var resultContent = ""
+                
                 do {
                     try await self.context.chatStatusStream?(nil, .sending_to_local_ai)
+                } catch {
+                    FreeToken.shared.logger("⚠️ Generation cancelled by user", .info)
+                    await self.context.chatSession.cancelGeneration()
+                    await failure(FreeTokenError.generationCancelled, self.context)
+                    return
+                }
                     
-                    let inputTokensCount = await context.chatSession.kvTokenCount()
-                    var tokenCount = 0
-                    for try await nextChunk in try await context.chatSession.generate(for: context.chatSession.runID) {
-                        try await self.context.chatStatusStream?(nextChunk, .streaming_tokens)
+                let inputTokensCount = await context.chatSession.kvTokenCount()
+                var tokenCount = 0
+                do {
+                    for try await nextChunk in try await context.chatSession.generate() {
+                        do {
+                            try await self.context.chatStatusStream?(nextChunk, .streaming_tokens)
+                        } catch {
+                            FreeToken.shared.logger("⚠️ Generation cancelled by user", .info)
+                            await self.context.chatSession.cancelGeneration()
+                            await failure(FreeTokenError.generationCancelled, self.context)
+                            return
+                        }
                         resultContent += nextChunk
                         tokenCount += 1
                     }
+                } catch {
+                    FreeToken.shared.logger("🔴 Local AI run failed with error: \(error)", .error)
+                    await failure(error as! FreeTokenError, self.context)
+                }
                     
-                    let generationMetrics = await self.context.chatSession.getLastGenerationMetrics()
+                let generationMetrics = await self.context.chatSession.getLastGenerationMetrics()
+                
+                // Convert generationMetrics.tokensPersecond to Float from Double
+                let tokensPerSecond = Float(generationMetrics?.tokensPerSecond ?? 0.0)
+                
+                let tokenUsage = TokenUsage(totalTokens: (inputTokensCount + tokenCount), tokensPerSecond: tokensPerSecond, inputTokens: inputTokensCount, outputTokens: tokenCount, modelCode: self.context.chatSession.modelCode)
                     
-                    // Convert generationMetrics.tokensPersecond to Float from Double
-                    let tokensPerSecond = Float(generationMetrics?.tokensPerSecond ?? 0.0)
                     
-                    let tokenUsage = TokenUsage(totalTokens: (inputTokensCount + tokenCount), tokensPerSecond: tokensPerSecond, inputTokens: inputTokensCount, outputTokens: tokenCount, modelCode: self.context.chatSession.modelCode)
-                    
-                    
-                    // Add New Assitant Message to Thread
-                    let assistantMessage = Message(role: .assistant, content: resultContent, tokenUsage: tokenUsage)
+                // Add New Assitant Message to Thread
+                let assistantMessage = Message(role: .assistant, content: resultContent, tokenUsage: tokenUsage)
+
+                do {
                     _ = try await self.context.chatSession.addMessage(message: assistantMessage, updateKVCache: false)
                     _ = try await self.context.chatSession.saveSession()
-                    try await self.context.chatStatusStream?(nil, .new_message_created)
-                    self.context.lastGeneratedMessage = assistantMessage
-                    await success(self.context)
-                    return
                 } catch {
-                    if resultContent != "" {
-                        let partialMessage = Message(role: .assistant, content: resultContent)
-                        _ = try? await self.context.chatSession.addMessage(message: partialMessage, updateKVCache: false)
-                    }
-                    let err = FreeTokenError.failedToRunAIWithError(message: error.localizedDescription)
-                    await failure(err, self.context)
+                    FreeToken.shared.logger("🔴 Local AI run failed with error: \(error)", .error)
+                    await failure(error as! FreeTokenError, self.context)
                 }
+                
+                do {
+                    try await self.context.chatStatusStream?(nil, .new_message_created)
+                } catch {
+                    FreeToken.shared.logger("⚠️ Generation cancelled by user", .info)
+                    await self.context.chatSession.cancelGeneration()
+                    await failure(FreeTokenError.generationCancelled, self.context)
+                    return
+                }
+                
+                self.context.lastGeneratedMessage = assistantMessage
+                await success(self.context)
+                return
         }
     }
     

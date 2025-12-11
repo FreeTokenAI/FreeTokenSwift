@@ -31,7 +31,9 @@ extension FreeToken {
         private let slidingRatio: Float = 0.5  // Remove 50% of available tokens when sliding
         
         private var isPrewarmed: Bool = false
-        private var runID: String = ""
+
+        // User-requested cancellation flag (set via cancelGeneration())
+        private var isCancellationRequested: Bool = false
 
         @inline(__always)
         private func ensureActive(_ fn: StaticString = #function) throws {
@@ -115,14 +117,9 @@ extension FreeToken {
             }
         }
         
-        func prewarmSession(systemMessage: Message, runID: String) async throws {
+        func prewarmSession(systemMessage: Message) async throws {
             try ensureActive()
-            
-            if self.runID != runID {
-                _ = try await self.resetSession()
-                self.runID = runID
-            }
-            
+
             if isPrewarmed {
                 FreeToken.shared.logger("Session is already prewarmed", .info)
                 return
@@ -150,16 +147,15 @@ extension FreeToken {
             try await session.writeStateToFile(fileName: fileName, basePath: stateBaseURL, tokens: templatedTokens)
         }
         
-        func loadSession(fileName: String, systemMessage: Message, runID: String) async throws {
+        func loadSession(fileName: String, systemMessage: Message) async throws {
             try ensureActive()
             let fullPath = stateBaseURL.appendingPathComponent(session.configSHA256).appendingPathComponent(fileName)
-            
+
             if !FileManager.default.fileExists(atPath: fullPath.path) {
                 FreeToken.shared.logger("⚠️ Session could not be found at path: \(fullPath.path)", .warning)
                 throw FreeTokenError.llamaFailedToReadSessionStateFromFile
             }
-            
-            self.runID = runID
+
             _ = try await resetSession()
             let result = try await session.loadStateFromFile(fileName: fileName, basePath: stateBaseURL)
             self.templatedTokens = result.tokens.map { Int32($0) }
@@ -193,7 +189,7 @@ extension FreeToken {
         
         // MARK: - Simplified Context Update
         
-        func addMessage(message: Message, runID: String) async throws {
+        func addMessage(message: Message) async throws {
             try ensureActive()
             let newMessageTokens = try await templateMessages([message])
 
@@ -216,14 +212,9 @@ extension FreeToken {
         }
         
         /// Update context with new messages using token-based approach
-        func updateContext(messages desired: [Message], runID: String) async throws {
+        func updateContext(messages desired: [Message]) async throws {
             try ensureActive()
-            
-            if self.runID != runID {
-                _ = try await self.resetSession()
-                self.runID = runID
-            }
-            
+
             FreeTokenLogger.shared.log("KV_SLIDING: updateContext start desired=\(desired.count) pos=\(await session.getPos()) n_keep=\(n_keep)", level: .debug)
             
             // Guard multimodal
@@ -395,20 +386,24 @@ extension FreeToken {
         func getLastGenerationMetrics() async -> GenerationMetrics? {
             return lastGenerationMetrics
         }
-        
+
+        /// Signals the generation loop to stop as soon as possible.
+        /// Called when the user throws an error from the chatStatusStream callback.
+        func cancelGeneration() {
+            isCancellationRequested = true
+        }
+
         /// Streaming generation with automatic KV cache sliding
-        func generate(runID: String) async throws -> AsyncThrowingStream<String, Error> {
+        func generate() async throws -> AsyncThrowingStream<String, Error> {
             try ensureActive()
-            
+
+            // Reset cancellation flag at start of each generation
+            isCancellationRequested = false
+
             guard templatedTokenCount > 0 else {
                 throw FreeTokenError.llamaEvaluatingEmptyContext
             }
-            
-            if self.runID != runID {
-                throw FreeTokenError.llamaUnexpectedInternalState
-            }
-            
-            
+
             // Check initial capacity
             let initialHeadroom = options.contextSize - Int(await session.getPos())
             FreeTokenLogger.shared.log("KV_SLIDING: generate start pos=\(await session.getPos()) headroom=\(initialHeadroom) maxNew=\(options.maxNewTokens)", level: .info)
@@ -464,10 +459,11 @@ extension FreeToken {
                                 metrics.slidingCount += 1
                             }
                             
-                            if Task.isCancelled {
+                            if Task.isCancelled || self.isCancellationRequested {
                                 metrics.canceled = true
                                 metrics.stopReason = "canceled"
-                                // We don't want to leave the model in a bad state - reset the session so that it will be rebuilt on next run. 
+                                self.isCancellationRequested = false // Reset for next run
+                                // We don't want to leave the model in a bad state - reset the session so that it will be rebuilt on next run.
                                 try await self.resetSession()
                                 break
                             }

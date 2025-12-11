@@ -76,15 +76,15 @@ extension FreeToken {
     }
     
     internal protocol ChatSessionInternalProtocol: ChatSessionProtocol {
-        var runID: String { get }
         var modelCode: String { get }
 
         func updateModelContext() async throws
         func kvTokenCount() async -> Int
-        func generate(for runID: String) async throws -> AsyncThrowingStream<String, Error>
+        func generate() async throws -> AsyncThrowingStream<String, Error>
         func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics?
         func saveSession() async throws
-        
+        func cancelGeneration() async
+
         func addMessage(message: Message, updateKVCache: Bool) async throws -> Message
     }
     
@@ -178,7 +178,6 @@ extension FreeToken {
         var model: LlamaManager
         let systemMessage: Message
         let toolAccess: [ToolRunMask]
-        let runID: String = UUID().uuidString
         let modelCode: String
         let modelPath: String
         let repoName: String
@@ -243,7 +242,7 @@ extension FreeToken {
                 
                 await messagesManager.getMessageThread(id: messageThreadID) { messageThread, _ in
                     do {
-                        try await self.model.loadSession(fileName: "\(messageThreadID).bin", systemMessage: self.systemMessage, runID: self.runID)
+                        try await self.model.loadSession(fileName: "\(messageThreadID).bin", systemMessage: self.systemMessage)
                         self.client.logger("✅ Loaded existing session from disk for prewarming.", .info)
                         return
                     } catch {
@@ -251,7 +250,7 @@ extension FreeToken {
                     }
                     
                     do {
-                        try await self.model.updateContext(messages: messageThread.messages, runID: self.runID)
+                        try await self.model.updateContext(messages: messageThread.messages)
                         self.client.logger("✅ Updated model context with existing messages for prewarming.", .info)
                     } catch {
                         // Failed to prewarm
@@ -272,7 +271,7 @@ extension FreeToken {
             } else {
                 // There is no thread - just prewarm an empty session
                 do {
-                    try await model.prewarmSession(systemMessage: self.systemMessage, runID: runID)
+                    try await model.prewarmSession(systemMessage: self.systemMessage)
                     self.isPrewarmed = true
                     client.logger("✅ Successfully prewarmed empty model session.", .info)
                 } catch {
@@ -285,6 +284,12 @@ extension FreeToken {
                     }
                 }
             }
+        }
+
+        /// Signals the AI generation loop to stop as soon as possible.
+        /// This is called internally when the user throws an error from the `chatStatusStream` callback.
+        public func cancelGeneration() async {
+            await model.cancelGeneration()
         }
 
         /// Creates a new message thread for this chat session.
@@ -336,12 +341,12 @@ extension FreeToken {
                     Task {
                         await client.addMessageToThread(id: messageThreadID, message: message) { message in
                             do {
-                                try await self.model.addMessage(message: message, runID: self.runID)
+                                try await self.model.addMessage(message: message)
                                 continuation.resume(returning: message)
                             } catch {
                                 continuation.resume(throwing: error)
                             }
-                            
+
                         } error: { error in
                             continuation.resume(throwing: error)
                         }
@@ -351,7 +356,7 @@ extension FreeToken {
                 throw FreeTokenError.messageThreadNotCreated
             }
         }
-        
+
         internal func addMessage(message: Message, updateKVCache: Bool = true) async throws -> Message {
             if let messageThreadID = messageThreadID {
                 return try await withCheckedThrowingContinuation { continuation in
@@ -359,13 +364,13 @@ extension FreeToken {
                         await client.addMessageToThread(id: messageThreadID, message: message) { message in
                             do {
                                 if updateKVCache {
-                                    try await self.model.addMessage(message: message, runID: self.runID)
+                                    try await self.model.addMessage(message: message)
                                 }
                                 continuation.resume(returning: message)
                             } catch {
                                 continuation.resume(throwing: error)
                             }
-                            
+
                         } error: { error in
                             continuation.resume(throwing: error)
                         }
@@ -465,11 +470,12 @@ extension FreeToken {
                 RunLocalChatSession.self, // Run Generation
                 ChatSessionRunToolCalls.self // Handle Tool Calls
             ]
-
+            
             let workflowContext = ChatSessionRunWorkflowContext(
                 chatSession: self,
                 documentSearchScope: documentSearchScope,
                 privateDocumentStoreIDs: privateDocumentStoreIDs,
+                toolMask: self.toolAccess,
                 chatStatusStream: chatStatusStream,
                 toolUseHandler: toolUseHandler,
                 jsonToolResults: jsonToolResults,
@@ -497,14 +503,13 @@ extension FreeToken {
                     }
                 }
             } catch {
-                if error is FreeTokenError && (error as! FreeTokenError).code == FreeTokenError.generationCancelled.code {
+                if error is FreeTokenError && (error as! FreeTokenError) == .generationCancelled {
                     client.logger("⚠️ Generation cancelled by user.", .warning)
                     self.isPrewarmed = false
                     await self.prewarm() // We need to re-prewarm because when generation is cancelled the context window is flushed to prevent a bad state.
                     
                     throw error
                 }
-                
                 
                 // Optional Cloud Fallback
                 if runLocation == .automatic {
@@ -561,9 +566,9 @@ extension FreeToken {
         internal func updateModelContext() async throws {
             let messages = try await getMessages()
             let preparedMessages = try messagePreparer.prepareMessages(messages)
-            try await self.model.updateContext(messages: preparedMessages, runID: runID)
+            try await self.model.updateContext(messages: preparedMessages)
         }
-        
+
         internal func saveSession() async throws {
             if let messageThreadID {
                 try await self.model.saveSession(fileName: "\(messageThreadID).bin")
@@ -576,8 +581,8 @@ extension FreeToken {
             return await self.model.kvCachePosition
         }
 
-        internal func generate(for runID: String) async throws -> AsyncThrowingStream<String, any Error> {
-            return try await self.model.generate(runID: runID)
+        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
+            return try await self.model.generate()
         }
 
         internal func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics? {
@@ -612,8 +617,7 @@ extension FreeToken {
         let messagePreparer: MessagePreparer
         var messageThreadID: String?
         var config: AIModelConfiguration
-        var runID: String = UUID().uuidString
-        
+
         let messagesManager: MessagesManager
         let toolDefinitionsManager: ToolDefinitionsManager
         let jsonToolResults: Bool
@@ -667,6 +671,12 @@ extension FreeToken {
         /// - Note: Cloud sessions don't need to unload models since they don't use local device memory.
         public func unload() async {
             client.logger("ℹ️ Unloading is not required for Cloud Sessions.", .info)
+        }
+
+        /// Cancellation is handled differently for cloud sessions.
+        /// This method is a no-op since cloud sessions use a different cancellation mechanism.
+        public func cancelGeneration() async {
+            // No-op for cloud session - cancellation is handled via the API
         }
 
         /// Creates a new message thread for this cloud chat session.
@@ -846,7 +856,7 @@ extension FreeToken {
             return 0
         }
         
-        internal func generate(for runID: String) async throws -> AsyncThrowingStream<String, any Error> {
+        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
             throw FreeTokenError.error(message: "Direct generation is not supported on cloud models", code: 10003)
         }
         
@@ -886,7 +896,6 @@ extension FreeToken {
         let deviceManager: DeviceManager
         let queue: AITaskQueue
         var model: LlamaManager
-        let runID: String = UUID().uuidString
         let modelCode: String
         var aiRunConfig: AIRunConfig? = nil
         
@@ -942,14 +951,14 @@ extension FreeToken {
         public func generateCompletion(from text: String, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil) async throws -> Completion {
             let message = Message(role: .user, content: text, attachments: nil)
             
-            try await self.model.addMessage(message: message, runID: runID)
-            
+            try await self.model.addMessage(message: message)
+
             do {
                 let (result, tokenUsage) = try await queue.enqueue(name: "Completion Session", runLocation: .localRun) {
                     var resultContent = ""
                     let inputTokensCount = await self.model.kvCachePosition
                     var tokenCount = 0
-                    for try await nextChunk in try await self.model.generate(runID: self.runID) {
+                    for try await nextChunk in try await self.model.generate() {
                         try await chatStatusStream?(nextChunk, .streaming_tokens)
                         resultContent += nextChunk
                         tokenCount += 1
@@ -975,6 +984,7 @@ extension FreeToken {
                     
                     return try await cloudSession.generateCompletion(from: text, chatStatusStream: chatStatusStream)
                 } else {
+                    self.client.logger(error.localizedDescription, .error)
                     throw error
                 }
             }
@@ -1111,12 +1121,12 @@ extension FreeToken {
     /// - Note: Obtain instances via `FreeToken.shared.getMemoryChatSession()`. Do not instantiate directly.
     /// - Important: This session does not support `createMessageThread()` as messages are memory-only.
     public class MemoryChatSession: ChatSessionInternalProtocol, @unchecked Sendable {
-        var runID: String
+        let sessionID: String
         var messages: [Message]
         var isPrewarmed: Bool = false
         var model: LlamaManager
         let aiModel: AIModel
-        
+
         let client: FreeToken
         let messagePreparer: MessagePreparer
         let modelPath: String
@@ -1129,7 +1139,7 @@ extension FreeToken {
         let queue: AITaskQueue
         let systemMessage: Message
         var aiRunConfig: AIRunConfig? = nil
-        
+
         internal init(
             client: FreeToken,
             aiModel: AIModel,
@@ -1137,7 +1147,7 @@ extension FreeToken {
             toolDefinitionsManager: ToolDefinitionsManager,
             toolAccess: [ToolRunMask] = [.allowAll],
             queue: AITaskQueue,
-            runID: String = UUID().uuidString,
+            sessionID: String = UUID().uuidString,
             messages: [Message] = [],
             aiRunConfig: AIRunConfig? = nil
         ) async {
@@ -1153,12 +1163,12 @@ extension FreeToken {
             self.modelCode = aiModel.code
             self.queue = queue
             self.systemMessage = systemMessage
-            self.runID = runID
+            self.sessionID = sessionID
             self.messages = messages
             self.aiRunConfig = aiRunConfig
-            
+
             self.model = try! aiModel.llamaManager(aiRunConfig: aiRunConfig)
-            
+
             self.messages.insert(systemMessage, at: 0)
 
             await self.prewarm()
@@ -1184,31 +1194,31 @@ extension FreeToken {
             
             if messages.count > 0 {
                 do {
-                    try await self.model.loadSession(fileName: "local_chat_\(runID).bin", systemMessage: self.systemMessage, runID: self.runID)
+                    try await self.model.loadSession(fileName: "local_chat_\(sessionID).bin", systemMessage: self.systemMessage)
                     self.client.logger("✅ Loaded existing session from disk for prewarming.", .info)
                 } catch {
                     self.client.logger("Failed to load session from disk. Likely does not exist. Proceeding with new creation.", .info)
                 }
-                
+
                 do {
-                    try await self.model.updateContext(messages: messages, runID: self.runID)
+                    try await self.model.updateContext(messages: messages)
                     self.client.logger("✅ Updated model context with existing messages for prewarming.", .info)
                 } catch {
                     // Failed to prewarm
                     self.client.logger("❌ Failed to update model session context: \(error.localizedDescription)", .error)
                     return
                 }
-                
+
                 self.isPrewarmed = true
-                
+
                 self.client.logger("✅ Successfully prewarmed model session with existing message thread.", .info)
-                
+
                 // Update the session after loading / updating context
-                try? await self.model.saveSession(fileName: "local_chat_\(runID).bin")
+                try? await self.model.saveSession(fileName: "local_chat_\(sessionID).bin")
             } else {
                 // There is no thread - just prewarm an empty session
                 do {
-                    try await model.prewarmSession(systemMessage: self.systemMessage, runID: runID)
+                    try await model.prewarmSession(systemMessage: self.systemMessage)
                     self.isPrewarmed = true
                     client.logger("✅ Successfully prewarmed empty model session.", .info)
                 } catch {
@@ -1221,6 +1231,12 @@ extension FreeToken {
                     }
                 }
             }
+        }
+
+        /// Signals the AI generation loop to stop as soon as possible.
+        /// This is called internally when the user throws an error from the `chatStatusStream` callback.
+        public func cancelGeneration() async {
+            await model.cancelGeneration()
         }
 
         /// Creating message threads is not supported for in-memory chat sessions.
@@ -1248,14 +1264,14 @@ extension FreeToken {
         /// - Note: Messages are not persisted and will be lost when the session ends.
         public func addMessage(message: Message) async throws -> Message {
             self.messages.append(message)
-            try await self.model.addMessage(message: message, runID: self.runID)
+            try await self.model.addMessage(message: message)
             return message
         }
-        
+
         internal func addMessage(message: Message, updateKVCache: Bool = true) async throws -> Message {
             self.messages.append(message)
             if updateKVCache {
-                try await self.model.addMessage(message: message, runID: self.runID)
+                try await self.model.addMessage(message: message)
             }
             return message
         }
@@ -1379,26 +1395,26 @@ extension FreeToken {
         internal func updateModelContext() async throws {
             let messages = try await getMessages()
             let preparedMessages = try messagePreparer.prepareMessages(messages)
-            try await self.model.updateContext(messages: preparedMessages, runID: runID)
+            try await self.model.updateContext(messages: preparedMessages)
         }
-        
+
         internal func saveSession() async throws {
-            try await self.model.saveSession(fileName: "local_chat_\(runID).bin")
+            try await self.model.saveSession(fileName: "local_chat_\(sessionID).bin")
         }
 
         internal func kvTokenCount() async -> Int {
             return await self.model.kvCachePosition
         }
 
-        internal func generate(for runID: String) async throws -> AsyncThrowingStream<String, any Error> {
-            return try await self.model.generate(runID: runID)
+        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
+            return try await self.model.generate()
         }
 
         internal func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics? {
             return await self.model.getLastGenerationMetrics()
         }
-        
-        
+
+
     }
     
 }

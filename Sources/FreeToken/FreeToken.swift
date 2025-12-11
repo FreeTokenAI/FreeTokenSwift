@@ -977,36 +977,36 @@ public class FreeToken: @unchecked Sendable {
         toolAccess: [ToolRunMask] = [.allowAll],
         messages: [Message] = [],
         systemInstructions: String = "",
-        runID: String = UUID().uuidString,
+        sessionID: String = UUID().uuidString,
         aiRunConfig: AIRunConfig? = nil
     ) async throws -> MemoryChatSession {
         guard isDeviceRegistered() else {
             throw FreeTokenError.deviceNotRegistered
         }
-        
+
         let aiModel = try await self.getAIModel(modelCode: modelCode)
-        
+
         guard runLocation != .cloudRun else {
             self.logger("🚫 Tried to generate a local chat session when the run location is cloud.", .error)
             throw FreeTokenError.error(message: "Invalid run location - Tried to run on cloud with a local call. Try `getCloudChatSession` instead.", code: 10003)
         }
-        
+
         // Is Model Downloaded?
         guard try await getAIModelDownloadState(modelCode: modelCode) == .downloaded else {
             self.logger("🚫 Tried to generate a local chat session when the model is not downloaded.", .error)
             throw FreeTokenError.aiModelNotDownloaded
         }
-        
+
         // Is Device Capable?
         guard aiModel.canInitializeOnDevice() else {
             self.logger("🚫 Tried to generate a local chat session when the device is not AI capable.", .error)
             throw FreeTokenError.deviceNotCapable
         }
-        
+
         // Generate System Message
         let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
 
-        return await MemoryChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, queue: AITaskQueue.shared, runID: runID, messages: messages, aiRunConfig: aiRunConfig)
+        return await MemoryChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, queue: AITaskQueue.shared, sessionID: sessionID, messages: messages, aiRunConfig: aiRunConfig)
     }
     
     /// Create a New Completion Session
