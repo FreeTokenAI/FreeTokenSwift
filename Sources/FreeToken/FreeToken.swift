@@ -903,13 +903,33 @@ public class FreeToken: @unchecked Sendable {
         toolAccess: [ToolRunMask] = [.allowAll],
         aiRunConfig: AIRunConfig? = nil
     ) async throws -> ChatSessionProtocol {
-        let downloadState = try await getAIModelDownloadState(modelCode: modelCode) == .downloaded
+        let downloadStatus = try await getAIModelDownloadState(modelCode: modelCode)
         let aiModel = try await getAIModel(modelCode: modelCode)
+        let availableMemoryToLoad = aiModel.availableMemoryToLoad()
         
-        if downloadState && aiModel.availableMemoryToLoad() && runLocation != .cloudRun {
-            return try await getLocalChatSession(messageThreadID: messageThreadID, modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess, aiRunConfig: aiRunConfig)
-        } else {
+        switch runLocation {
+        case .cloudRun:
             return try await getCloudChatSession(messageThreadID: messageThreadID, modelCode: modelCode, toolAccess: toolAccess, aiRunConfig: aiRunConfig)
+        case .automatic:
+            if !aiModel.cloudOnly && downloadStatus == .downloaded && availableMemoryToLoad {
+                return try await getLocalChatSession(messageThreadID: messageThreadID, modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess, aiRunConfig: aiRunConfig)
+            } else {
+                return try await getCloudChatSession(messageThreadID: messageThreadID, modelCode: modelCode, toolAccess: toolAccess, aiRunConfig: aiRunConfig)
+            }
+        case .localRun:
+            guard !aiModel.cloudOnly else {
+                throw FreeTokenError.isCloudOnlyModel
+            }
+            
+            if downloadStatus == .downloaded && availableMemoryToLoad {
+                return try await getLocalChatSession(messageThreadID: messageThreadID, modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess, aiRunConfig: aiRunConfig)
+            } else {
+                if downloadStatus != .downloaded {
+                    throw FreeTokenError.aiModelNotDownloaded
+                } else {
+                    throw FreeTokenError.deviceNotCapable
+                }
+            }
         }
     }
     
