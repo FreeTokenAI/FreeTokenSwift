@@ -414,7 +414,15 @@ extension FreeToken {
             
             // Get tokens with assistant slot
             // TODO: This may not work. We might need to dummy template in another way.
-            let assistantSlotTokens = try await templateWithAssistantSlot([])
+            var assistantSlotTokens = try await templateWithAssistantSlot([])
+            
+            // Inject tokens to assistant slot if provided, this allows us to "trick" the assitant that it
+            // has already said what is passed in. This is useful in the Architect -> Student pattern.
+            if injectAssistantContext != nil {
+                let injectTokens = try await session.tokenize(injectAssistantContext!, addBos: false, special: false)
+                FreeTokenLogger.shared.log("KV_SLIDING: Injecting \(injectTokens.count) tokens into assistant slot", level: .debug)
+                assistantSlotTokens.append(contentsOf: injectTokens.map { Int32($0) })
+            }
             
             // Find the assistant slot tokens (delta from current state)
             
@@ -432,14 +440,6 @@ extension FreeToken {
                 // The C bridge will handle logits efficiently (only for last token when needsLogits=true)
                 // Feed to sampler since these are part of generation
                 var slotTokensInt = assistantSlotTokens.map { Int($0) }
-                
-                // Inject tokens to assistant slot if provided, this allows us to "trick" the assitant that it
-                // has already said what is passed in. This is useful in the Architect -> Student pattern.
-                if let injectContext = injectAssistantContext, !injectContext.isEmpty {
-                    let injectTokens = try await session.tokenize(injectContext, addBos: false, special: false)
-                    FreeTokenLogger.shared.log("KV_SLIDING: Injecting \(injectTokens.count) assistant context tokens", level: .debug)
-                    slotTokensInt.append(contentsOf: injectTokens)
-                }
                 
                 try await session.evalOptimized(tokens: slotTokensInt, feedToSampler: true, needsLogits: true)
                 templatedTokens.append(contentsOf: assistantSlotTokens)
