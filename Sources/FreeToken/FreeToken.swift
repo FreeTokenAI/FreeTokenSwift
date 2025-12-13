@@ -712,10 +712,10 @@ public class FreeToken: @unchecked Sendable {
         }
     }
     
-    private func buildSystemMessage(toolAccess: [ToolRunMask] = [.allowAll]) async -> Message {
+    private func buildSystemMessage(instructionOverride: String? = nil, toolAccess: [ToolRunMask] = [.allowAll]) async -> Message {
         let deviceDetails = self.deviceDetails!
         
-        var systemMessageContent = deviceDetails.systemInstructions
+        var systemMessageContent = instructionOverride != nil ? instructionOverride! : deviceDetails.systemInstructions
         
         let toolDefinitions = await toolDefinitionsManager.processToolMask(toolAccess)
         if toolDefinitions.isEmpty == false {
@@ -988,10 +988,68 @@ public class FreeToken: @unchecked Sendable {
         
         let aiModel = try await self.getAIModel(modelCode: modelCode)
                     
-        return CloudChatSession(client: self, aiModel: aiModel, messagesManager: messagesManager, toolDefinitionsManager: toolDefinitionsManager,toolAccess: toolAccess, messageThreadID: messageThreadID, aiRunConfig: aiRunConfig)
+        return CloudChatSession(client: self, aiModel: aiModel, toolDefinitionsManager: toolDefinitionsManager,toolAccess: toolAccess, messageThreadID: messageThreadID, aiRunConfig: aiRunConfig)
     }
     
+    /// Create a New Memory Chat Session
+    ///
+    /// ```
+    ///    let memoryChatSession = try? await client.getMemoryChatSession(modelCode: "model-code", runLocation: .automatic, toolAccess: [.allowAll])
+    ///
+    ///    let message = try? await memoryChatSession?.generateNewMessage()
+    ///
+    ///    print("AI Response: \(message?.content ?? "No response")")
+    /// ```
+    ///
+    /// > Tip: Use `toolAccess` to selectively define include tools that you have defined.
+    ///
+    /// > Tip: Use `runLocation` to define where you want the AI model to run.  If the model is not downloaded or the device is not capable, it will automatically fall back to cloud execution.
+    ///
+    /// - Parameters:
+    /// - modelCode: Optional model code to use for this session. If not provided, uses the default AI model for the Agent.
+    /// - runLocation: RunLocation enum to specify where to run the AI model. Defaults to `.automatic`.
+    /// - toolAccess: An array of `ToolRunMask` to define which tools will be available in this chat session. Defaults to `.allowAll`.
+    /// - Returns: A `ChatSessionProtocol` object representing the chat session.
     public func getMemoryChatSession(
+        modelCode: String? = nil,
+        runLocation: RunLocation = .automatic,
+        toolAccess: [ToolRunMask] = [.allowAll],
+        messages: [Message] = [],
+        systemInstructions: String = "",
+        sessionID: String = UUID().uuidString,
+        aiRunConfig: AIRunConfig? = nil
+    ) async throws -> ChatSessionProtocol {
+        let downloadStatus = try await getAIModelDownloadState(modelCode: modelCode)
+        let aiModel = try await getAIModel(modelCode: modelCode)
+        let availableMemoryToLoad = aiModel.availableMemoryToLoad()
+        
+        switch runLocation {
+        case .cloudRun:
+            return try await getCloudMemoryChatSession(modelCode: modelCode, toolAccess: toolAccess, messages: messages, aiRunConfig: aiRunConfig)
+        case .automatic:
+            if !aiModel.cloudOnly && downloadStatus == .downloaded && availableMemoryToLoad {
+                return try await getLocalMemoryChatSession(modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess, messages: messages, aiRunConfig: aiRunConfig)
+            } else {
+                return try await getCloudMemoryChatSession(modelCode: modelCode, toolAccess: toolAccess, messages: messages, aiRunConfig: aiRunConfig)
+            }
+        case .localRun:
+            guard !aiModel.cloudOnly else {
+                throw FreeTokenError.isCloudOnlyModel
+            }
+            
+            if downloadStatus == .downloaded && availableMemoryToLoad {
+                return try await getLocalMemoryChatSession(modelCode: modelCode, runLocation: runLocation, toolAccess: toolAccess, messages: messages, aiRunConfig: aiRunConfig)
+            } else {
+                if downloadStatus != .downloaded {
+                    throw FreeTokenError.aiModelNotDownloaded
+                } else {
+                    throw FreeTokenError.deviceNotCapable
+                }
+            }
+        }
+    }
+    
+    internal func getLocalMemoryChatSession(
         modelCode: String? = nil,
         runLocation: RunLocation = .automatic,
         toolAccess: [ToolRunMask] = [.allowAll],
@@ -1024,9 +1082,32 @@ public class FreeToken: @unchecked Sendable {
         }
 
         // Generate System Message
-        let systemMessage = await buildSystemMessage(toolAccess: toolAccess)
+        let systemMessage = await buildSystemMessage(instructionOverride: systemInstructions, toolAccess: toolAccess)
 
         return await MemoryChatSession(client: self, aiModel: aiModel, systemMessage: systemMessage, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, queue: AITaskQueue.shared, sessionID: sessionID, messages: messages, aiRunConfig: aiRunConfig)
+    }
+    
+    internal func getCloudMemoryChatSession(
+        modelCode: String? = nil,
+        toolAccess: [ToolRunMask] = [.allowAll],
+        messages: [Message] = [],
+        systemInstructions: String = "",
+        sessionID: String = UUID().uuidString,
+        aiRunConfig: AIRunConfig? = nil
+    ) async throws -> CloudMemoryChatSession {
+        guard isDeviceRegistered() else {
+            throw FreeTokenError.deviceNotRegistered
+        }
+
+        let aiModel = try await self.getAIModel(modelCode: modelCode)
+        
+        let systemMessage = await buildSystemMessage(instructionOverride: systemInstructions, toolAccess: toolAccess)
+        var messages = messages
+        if systemMessage.content != "" {
+            messages.insert(systemMessage, at: 0)
+        }
+
+        return CloudMemoryChatSession(client: self, aiModel: aiModel, toolDefinitionsManager: toolDefinitionsManager, toolAccess: toolAccess, messages: messages, aiRunConfig: aiRunConfig)
     }
     
     /// Create a New Completion Session

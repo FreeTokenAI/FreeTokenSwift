@@ -89,7 +89,7 @@ extension FreeToken {
         let runLocation: RunLocation = .cloudRun
         
         init(
-            chatSession: CloudChatSession,
+            chatSession: ChatSessionInternalProtocol,
             documentSearchScope: String? = nil,
             privateDocumentStoreIDs: [String]? = nil,
             modelCode: String,

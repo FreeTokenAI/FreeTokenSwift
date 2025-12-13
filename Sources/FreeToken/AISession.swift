@@ -460,7 +460,6 @@ extension FreeToken {
             let cloudSession = CloudChatSession(
                 client: client,
                 aiModel: aiModel,
-                messagesManager: messagesManager,
                 toolDefinitionsManager: toolDefinitionsManager,
                 toolAccess: toolAccess,
                 messageThreadID: messageThreadID
@@ -618,7 +617,6 @@ extension FreeToken {
         var messageThreadID: String?
         var config: AIModelConfiguration
 
-        let messagesManager: MessagesManager
         let toolDefinitionsManager: ToolDefinitionsManager
         let jsonToolResults: Bool
         let toolAccess: [ToolRunMask]
@@ -628,7 +626,7 @@ extension FreeToken {
         internal init(
             client: FreeToken,
             aiModel: AIModel,
-            messagesManager: MessagesManager,
+
             toolDefinitionsManager: ToolDefinitionsManager,
             toolAccess: [ToolRunMask] = [.allowAll],
             messageThreadID: String? = nil,
@@ -637,7 +635,6 @@ extension FreeToken {
             self.client = client
             self.messagePreparer = aiModel.messagePreparer()
             self.config = aiModel.aiModelConfiguration
-            self.messagesManager = messagesManager
             self.toolDefinitionsManager = toolDefinitionsManager
             self.jsonToolResults = aiModel.jsonToolResults
             self.modelCode = aiModel.code
@@ -1414,7 +1411,214 @@ extension FreeToken {
             return await self.model.getLastGenerationMetrics()
         }
 
+    }
+    
+    public class CloudMemoryChatSession: ChatSessionInternalProtocol, @unchecked Sendable {
+        let client: FreeToken
+        let messagePreparer: MessagePreparer
+        var messages: [Message] = []
+        var config: AIModelConfiguration
 
+        let toolDefinitionsManager: ToolDefinitionsManager
+        let jsonToolResults: Bool
+        let toolAccess: [ToolRunMask]
+        let modelCode: String
+        var aiRunConfig: AIRunConfig? = nil
+        
+        internal init(
+            client: FreeToken,
+            aiModel: AIModel,
+            toolDefinitionsManager: ToolDefinitionsManager,
+            toolAccess: [ToolRunMask] = [.allowAll],
+            messages: [Message] = [],
+            aiRunConfig: AIRunConfig? = nil
+        ) {
+            self.client = client
+            self.messagePreparer = aiModel.messagePreparer()
+            self.config = aiModel.aiModelConfiguration
+            self.toolDefinitionsManager = toolDefinitionsManager
+            self.jsonToolResults = aiModel.jsonToolResults
+            self.modelCode = aiModel.code
+            self.messages = messages
+            self.toolAccess = toolAccess
+            self.aiRunConfig = aiRunConfig
+        }
+
+        // MARK: - Public Methods
+
+        /// Prewarming is not required for cloud sessions.
+        /// This method does nothing but logs an informational message.
+        ///
+        /// - Note: Cloud sessions don't need prewarming since they don't load models into device memory.
+        public func prewarm() async {
+            // No-op for cloud session
+            client.logger("ℹ️ Prewarm not required for Cloud Sessions.", .info)
+        }
+
+        /// Loading is not required for cloud sessions.
+        /// This method does nothing but logs an informational message.
+        ///
+        /// - Note: Cloud sessions don't need to load models since inference happens remotely.
+        public func load() async throws {
+            client.logger("ℹ️ Loading is not required for Cloud Sessions.", .info)
+        }
+
+        /// Unloading is not required for cloud sessions.
+        /// This method does nothing but logs an informational message.
+        ///
+        /// - Note: Cloud sessions don't need to unload models since they don't use local device memory.
+        public func unload() async {
+            client.logger("ℹ️ Unloading is not required for Cloud Sessions.", .info)
+        }
+
+        /// Cancellation is handled differently for cloud sessions.
+        /// This method is a no-op since cloud sessions use a different cancellation mechanism.
+        public func cancelGeneration() async {
+            // No-op for cloud session - cancellation is handled via the API
+        }
+
+        /// Creates a new message thread for this cloud chat session.
+        /// The thread will be persisted to the cloud.
+        ///
+        /// **Important:** Each chat session can only have one thread. If you need multiple threads,
+        /// create separate chat session instances.
+        ///
+        /// - Returns: The newly created `MessageThread` object with a unique ID.
+        /// - Throws: `FreeTokenError` if a thread already exists on this session or if creation fails.
+        ///
+        /// - Note: Save the returned `thread.id` for future operations. This is the only time you'll receive it.
+        public func createMessageThread() async throws -> MessageThread {
+            throw FreeTokenError.error(message: "Creating message threads is not supported in CloudMemoryChatSession", code: 10004)
+        }
+
+        /// Adds a message to the current cloud chat session's thread.
+        /// The message will be persisted to the cloud and included in future AI generations.
+        ///
+        /// - Parameter message: The `Message` to add to the conversation thread. Typically a user message with role `.user`.
+        /// - Returns: The added `Message` with its server-assigned ID and timestamp.
+        /// - Throws: `FreeTokenError.messageThreadNotCreated` if no thread exists on this session.
+        ///
+        /// - Note: You must call `createMessageThread()` before adding messages to a new session.
+        public func addMessage(message: Message) async throws -> Message {
+            self.messages.append(message)
+            
+            return message
+        }
+        
+        internal func addMessage(message: Message, updateKVCache: Bool = true) async throws -> Message {
+            self.messages.append(message)
+            return message
+        }
+
+        /// Retrieves all messages in the current cloud chat session's thread.
+        /// Messages are returned in chronological order from oldest to newest.
+        ///
+        /// - Returns: An array of `Message` objects representing the complete conversation history.
+        /// - Throws: `FreeTokenError.messageThreadNotCreated` if no thread exists on this session.
+        ///
+        /// - Note: This fetches messages from the server, reflecting the current state including messages added by other clients.
+        public func getMessages() async throws -> [Message] {
+            return self.messages
+        }
+
+        /// Generates a new AI response message using cloud-based inference.
+        /// This method automatically handles tool calls, document search (RAG), and streaming.
+        ///
+        /// All generation is performed using cloud AI infrastructure - no local device resources are used.
+        ///
+        /// - Parameters:
+        ///   - documentSearchScope: Optional search scope for document retrieval (RAG). Documents matching this scope will be used as context.
+        ///   - privateDocumentStoreIDs: Optional array of private document store IDs to search within.
+        ///   - chatStatusStream: Optional closure for receiving real-time status updates and tokens during generation.
+        ///   - toolUseHandler: Optional closure for handling tool/function calls from the AI. Return the tool results as a string.
+        /// - Returns: The generated assistant `Message` with content, token usage, and metadata.
+        /// - Throws: `FreeTokenError.messageThreadNotCreated` if no thread exists, or other errors if generation fails.
+        ///
+        /// - Note: This always uses cloud AI. There is no local fallback.
+        public func generateNewMessage(
+            documentSearchScope: String? = nil,
+            privateDocumentStoreIDs: [String]? = nil,
+            chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
+            toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil
+        ) async throws -> Message {
+            guard self.messages.count > 0 else {
+                client.logger("No messages for context for generation.", .error)
+                throw FreeTokenError.noMessagesToSend
+            }
+
+            try await chatStatusStream?(nil, .starting)
+            
+            
+            let workflowSteps: [WorkflowStep.Type] = [
+                RunCloudChatSession.self, // Run Generation
+                ChatSessionRunToolCalls.self // Handle Tool Calls
+            ]
+            
+            let workflowContext = CloudChatSessionRunWorklowContext(
+                chatSession: self,
+                documentSearchScope: documentSearchScope,
+                privateDocumentStoreIDs: privateDocumentStoreIDs,
+                modelCode: self.modelCode,
+                aiRunConfig: self.aiRunConfig,
+                chatStatusStream: chatStatusStream,
+                toolUseHandler: toolUseHandler,
+                jsonToolResults: jsonToolResults,
+                toolDefinitionsManager: toolDefinitionsManager
+            )
+            
+            let workflow = WorkflowManager(context: workflowContext, steps: workflowSteps)
+            
+            return try await withCheckedThrowingContinuation { continuation in
+                Task {
+                    await workflow.execute { context in
+                        let finalContext = context as! CloudChatSessionRunWorklowContext
+                        if let lastMessage = finalContext.lastGeneratedMessage {
+                            // Save session after generation
+                            continuation.resume(returning: lastMessage)
+                        } else {
+                            continuation.resume(throwing: FreeTokenError.failedToRunAIWithError(message: "Failed to Generate Message"))
+                        }
+                    } failure: { error, context in
+                        continuation.resume(throwing: error)
+                    }
+                }
+            }
+        }
+
+        /// Token counting is not supported for cloud chat sessions.
+        /// Use a local chat session if you need to count tokens.
+        ///
+        /// - Parameter text: The text to count tokens for (ignored).
+        /// - Throws: `FreeTokenError` indicating that token counting is not supported on cloud models.
+        ///
+        /// - Note: Cloud models don't provide local tokenization. Use a `ChatSession` with local model for token counting.
+        public func countTokens(for text: String) async throws -> Int {
+            throw FreeTokenError.error(message: "Counting tokens is not supported on cloud models", code: 10002)
+        }
+
+        // MARK: - Internal Methods
+
+        internal func updateModelContext() async throws {
+            // No-op for cloud session
+            client.logger("ℹ️ Updating model context is not required for Cloud Sessions.", .info)
+        }
+        
+        internal func kvTokenCount() async -> Int {
+            return 0
+        }
+        
+        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
+            throw FreeTokenError.error(message: "Direct generation is not supported on cloud models", code: 10003)
+        }
+        
+        internal func getLastGenerationMetrics() async -> FreeToken.LlamaManager.GenerationMetrics? {
+            return nil
+        }
+        
+        internal func saveSession() async throws {
+            // No-op for cloud session
+            client.logger("ℹ️ Saving session is not required for Cloud Sessions.", .info)
+        }
     }
     
 }

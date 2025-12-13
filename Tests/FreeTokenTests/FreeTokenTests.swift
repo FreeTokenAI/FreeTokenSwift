@@ -169,6 +169,35 @@ final class FreeTokenTests: XCTestCase {
         wait(for: [expectation], timeout: 60.0)
     }
     
+    func testCloudMemoryChatSession() throws {
+        let expectation = self.expectation(description: "Waiting for memory chat session test")
+        
+        Task {
+            let session = try await FreeToken.shared.getMemoryChatSession(runLocation: .cloudRun)
+            
+            _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of Japan"))
+            
+            do {
+                let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+                    if let token = token {
+                        print(token, separator: "")
+                    } else {
+                        print("\n[Status] \(status)")
+                    }
+                }, toolUseHandler: nil)
+                
+                await session.unload()
+                XCTAssertTrue(response.content.contains("Tokyo"), "Expected response to contain 'Tokyo'")
+                expectation.fulfill()
+            } catch {
+                XCTAssertTrue(false, "Cloud memory chat session failed with error: \(error)")
+                expectation.fulfill()
+            }
+        }
+        
+        wait(for: [expectation], timeout: 60.0)
+    }
+    
     func testChatSessionToolCalling() throws {
         let expectation = self.expectation(description: "Waiting for chat session test")
         
