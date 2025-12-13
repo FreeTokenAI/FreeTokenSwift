@@ -394,7 +394,7 @@ extension FreeToken {
         }
 
         /// Streaming generation with automatic KV cache sliding
-        func generate() async throws -> AsyncThrowingStream<String, Error> {
+        func generate(injectAssistantContext: String? = nil) async throws -> AsyncThrowingStream<String, Error> {
             try ensureActive()
 
             // Reset cancellation flag at start of each generation
@@ -431,7 +431,16 @@ extension FreeToken {
                 // Evaluate all assistant slot tokens in one batch
                 // The C bridge will handle logits efficiently (only for last token when needsLogits=true)
                 // Feed to sampler since these are part of generation
-                let slotTokensInt = assistantSlotTokens.map { Int($0) }
+                var slotTokensInt = assistantSlotTokens.map { Int($0) }
+                
+                // Inject tokens to assistant slot if provided, this allows us to "trick" the assitant that it
+                // has already said what is passed in. This is useful in the Architect -> Student pattern.
+                if let injectContext = injectAssistantContext, !injectContext.isEmpty {
+                    let injectTokens = try await session.tokenize(injectContext, addBos: false, special: false)
+                    FreeTokenLogger.shared.log("KV_SLIDING: Injecting \(injectTokens.count) assistant context tokens", level: .debug)
+                    slotTokensInt.append(contentsOf: injectTokens)
+                }
+                
                 try await session.evalOptimized(tokens: slotTokensInt, feedToSampler: true, needsLogits: true)
                 templatedTokens.append(contentsOf: assistantSlotTokens)
             }

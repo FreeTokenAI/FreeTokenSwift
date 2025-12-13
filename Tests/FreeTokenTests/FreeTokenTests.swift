@@ -58,7 +58,7 @@ final class FreeTokenTests: XCTestCase {
             _ = try await session.createMessageThread()
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of Italy"))
             
-            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 } else {
@@ -84,7 +84,7 @@ final class FreeTokenTests: XCTestCase {
             _ = try await session.createMessageThread()
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of Germany"))
             
-            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 } else {
@@ -153,7 +153,31 @@ final class FreeTokenTests: XCTestCase {
             
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of Japan"))
             
-            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
+                if let token = token {
+                    print(token, separator: "")
+                } else {
+                    print("\n[Status] \(status)")
+                }
+            }, toolUseHandler: nil)
+            
+            await session.unload()
+            XCTAssertTrue(response.content.contains("Tokyo"), "Expected response to contain 'Tokyo'")
+            expectation.fulfill()
+        }
+        
+        wait(for: [expectation], timeout: 60.0)
+    }
+    
+    func testMemoryChatSessionWithAdditionalAssistantContext() throws {
+        let expectation = self.expectation(description: "Waiting for memory chat session test")
+        
+        Task {
+            let session = try await FreeToken.shared.getMemoryChatSession()
+            
+            _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of Japan"))
+            
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: "The capital of Japan is", chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 } else {
@@ -178,7 +202,7 @@ final class FreeTokenTests: XCTestCase {
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of Japan"))
             
             do {
-                let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+                let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                     if let token = token {
                         print(token, separator: "")
                     } else {
@@ -226,7 +250,7 @@ final class FreeTokenTests: XCTestCase {
             _ = try await session.createMessageThread()
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the weather in Rome Italy?"))
             
-            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 } else {
@@ -286,7 +310,7 @@ final class FreeTokenTests: XCTestCase {
             
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the weather in Rome Italy?"))
             
-            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 } else {
@@ -328,7 +352,7 @@ final class FreeTokenTests: XCTestCase {
             _ = try await session.createMessageThread()
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of Italy"))
 
-            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 } else {
@@ -342,7 +366,7 @@ final class FreeTokenTests: XCTestCase {
 
             _ = try await session.addMessage(message: .init(role: .user, content: "Now what is the capital of Germany?"))
 
-            let response2 = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response2 = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 } else {
@@ -404,7 +428,7 @@ final class FreeTokenTests: XCTestCase {
             let counter = TokenCounter()
 
             do {
-                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                     if token != nil {
                         let count = await counter.increment()
                         print("Token \(count)")
@@ -447,7 +471,7 @@ final class FreeTokenTests: XCTestCase {
             let counter = TokenCounter()
 
             do {
-                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                     if token != nil {
                         let count = await counter.increment()
                         print("Token \(count)")
@@ -490,7 +514,7 @@ final class FreeTokenTests: XCTestCase {
             let sawCloudFallbackFlag = Flag()
 
             do {
-                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                     if status == .cloud_fallback {
                         await sawCloudFallbackFlag.set(true)
                         print("ERROR: Cloud fallback triggered!")
@@ -533,7 +557,7 @@ final class FreeTokenTests: XCTestCase {
 
             // First: cancel a generation
             do {
-                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+                _ = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                     if token != nil {
                         let count = await counter.increment()
                         if count >= 3 {
@@ -551,7 +575,7 @@ final class FreeTokenTests: XCTestCase {
             // Second: verify generation still works after cancellation
             _ = try await session.addMessage(message: .init(role: .user, content: "What is the capital of France?"))
 
-            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, chatStatusStream: { token, status in
+            let response = try await session.generateNewMessage(documentSearchScope: nil, privateDocumentStoreIDs: nil, injectAssistantContext: nil, chatStatusStream: { token, status in
                 if let token = token {
                     print(token, separator: "")
                 }
@@ -566,6 +590,8 @@ final class FreeTokenTests: XCTestCase {
 
         wait(for: [expectation], timeout: 120.0)
     }
+    
+    
 
     // MARK: - Document & Embedding Tests
 

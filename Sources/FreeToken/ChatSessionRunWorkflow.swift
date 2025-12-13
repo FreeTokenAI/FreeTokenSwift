@@ -18,6 +18,7 @@ extension FreeToken {
         var jsonToolResults: Bool { get  }
         var chatSession: ChatSessionInternalProtocol { get  }
         var runLocation: RunLocation { get }
+        var injectAssistantContext: String? { get }
     }
     
     final class ChatSessionRunWorkflowContext: ChatSessionContextProtocol, @unchecked Sendable {
@@ -41,6 +42,9 @@ extension FreeToken {
         let jsonToolResults: Bool
         let runLocation: RunLocation = .localRun
         
+        // Fine Grained AI control
+        let injectAssistantContext: String?
+        
         init(
             chatSession: ChatSessionInternalProtocol,
             documentSearchScope: String? = nil,
@@ -49,7 +53,8 @@ extension FreeToken {
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil,
             jsonToolResults: Bool = false,
-            toolDefinitionsManager: ToolDefinitionsManager
+            toolDefinitionsManager: ToolDefinitionsManager,
+            injectAssistantContext: String? = nil
         ) {
             self.stopExecution = false
             self.chatSession = chatSession
@@ -60,6 +65,7 @@ extension FreeToken {
             self.toolUseHandler = toolUseHandler
             self.toolDefinitionsManager = toolDefinitionsManager
             self.jsonToolResults = jsonToolResults
+            self.injectAssistantContext = injectAssistantContext
         }
     }
     
@@ -87,6 +93,8 @@ extension FreeToken {
         let toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String>
         let jsonToolResults: Bool
         let runLocation: RunLocation = .cloudRun
+        
+        let injectAssistantContext: String? = nil
         
         init(
             chatSession: ChatSessionInternalProtocol,
@@ -138,7 +146,7 @@ extension FreeToken {
                 let inputTokensCount = await context.chatSession.kvTokenCount()
                 var tokenCount = 0
                 do {
-                    for try await nextChunk in try await context.chatSession.generate() {
+                    for try await nextChunk in try await context.chatSession.generate(additionalAssistantContext: self.context.injectAssistantContext) {
                         do {
                             try await self.context.chatStatusStream?(nextChunk, .streaming_tokens)
                         } catch {

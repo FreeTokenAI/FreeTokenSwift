@@ -52,6 +52,7 @@ extension FreeToken {
         func generateNewMessage(
             documentSearchScope: String?,
             privateDocumentStoreIDs: [String]?,
+            injectAssistantContext: String?,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void>,
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String>
         ) async throws -> Message
@@ -80,7 +81,7 @@ extension FreeToken {
 
         func updateModelContext() async throws
         func kvTokenCount() async -> Int
-        func generate() async throws -> AsyncThrowingStream<String, Error>
+        func generate(additionalAssistantContext: String?) async throws -> AsyncThrowingStream<String, Error>
         func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics?
         func saveSession() async throws
         func cancelGeneration() async
@@ -446,6 +447,7 @@ extension FreeToken {
         public func generateNewMessage(
             documentSearchScope: String? = nil,
             privateDocumentStoreIDs: [String]? = nil,
+            injectAssistantContext: String? = nil,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil
         ) async throws -> Message {
@@ -478,7 +480,8 @@ extension FreeToken {
                 chatStatusStream: chatStatusStream,
                 toolUseHandler: toolUseHandler,
                 jsonToolResults: jsonToolResults,
-                toolDefinitionsManager: toolDefinitionsManager
+                toolDefinitionsManager: toolDefinitionsManager,
+                injectAssistantContext: injectAssistantContext
             )
 
             let workflow = WorkflowManager(context: workflowContext, steps: workflowSteps)
@@ -580,8 +583,8 @@ extension FreeToken {
             return await self.model.kvCachePosition
         }
 
-        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
-            return try await self.model.generate()
+        internal func generate(additionalAssistantContext: String? = nil) async throws -> AsyncThrowingStream<String, any Error> {
+            return try await self.model.generate(injectAssistantContext: additionalAssistantContext)
         }
 
         internal func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics? {
@@ -784,6 +787,7 @@ extension FreeToken {
         public func generateNewMessage(
             documentSearchScope: String? = nil,
             privateDocumentStoreIDs: [String]? = nil,
+            injectAssistantContext: String? = nil,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil
         ) async throws -> Message {
@@ -853,7 +857,7 @@ extension FreeToken {
             return 0
         }
         
-        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
+        internal func generate(additionalAssistantContext: String? = nil) async throws -> AsyncThrowingStream<String, any Error> {
             throw FreeTokenError.error(message: "Direct generation is not supported on cloud models", code: 10003)
         }
         
@@ -1300,6 +1304,7 @@ extension FreeToken {
         public func generateNewMessage(
             documentSearchScope: String? = nil,
             privateDocumentStoreIDs: [String]? = nil,
+            injectAssistantContext: String? = nil,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil
         ) async throws -> Message {
@@ -1317,7 +1322,8 @@ extension FreeToken {
                 chatStatusStream: chatStatusStream,
                 toolUseHandler: toolUseHandler,
                 jsonToolResults: jsonToolResults,
-                toolDefinitionsManager: toolDefinitionsManager
+                toolDefinitionsManager: toolDefinitionsManager,
+                injectAssistantContext: injectAssistantContext
             )
             
             let workflow = WorkflowManager(context: workflowContext, steps: workflowSteps)
@@ -1403,8 +1409,8 @@ extension FreeToken {
             return await self.model.kvCachePosition
         }
 
-        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
-            return try await self.model.generate()
+        internal func generate(additionalAssistantContext: String? = nil) async throws -> AsyncThrowingStream<String, any Error> {
+            return try await self.model.generate(injectAssistantContext: additionalAssistantContext)
         }
 
         internal func getLastGenerationMetrics() async -> LlamaManager.GenerationMetrics? {
@@ -1538,12 +1544,17 @@ extension FreeToken {
         public func generateNewMessage(
             documentSearchScope: String? = nil,
             privateDocumentStoreIDs: [String]? = nil,
+            injectAssistantContext: String? = nil,
             chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil,
             toolUseHandler: Optional<@Sendable ([ToolCall]) async -> String> = nil
         ) async throws -> Message {
             guard self.messages.count > 0 else {
                 client.logger("No messages for context for generation.", .error)
                 throw FreeTokenError.noMessagesToSend
+            }
+            
+            if injectAssistantContext != nil {
+                client.logger("Injecting assistant context is not supported in CloudMemoryChatSession.", .warning)
             }
 
             try await chatStatusStream?(nil, .starting)
@@ -1607,7 +1618,7 @@ extension FreeToken {
             return 0
         }
         
-        internal func generate() async throws -> AsyncThrowingStream<String, any Error> {
+        internal func generate(additionalAssistantContext: String? = nil) async throws -> AsyncThrowingStream<String, any Error> {
             throw FreeTokenError.error(message: "Direct generation is not supported on cloud models", code: 10003)
         }
         
