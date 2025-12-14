@@ -419,7 +419,7 @@ extension FreeToken {
             // Inject tokens to assistant slot if provided, this allows us to "trick" the assitant that it
             // has already said what is passed in. This is useful in the Architect -> Student pattern.
             if injectAssistantContext != nil {
-                let injectTokens = try await session.tokenize(injectAssistantContext!, addBos: false, special: false)
+                let injectTokens = try await session.tokenize(injectAssistantContext!, addBos: false, special: true) // Special allows injection of <think></think> tokens etc.
                 FreeTokenLogger.shared.log("KV_SLIDING: Injecting \(injectTokens.count) tokens into assistant slot", level: .debug)
                 assistantSlotTokens.append(contentsOf: injectTokens.map { Int32($0) })
             }
@@ -439,7 +439,7 @@ extension FreeToken {
                 // Evaluate all assistant slot tokens in one batch
                 // The C bridge will handle logits efficiently (only for last token when needsLogits=true)
                 // Feed to sampler since these are part of generation
-                var slotTokensInt = assistantSlotTokens.map { Int($0) }
+                let slotTokensInt = assistantSlotTokens.map { Int($0) }
                 
                 try await session.evalOptimized(tokens: slotTokensInt, feedToSampler: true, needsLogits: true)
                 templatedTokens.append(contentsOf: assistantSlotTokens)
