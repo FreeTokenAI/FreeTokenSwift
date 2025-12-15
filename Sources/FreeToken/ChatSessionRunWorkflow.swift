@@ -134,6 +134,8 @@ extension FreeToken {
                 
                 var resultContent = ""
                 
+                let profiler = Profiler()
+                
                 do {
                     try await self.context.chatStatusStream?(nil, .sending_to_local_ai)
                 } catch {
@@ -160,6 +162,7 @@ extension FreeToken {
                     }
                 } catch {
                     FreeToken.shared.logger("🔴 Local AI run failed with error: \(error)", .error)
+                    profiler.end(eventType: .generateLocalChatCompletion, isSuccess: false, errorMessage: error.localizedDescription)
                     await failure(error as! FreeTokenError, self.context)
                 }
                     
@@ -169,8 +172,9 @@ extension FreeToken {
                 let tokensPerSecond = Float(generationMetrics?.tokensPerSecond ?? 0.0)
                 
                 let tokenUsage = TokenUsage(totalTokens: (inputTokensCount + tokenCount), tokensPerSecond: tokensPerSecond, inputTokens: inputTokensCount, outputTokens: tokenCount, modelCode: self.context.chatSession.modelCode)
-                    
-                    
+                
+                profiler.end(eventType: .generateLocalChatCompletion, isSuccess: true, tokenStats: tokenUsage)
+
                 // Add New Assitant Message to Thread
                 let assistantMessage = Message(role: .assistant, content: resultContent, tokenUsage: tokenUsage)
 
@@ -206,6 +210,7 @@ extension FreeToken {
         }
         
         func execute(success: @escaping @Sendable (any FreeToken.WorkflowContext) async -> Void, failure: @escaping @Sendable (FreeToken.FreeTokenError, any FreeToken.WorkflowContext) async -> Void) async {
+            
             do {
                 let messages = try await context.chatSession.getMessages()
                 
@@ -220,7 +225,7 @@ extension FreeToken {
                         }
                     }
                 }
-                
+                                
                 let message = try await self.context.chatSession.addMessage(message: assistantMessage, updateKVCache: false)
                 try await self.context.chatSession.saveSession()
                 try await self.context.chatStatusStream?(nil, .new_message_created)

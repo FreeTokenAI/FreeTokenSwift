@@ -952,6 +952,7 @@ extension FreeToken {
         public func generateCompletion(from text: String, chatStatusStream: Optional<@Sendable (_ token: String?, _ status: ChatStreamStatus) async throws -> Void> = nil) async throws -> Completion {
             let message = Message(role: .user, content: text, attachments: nil)
             
+            let profiler = Profiler()
             try await self.model.addMessage(message: message)
 
             do {
@@ -971,6 +972,9 @@ extension FreeToken {
                     let tokensPerSecond = Float(generationMetrics?.tokensPerSecond ?? 0.0)
                     
                     let tokenUsage = TokenUsage(totalTokens: (inputTokensCount + tokenCount), tokensPerSecond: tokensPerSecond, inputTokens: inputTokensCount, outputTokens: tokenCount, modelCode: self.modelCode)
+                    
+                    profiler.end(eventType: .generateLocalCompletion, isSuccess: true, tokenStats: tokenUsage)
+                    
                     return (resultContent, tokenUsage)
                 }
                 
@@ -986,6 +990,7 @@ extension FreeToken {
                     return try await cloudSession.generateCompletion(from: text, chatStatusStream: chatStatusStream)
                 } else {
                     self.client.logger(error.localizedDescription, .error)
+                    profiler.end(eventType: .generateLocalCompletion, isSuccess: false, errorMessage: error.localizedDescription)
                     throw error
                 }
             }
