@@ -240,34 +240,42 @@ extension FreeToken {
 
             if let messageThreadID = self.messageThreadID {
                 // There is a thread - prewarm with existing messages
-                
-                await messagesManager.getMessageThread(id: messageThreadID) { messageThread, _ in
-                    do {
-                        try await self.model.loadSession(fileName: "\(messageThreadID).bin", systemMessage: self.systemMessage)
-                        self.client.logger("✅ Loaded existing session from disk for prewarming.", .info)
-                        return
-                    } catch {
-                        self.client.logger("Failed to load session from disk. Likely does not exist. Proceeding with new creation.", .info)
+                // Use continuation to ensure we block until prewarming is complete
+                await withCheckedContinuation { (continuation: CheckedContinuation<Void, Never>) in
+                    Task {
+                        await messagesManager.getMessageThread(id: messageThreadID) { messageThread, _ in
+                            do {
+                                try await self.model.loadSession(fileName: "\(messageThreadID).bin", systemMessage: self.systemMessage)
+                                self.client.logger("✅ Loaded existing session from disk for prewarming.", .info)
+                                self.isPrewarmed = true
+                                continuation.resume()
+                                return
+                            } catch {
+                                self.client.logger("Failed to load session from disk. Likely does not exist. Proceeding with new creation.", .info)
+                            }
+
+                            do {
+                                try await self.model.updateContext(messages: messageThread.messages)
+                                self.client.logger("✅ Updated model context with existing messages for prewarming.", .info)
+                            } catch {
+                                // Failed to prewarm
+                                self.client.logger("❌ Failed to update model session context: \(error.localizedDescription)", .error)
+                                continuation.resume()
+                                return
+                            }
+
+                            self.isPrewarmed = true
+
+                            self.client.logger("✅ Successfully prewarmed model session with existing message thread.", .info)
+
+                            // Update the session after loading / updating context
+                            try? await self.model.saveSession(fileName: "\(messageThreadID).bin")
+                            continuation.resume()
+                        } failure: { error in
+                            self.client.logger("❌ Failed to retrieve message thread for prewarming: \(error.localizedDescription)", .error)
+                            continuation.resume()
+                        }
                     }
-                    
-                    do {
-                        try await self.model.updateContext(messages: messageThread.messages)
-                        self.client.logger("✅ Updated model context with existing messages for prewarming.", .info)
-                    } catch {
-                        // Failed to prewarm
-                        self.client.logger("❌ Failed to update model session context: \(error.localizedDescription)", .error)
-                        return
-                    }
-                    
-                    self.isPrewarmed = true
-                    
-                    self.client.logger("✅ Successfully prewarmed model session with existing message thread.", .info)
-                    
-                    // Update the session after loading / updating context
-                    try? await self.model.saveSession(fileName: "\(messageThreadID).bin")
-                } failure: { error in
-                    self.client.logger("❌ Failed to retrieve message thread for prewarming: \(error.localizedDescription)", .error)
-                    return
                 }
             } else {
                 // There is no thread - just prewarm an empty session
